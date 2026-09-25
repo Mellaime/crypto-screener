@@ -20,6 +20,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import NullPool
 
 # Load backend/.env so DATABASE_URL (and the API keys) are available.
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -40,9 +41,27 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL:
     # --- Cloud Postgres (Supabase) ---
-    # SQLAlchemy uses the psycopg2 driver for "postgresql://" URLs.
-    # pool_pre_ping avoids errors from stale/dropped cloud connections.
-    engine = create_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
+    # Normalize the URL to use the psycopg (v3) driver. psycopg v3 ships
+    # reliable prebuilt wheels for serverless runtimes (Vercel), where the
+    # psycopg2 binary can fail to import. It works exactly the same locally.
+    url = DATABASE_URL
+    if url.startswith("postgres://"):            # some providers use this alias
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):          # (won't touch an explicit +driver)
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+
+    # prepare_threshold=None disables server-side prepared statements, which the
+    # Supabase transaction pooler (port 6543) does not support.
+    engine_kwargs = {"echo": False, "connect_args": {"prepare_threshold": None}}
+    if os.getenv("VERCEL"):
+        # On Vercel (serverless) DON'T keep a client-side connection pool
+        # between invocations - let Supabase's pooler manage pooling. This
+        # avoids stale/closed-connection errors.
+        engine_kwargs["poolclass"] = NullPool
+    else:
+        engine_kwargs["pool_pre_ping"] = True     # local long-running process
+
+    engine = create_engine(url, **engine_kwargs)
     DB_FILE = None  # not a file-based DB
     DB_DESCRIPTION = "Supabase Postgres (cloud)"
 else:

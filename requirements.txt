@@ -1,6 +1,6 @@
 requests
 fastapi
 sqlalchemy
-psycopg2-binary
+psycopg[binary]
 python-dotenv
 apscheduler
