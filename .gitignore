@@ -1,0 +1,27 @@
+# ===== Secrets - NEVER commit (API keys, DB connection string) =====
+.env
+*.env
+backend/.env
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+venv/
+backend/venv/
+.venv/
+
+# ===== Local database (test data - not for the repo) =====
+*.db
+*.sqlite
+*.sqlite3
+database/crypto.db
+
+# ===== Local caches =====
+backend/coingecko_cache.json
+
+# ===== OS / editor junk =====
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Crypto Screener</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --good: #3fb950;
+    --mid: #d29922;
+    --low: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 24px 16px 60px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+  h1 { font-size: 24px; margin: 0; letter-spacing: -0.5px; }
+  h1 .dot { color: var(--good); }
+  .status { font-size: 13px; color: var(--muted); }
+  .sub { color: var(--muted); font-size: 13px; margin: 2px 0 22px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 28px 0 10px; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  thead th { text-align: left; padding: 11px 14px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); border-bottom: 1px solid var(--border); background: #1c2129; white-space: nowrap; }
+  tbody td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #1a2029; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .rank { color: var(--muted); font-variant-numeric: tabular-nums; width: 34px; }
+  .name { font-weight: 600; }
+  .chain { display: inline-block; margin-top: 3px; font-size: 11px; color: var(--muted); background: #21262d; border: 1px solid var(--border); border-radius: 20px; padding: 1px 8px; text-transform: lowercase; }
+  .narrative { color: var(--muted); font-size: 13px; max-width: 320px; }
+
+  .badge { display: inline-block; min-width: 34px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; border-radius: 6px; padding: 3px 8px; font-size: 13px; }
+  .badge.good { background: rgba(63,185,80,0.15); color: var(--good); }
+  .badge.mid  { background: rgba(210,153,34,0.15); color: var(--mid); }
+  .badge.low  { background: rgba(248,81,73,0.15);  color: var(--low); }
+
+  .sec { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+         border-radius: 5px; padding: 1px 6px; margin-left: 6px; vertical-align: middle; cursor: help; }
+  .sec.safe    { background: rgba(63,185,80,0.15); color: var(--good); border: 1px solid rgba(63,185,80,0.35); }
+  .sec.unknown { background: #21262d; color: var(--muted); border: 1px solid var(--border); }
+  .sec.unsafe  { background: rgba(248,81,73,0.15); color: var(--low); border: 1px solid rgba(248,81,73,0.4); }
+  .secinfo { display: block; margin-top: 3px; font-size: 11px; color: var(--muted); }
+
+  .tag { display: inline-block; font-size: 11px; font-weight: 600; color: var(--accent);
+         background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.35);
+         border-radius: 20px; padding: 2px 10px; }
+
+  .rankwrap { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .rankwrap .up   { color: var(--good); font-weight: 700; }
+  .rankwrap .down { color: var(--low); font-weight: 700; }
+  .rankwrap .flat { color: var(--muted); }
+
+  .reason { color: #ffb4ac; font-size: 13px; }
+  .empty { padding: 18px 14px; color: var(--muted); font-size: 14px; }
+  .err { background: rgba(248,81,73,0.12); border: 1px solid var(--low); color: #ffb4ac; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; display: none; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span class="dot">●</span> Crypto Screener</h1>
+    <div class="status" id="status">Loading…</div>
+  </header>
+  <div class="sub">Auto-refreshes every 30 seconds · ranked by score (highest first)</div>
+
+  <div class="err" id="err"></div>
+
+  <h2 id="active-title">Active coins</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th class="rank">#</th>
+          <th>Name</th>
+          <th class="num">Score</th>
+          <th class="num">Rank</th>
+          <th class="num">Market Cap</th>
+          <th class="num">Revenue/day</th>
+          <th class="num">Vol / Liq</th>
+          <th class="num">Holders</th>
+          <th>Narrative</th>
+        </tr>
+      </thead>
+      <tbody id="coins-body"></tbody>
+    </table>
+  </div>
+
+  <h2 id="dropped-title">Dropped coins</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Date dropped</th>
+          <th>Reason</th>
+        </tr>
+      </thead>
+      <tbody id="dropped-body"></tbody>
+    </table>
+  </div>
+
+  <footer>
+    Score is 0–100. Vol/Liq (25) + Vol/MCap (20) + Rank change (5) + Holders (15)
+    are active, so the current maximum is 65; revenue &amp; liquidity-growth are
+    coming. Holders = CMC DEX holder count (“—” on unsupported chains). Rank
+    shows the avg market rank (CoinGecko + CoinMarketCap) and its move vs last
+    week (↑ = climbed). Rank change needs a prior week before it appears.
+    Revenue is DefiLlama daily fees/revenue (“—” when the coin isn't listed).
+    The SAFE / ? badge is the GoPlus honeypot check — hover it for verified /
+    renounced / mint details. Holders show “—” until a holders source is added.
+  </footer>
+</div>
+
+<script>
+  // ---- formatting helpers -------------------------------------------------
+  function fmtMoney(v) {
+    if (v == null) return "—";
+    const a = Math.abs(v);
+    if (a >= 1e9) return "$" + (v / 1e9).toFixed(2) + "B";
+    if (a >= 1e6) return "$" + (v / 1e6).toFixed(2) + "M";
+    if (a >= 1e3) return "$" + (v / 1e3).toFixed(2) + "K";
+    return "$" + v.toFixed(2);
+  }
+  function fmtX(v)   { return v == null ? "—" : v.toFixed(2) + "x"; }
+  function fmtNum(v) { return v == null ? "—" : v.toLocaleString(); }
+  function scoreClass(s) { return s >= 30 ? "good" : (s >= 15 ? "mid" : "low"); }
+  function yn(b) { return b === true ? "yes" : (b === false ? "no" : "?"); }
+
+  // Rank indicator: "#150 ↑130" (green up / red down), or "—" if unknown.
+  function rankCell(c) {
+    if (c.market_rank == null) return "—";
+    let move = "";
+    if (c.rank_change != null && c.rank_change > 0) {
+      move = ` <span class="up">↑${c.rank_change}</span>`;
+    } else if (c.rank_change != null && c.rank_change < 0) {
+      move = ` <span class="down">↓${Math.abs(c.rank_change)}</span>`;
+    } else if (c.rank_change === 0) {
+      move = ` <span class="flat">→0</span>`;
+    }
+    return `<span class="rankwrap">#${c.market_rank}${move}</span>`;
+  }
+
+  // The green SAFE / grey ? security badge, with full details on hover.
+  function secBadge(c) {
+    let cls = "unknown", label = "?";
+    if (c.security === "safe") { cls = "safe"; label = "SAFE"; }
+    else if (c.security === "unsafe") { cls = "unsafe"; label = "UNSAFE"; }
+    const tip = `Security: ${c.security || "unknown"}`
+      + `\nVerified: ${yn(c.verified)}`
+      + `\nOwnership renounced: ${yn(c.renounced)}`
+      + `\nMint disabled: ${yn(c.mint_disabled)}`;
+    return `<span class="sec ${cls}" title="${esc(tip)}">${label}</span>`;
+  }
+
+  // Small always-visible text summary of the security details.
+  function secInfo(c) {
+    if (!c.security || c.security === "unknown") return "";
+    const bits = [];
+    if (c.verified === true) bits.push("verified");
+    if (c.renounced === true) bits.push("renounced");
+    if (c.mint_disabled === true) bits.push("mint off");
+    return bits.length ? `<span class="secinfo">${bits.join(" · ")}</span>` : "";
+  }
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // ---- rendering ----------------------------------------------------------
+  function renderCoins(data) {
+    const body = document.getElementById("coins-body");
+    document.getElementById("active-title").textContent =
+      "Active coins (" + data.count + ")";
+    if (!data.coins.length) {
+      body.innerHTML = '<tr><td colspan="9" class="empty">No active coins right now.</td></tr>';
+      return;
+    }
+    body.innerHTML = data.coins.map(c => `
+      <tr>
+        <td class="rank">${c.rank}</td>
+        <td>
+          <div class="name">${esc(c.name)} ${secBadge(c)}</div>
+          <span class="chain">${esc(c.chain)}</span>
+          ${secInfo(c)}
+        </td>
+        <td class="num"><span class="badge ${scoreClass(c.score)}">${c.score}</span></td>
+        <td class="num">${rankCell(c)}</td>
+        <td class="num">${fmtMoney(c.mcap)}</td>
+        <td class="num">${c.revenue == null ? "—" : fmtMoney(c.revenue)}</td>
+        <td class="num">${fmtX(c.vol_liq)}</td>
+        <td class="num">${fmtNum(c.holders)}</td>
+        <td class="narrative">${c.category ? `<span class="tag">${esc(c.category)}</span>` : esc(c.narrative)}</td>
+      </tr>`).join("");
+  }
+
+  function renderDropped(data) {
+    const body = document.getElementById("dropped-body");
+    document.getElementById("dropped-title").textContent =
+      "Dropped coins (" + data.count + ")";
+    if (!data.dropped.length) {
+      body.innerHTML = '<tr><td colspan="3" class="empty">Nothing dropped yet.</td></tr>';
+      return;
+    }
+    body.innerHTML = data.dropped.map(d => `
+      <tr>
+        <td><div class="name">${esc(d.name)}</div><span class="chain">${esc(d.chain)}</span></td>
+        <td class="num" style="text-align:left">${esc(d.date)}</td>
+        <td class="reason">${esc(d.reason)}</td>
+      </tr>`).join("");
+  }
+
+  // ---- data loading -------------------------------------------------------
+  async function loadData() {
+    const errBox = document.getElementById("err");
+    try {
+      const [coinsRes, droppedRes] = await Promise.all([
+        fetch("/api/coins"),
+        fetch("/api/dropped"),
+      ]);
+      if (!coinsRes.ok || !droppedRes.ok) throw new Error("API returned an error");
+      renderCoins(await coinsRes.json());
+      renderDropped(await droppedRes.json());
+      errBox.style.display = "none";
+      const now = new Date();
+      document.getElementById("status").textContent =
+        "Updated " + now.toLocaleTimeString();
+    } catch (e) {
+      errBox.textContent = "Could not reach the API. Is the server running? (" + e.message + ")";
+      errBox.style.display = "block";
+      document.getElementById("status").textContent = "Offline";
+    }
+  }
+
+  loadData();                       // load immediately
+  setInterval(loadData, 30000);     // then every 30 seconds
+</script>
+</body>
+</html>
