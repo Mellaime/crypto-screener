@@ -1,13 +1,14 @@
 {
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 60,
-      "includeFiles": "backend/**"
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": { "includeFiles": ["backend/**", "frontend/**"] }
     }
-  },
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index" },
-    { "source": "/", "destination": "/frontend/index.html" }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "api/index.py" }
   ],
   "crons": [
     { "path": "/api/cron/daily", "schedule": "0 6 * * *" }
