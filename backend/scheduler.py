@@ -57,49 +57,53 @@ log = logging.getLogger("scheduler")
 logging.getLogger("apscheduler").setLevel(logging.INFO)
 
 
-def run_pipeline():
+def run_pipeline(raise_on_error=False):
     """
-    One full run of the screener. This is the function the scheduler calls.
+    One full run of the screener.
 
-    It is wrapped in try/except so that a failure (e.g. the API is down)
-    is logged but does NOT stop the scheduler - the next run still happens.
+    Errors are always logged. In the long-running local scheduler we SWALLOW
+    them (the schedule survives to the next day). In CI (`--once` mode passes
+    raise_on_error=True) we RE-RAISE, so a real failure - e.g. the DB is
+    unreachable - makes the GitHub Actions run go RED instead of hiding behind
+    a green check.
+
+    If discovery returns nothing (e.g. DexScreener is down), we skip only the
+    SAVE step and STILL refresh existing coins (drop -> rank -> holders ->
+    score), so a discovery outage doesn't waste the whole day.
     """
     log.info("=" * 55)
     log.info("PIPELINE RUN START")
     try:
         tokens = discover_tokens()
-        if not tokens:
-            log.warning("No tokens fetched this run - nothing to save.")
-            return
+        if tokens:
+            stats = save_tokens(tokens)
+            log.info(
+                "FUNNEL  discovered=%d | mcap=%d | age=%d | volume=%d | liquidity=%d "
+                "|| new=%d existing=%d snapshots(ins=%d, upd=%d)",
+                stats["discovered"], stats["passed_mcap"], stats["passed_age"],
+                stats["passed_volume"], stats["passed_liquidity"],
+                stats["new_coins"], stats["existing_coins"],
+                stats["snapshots_inserted"], stats["snapshots_updated"],
+            )
+            print_summary(stats)
+            saved_new = stats["new_coins"]
+        else:
+            log.warning("No tokens discovered this run - skipping SAVE, but still "
+                        "refreshing existing active coins.")
+            saved_new = 0
 
-        stats = save_tokens(tokens)
-
-        # Compact one-line funnel (easy to scan in logs)...
-        log.info(
-            "FUNNEL  discovered=%d | mcap=%d | age=%d | volume=%d | liquidity=%d "
-            "|| new=%d existing=%d snapshots(ins=%d, upd=%d)",
-            stats["discovered"], stats["passed_mcap"], stats["passed_age"],
-            stats["passed_volume"], stats["passed_liquidity"],
-            stats["new_coins"], stats["existing_coins"],
-            stats["snapshots_inserted"], stats["snapshots_updated"],
-        )
-        # ...and the full readable block.
-        print_summary(stats)
-
-        # After saving today's data, re-check existing coins and prune the list.
+        # These run EVERY day regardless of discovery, so existing coins stay
+        # fresh even when DexScreener is down. (drop_logic itself safely skips
+        # dropping when it can't fetch live data, so there are no false drops.)
         log.info("Running drop/recovery/cleanup pass...")
         drop_stats = run_drop_logic()
 
-        # Update market ranks (CoinGecko + CoinMarketCap) before scoring, so
-        # the rank-change component of the score is fresh.
         log.info("Updating market ranks (CoinGecko + CoinMarketCap)...")
         run_rank_update()
 
-        # Refresh holder counts for all active coins (builds growth history).
         log.info("Updating holder counts (CMC DEX)...")
         run_holders_update()
 
-        # Final step: score the ACTIVE coins so the dashboard ranking is fresh.
         log.info("Scoring active coins...")
         results = score_all()
         print_ranking(results)
@@ -107,7 +111,7 @@ def run_pipeline():
         # Consolidated pipeline summary.
         log.info("=" * 55)
         log.info("PIPELINE COMPLETE")
-        log.info("  saved new coins ..... %d", stats["new_coins"])
+        log.info("  saved new coins ..... %d", saved_new)
         log.info("  active coins ........ %d", drop_stats["active_remaining"])
         log.info("  newly dropped ....... %d", drop_stats["newly_dropped"])
         log.info("  coins scored ........ %d", len(results))
@@ -115,8 +119,9 @@ def run_pipeline():
 
         log.info("PIPELINE RUN OK")
     except Exception:
-        # Log the full traceback but swallow the error so the schedule lives on.
-        log.exception("PIPELINE RUN FAILED - error logged, schedule stays alive.")
+        log.exception("PIPELINE RUN FAILED.")
+        if raise_on_error:
+            raise   # let CI (--once) see a non-zero exit -> red Actions run
 
 
 def main():
@@ -124,8 +129,10 @@ def main():
     # Actions (or any external scheduler / cron) calls - no long-running
     # APScheduler loop, no time limit, exits cleanly when the run finishes.
     if "--once" in sys.argv:
+        # CI / GitHub Actions: run once, and FAIL LOUDLY (non-zero exit) if the
+        # pipeline hits a real error, so a broken run shows up red.
         init_db()
-        run_pipeline()
+        run_pipeline(raise_on_error=True)
         return
 
     demo = "--demo" in sys.argv
