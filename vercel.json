@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60,
+      "includeFiles": "backend/**"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index" },
+    { "source": "/", "destination": "/frontend/index.html" }
+  ],
+  "crons": [
+    { "path": "/api/cron/daily", "schedule": "0 6 * * *" }
+  ]
+}

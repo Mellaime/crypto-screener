@@ -14,9 +14,10 @@ Run it (from the backend/ folder, with the venv active):
 Then visit:  http://localhost:8000
 """
 
+import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -152,9 +153,34 @@ def get_dropped():
         session.close()
 
 
+# --- Daily pipeline trigger (for Vercel Cron) ------------------------------
+# Vercel Cron can't keep a process running 24/7 like our local scheduler, so
+# instead it CALLS this URL once a day. This endpoint runs the same pipeline
+# (discover -> filter -> save -> drop -> rank -> holders -> score).
+#
+# Security: if a CRON_SECRET env var is set, we require Vercel's matching
+# "Authorization: Bearer <secret>" header, so randoms can't trigger it.
+@app.get("/api/cron/daily")
+def cron_daily(request: Request):
+    secret = os.getenv("CRON_SECRET")
+    if secret:
+        if request.headers.get("authorization", "") != f"Bearer {secret}":
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+    # Imported lazily so a normal dashboard request doesn't load the pipeline.
+    from scheduler import run_pipeline
+    run_pipeline()
+    return {"status": "ok", "ran": "daily pipeline"}
+
+
 # --- Serve the frontend page ----------------------------------------------
-# This is added LAST so it doesn't shadow the /api routes above. Visiting "/"
-# serves frontend/index.html. StaticFiles reads from disk per request, so
-# editing the page doesn't require restarting the server.
+# Added LAST so it doesn't shadow the /api routes above. Locally this serves
+# frontend/index.html at "/". On Vercel, "/" is served as a static file (see
+# vercel.json), so this mount is dormant there - check_dir=False keeps it from
+# erroring at import time if the folder isn't bundled into the function.
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+app.mount(
+    "/",
+    StaticFiles(directory=str(FRONTEND_DIR), html=True, check_dir=False),
+    name="frontend",
+)
