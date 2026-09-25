@@ -1,0 +1,34 @@
+name: Daily screener pipeline
+
+# Runs the full pipeline (discover -> filter -> save -> drop -> rank ->
+# holders -> score) once a day against Supabase. GitHub Actions has no short
+# time limit like Vercel functions, so the rate-limited pipeline runs fine.
+on:
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC every day
+  workflow_dispatch: {}    # also lets you run it manually from the Actions tab
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run the pipeline once
+        working-directory: backend
+        env:
+          # These come from the repo's Actions secrets (Settings -> Secrets).
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+          COINMARKETCAP_API_KEY: ${{ secrets.COINMARKETCAP_API_KEY }}
+        run: python scheduler.py --once

@@ -120,6 +120,14 @@ def run_pipeline():
 
 
 def main():
+    # --once: run the pipeline a single time then exit. This is what GitHub
+    # Actions (or any external scheduler / cron) calls - no long-running
+    # APScheduler loop, no time limit, exits cleanly when the run finishes.
+    if "--once" in sys.argv:
+        init_db()
+        run_pipeline()
+        return
+
     demo = "--demo" in sys.argv
 
     # Make sure the database + tables exist before we start.
