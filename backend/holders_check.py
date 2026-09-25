@@ -125,11 +125,18 @@ def is_holders_rising(coin, days=3):
 
 
 def run_holders_update():
-    """Refresh holder counts for every ACTIVE coin into its latest snapshot."""
+    """
+    Refresh holder counts for every ACTIVE coin into its latest snapshot.
+
+    On a transient "unknown" (CMC didn't return a count this run) we do NOT
+    wipe a previously known count. If today's snapshot already has a count we
+    keep it; if it doesn't, we carry forward the most recent KNOWN count from
+    history - so the dashboard/score don't flip to "-" over a temporary miss.
+    """
     from database import SessionLocal
     from models import Coin, DailySnapshot
 
-    stats = {"coins": 0, "with_count": 0, "unknown": 0}
+    stats = {"coins": 0, "with_count": 0, "kept_last": 0, "unknown": 0}
     details = []
 
     session = SessionLocal()
@@ -143,15 +150,39 @@ def run_holders_update():
                 .order_by(DailySnapshot.date.desc(), DailySnapshot.id.desc())
                 .first()
             )
-            if snap is not None:
-                snap.holders = res if isinstance(res, int) else None
 
             if isinstance(res, int):
+                # Fresh count -> store it.
+                if snap is not None:
+                    snap.holders = res
                 stats["with_count"] += 1
+                shown = f"{res:,}"
             else:
-                stats["unknown"] += 1
+                # Transient unknown -> keep / carry forward the last known count.
+                kept = None
+                if snap is not None and snap.holders is not None:
+                    kept = snap.holders                       # already has one; leave it
+                elif snap is not None:
+                    prev = (
+                        session.query(DailySnapshot.holders)
+                        .filter(DailySnapshot.coin_id == coin.id,
+                                DailySnapshot.holders.isnot(None))
+                        .order_by(DailySnapshot.date.desc(), DailySnapshot.id.desc())
+                        .first()
+                    )
+                    if prev is not None:
+                        snap.holders = prev[0]                # carry forward into today
+                        kept = prev[0]
+
+                if kept is not None:
+                    stats["kept_last"] += 1
+                    shown = f"{kept:,} (kept)"
+                else:
+                    stats["unknown"] += 1
+                    shown = "unknown"
+
             stats["coins"] += 1
-            details.append((coin.name, res))
+            details.append((coin.name, shown))
         session.commit()
     except Exception:
         session.rollback()
@@ -164,12 +195,13 @@ def run_holders_update():
     print("  HOLDERS UPDATE")
     print(line)
     print(f"  active coins ......... {stats['coins']:>4}")
-    print(f"  with holder count .... {stats['with_count']:>4}")
-    print(f"  unknown (skipped) .... {stats['unknown']:>4}")
-    for name, res in details:
-        shown = f"{res:,}" if isinstance(res, int) else "unknown"
+    print(f"  with fresh count ..... {stats['with_count']:>4}")
+    print(f"  kept last known ...... {stats['kept_last']:>4}")
+    print(f"  still unknown ........ {stats['unknown']:>4}")
+    for name, shown in details:
         print(f"      - {(name or '')[:18]:<18} {shown}")
     print(line)
+    return stats
     return stats
 
 
