@@ -38,11 +38,13 @@ BQ_URL = "https://streaming.bitquery.io/graphql"
 MIN_MCAP = 1_000_000        # $1M
 MAX_MCAP = 500_000_000      # $500M
 
-# TEMPORARY stopgap: after discovery + dedup we keep only the top-N candidates
-# by market cap, so a daily run stays fast/green instead of enriching thousands
-# of coins via DexScreener (~1 call per 30 addresses, rate-limit risk). Raise or
-# remove this once Moralis / Volume-OHLCV can supply age + volume for coins that
-# aren't on DexScreener - only then is the full candidate list actually usable.
+# TEMPORARY stopgap: after discovery + dedup we keep only the SMALLEST-N
+# candidates by market cap (the screener targets small/fresh coins, so we want
+# the lower end of the $1M-$500M window). This keeps a daily run fast/green
+# instead of enriching thousands of coins via DexScreener (~1 call per 30
+# addresses, rate-limit risk). Raise or remove this once Moralis / Volume-OHLCV
+# can supply age + volume for coins that aren't on DexScreener - only then is
+# the full candidate list actually usable.
 MAX_CANDIDATES = 300
 
 CG_DELAY = 2.5              # CoinGecko demo rate limit friendliness
@@ -219,10 +221,13 @@ def discover_candidates(verbose=True):
     unique_count = len(merged)
 
     # --- TEMPORARY cap (see MAX_CANDIDATES) --------------------------------
-    # Keep only the top-N candidates by market cap so a run stays fast/green.
-    # Bitquery candidates have mcap=None (realtime trade data, not a mcap), so
-    # they sort to the bottom and are the first to be cut by this stopgap.
-    merged.sort(key=lambda c: c.get("mcap") or 0, reverse=True)
+    # Keep the SMALLEST-market-cap candidates: the screener targets small/fresh
+    # coins, so we want the lower end of the $1M-$500M window, not the megacaps.
+    # Bitquery candidates have mcap=None (fresh realtime tokens); we treat them
+    # as the small/fresh end and KEEP them (sorted first) rather than discard a
+    # whole discovery source. Sort key: (has_mcap, mcap) -> None first, then
+    # ascending market cap.
+    merged.sort(key=lambda c: (c.get("mcap") is not None, c.get("mcap") or 0))
     merged = merged[:MAX_CANDIDATES]
 
     if verbose:
@@ -235,7 +240,7 @@ def discover_candidates(verbose=True):
         print(f"  {'-'*48}")
         print(f"  TOTAL before dedup ....... {len(cg)+len(cmc)+len(bq):>5}")
         print(f"  AFTER dedup (unique) ..... {unique_count:>5}")
-        print(f"  AFTER cap (top {MAX_CANDIDATES} mcap) ... {len(merged):>5}")
+        print(f"  AFTER cap ({MAX_CANDIDATES} smallest mcap) . {len(merged):>5}")
         print("=" * 52)
     return merged
 
