@@ -34,7 +34,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from database import init_db
-from fetch_dexscreener import discover_tokens
+from discovery import discover_tokens   # NEW multi-source discovery (CG + CMC + Bitquery)
 from save_to_db import save_tokens, print_summary
 from drop_logic import run_drop_logic
 from rank_check import run_rank_update
@@ -78,9 +78,9 @@ def run_pipeline(raise_on_error=False):
         if tokens:
             stats = save_tokens(tokens)
             log.info(
-                "FUNNEL  discovered=%d | mcap=%d | age=%d | volume=%d | liquidity=%d "
+                "FUNNEL  discovered=%d | age=%d | mcap=%d | volume=%d | liquidity=%d "
                 "|| new=%d existing=%d snapshots(ins=%d, upd=%d)",
-                stats["discovered"], stats["passed_mcap"], stats["passed_age"],
+                stats["discovered"], stats["passed_age"], stats["passed_mcap"],
                 stats["passed_volume"], stats["passed_liquidity"],
                 stats["new_coins"], stats["existing_coins"],
                 stats["snapshots_inserted"], stats["snapshots_updated"],

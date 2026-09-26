@@ -4,11 +4,15 @@ save_to_db.py
 Phase 2 - Step (b): discover tokens, apply our market-cap filter, and save
 the survivors into the database.
 
-FILTER RULES (the core of the project) - a coin must pass ALL FOUR:
+FILTER RULES (the core of the project) - a coin must pass every gate:
+    2. Age >= 10 days - RUNS FIRST. Two steps (see age_check.py): DexScreener
+       pairCreatedAt, and if that's unknown, CoinMarketCap/CoinGecko listing
+       date. Anything younger than 10 days, OR of unknowable age, is dropped
+       here before any other filter runs.
     1. Market cap between $1M and $500M (inclusive).
-    2. Age OLDER than 10 days (brand-new coins are too risky - likely scams).
     3. 24h volume greater than $50,000 (TEMPORARY simple rule - see note below).
     4. Liquidity greater than $30,000 (too-thin liquidity = can't exit safely).
+    (Then holders > 0, revenue exists, and the honeypot check - see below.)
     Skip anything that fails any rule (or is missing the data to check).
 
 What gets saved:
@@ -25,18 +29,22 @@ from datetime import date
 
 from database import SessionLocal, init_db
 from models import Coin, DailySnapshot
-from fetch_dexscreener import discover_tokens
+from discovery import discover_tokens   # NEW source: CoinGecko + CMC + Bitquery
+                                        # (DexScreener no longer discovers; it only
+                                        # enriches by contract inside discover_tokens)
 from revenue_check import check_revenue
 from security_check import check_token_security
 from narrative_check import get_category
 from holders_check import get_holder_count
+from age_check import decide_age   # Filter 2 (runs FIRST): two-step age gate
+                                   # (DexScreener pairCreatedAt, else CG/CMC date)
 
 # Filter 1: target market-cap window.
 MIN_MARKET_CAP = 1_000_000        # $1M
 MAX_MARKET_CAP = 500_000_000      # $500M
 
-# Filter 2: minimum age. A coin must be strictly OLDER than this many days.
-MIN_AGE_DAYS = 10                 # keep only age > 10 days
+# Filter 2: minimum age lives in age_check.py (MIN_AGE_DAYS there). It runs
+# FIRST in the loop below, so anything too new never reaches the other filters.
 
 # Filter 3: minimum 24h volume (TEMPORARY - see the note in the save loop).
 MIN_VOLUME_24H = 50_000           # $50K
@@ -118,6 +126,7 @@ def save_tokens(tokens):
         "passed_age": 0,
         "skipped_too_new": 0,
         "skipped_no_age": 0,
+        "age_via_fallback": 0,   # Step 2 (CG/CMC) was used for the age decision
         "passed_volume": 0,
         "skipped_low_volume": 0,
         "passed_liquidity": 0,
@@ -142,9 +151,23 @@ def save_tokens(tokens):
     session = SessionLocal()
     try:
         for t in tokens:
-            mcap = to_float(t.get("market_cap"))
+            # --- Filter 2: AGE - RUNS FIRST (two-step, by contract + chain) -
+            # DexScreener pairCreatedAt, else CoinMarketCap/CoinGecko listing
+            # date (see age_check.decide_age). Anything younger than 10 days,
+            # OR of unknowable age, is dropped HERE before any other filter.
+            keep_age, age_days, age_source = decide_age(t)
+            if age_source == "fallback":
+                stats["age_via_fallback"] += 1
+            if not keep_age:
+                if age_days is None:
+                    stats["skipped_no_age"] += 1     # unknown on DS + CG + CMC
+                else:
+                    stats["skipped_too_new"] += 1    # younger than 10 days
+                continue
+            stats["passed_age"] += 1
 
             # --- Filter 1: market cap must be inside our window -------------
+            mcap = to_float(t.get("market_cap"))
             if mcap is None:
                 stats["skipped_no_mcap"] += 1
                 continue
@@ -154,18 +177,7 @@ def save_tokens(tokens):
             if mcap > MAX_MARKET_CAP:
                 stats["skipped_above"] += 1
                 continue
-            stats["passed_mcap"] += 1
-
-            # --- Filter 2: coin must be OLDER than MIN_AGE_DAYS -------------
-            age = t.get("age_days")
-            if age is None:
-                # No pairCreatedAt -> we can't prove it's old enough, so skip.
-                stats["skipped_no_age"] += 1
-                continue
-            if age <= MIN_AGE_DAYS:
-                stats["skipped_too_new"] += 1
-                continue
-            stats["passed_age"] += 1  # passed filters 1-2
+            stats["passed_mcap"] += 1  # passed age + market cap
 
             # --- Filter 3: 24h volume must be alive, not dead ---------------
             # TEMPORARY - replace with rolling 5-day rising check once 5 days
@@ -314,16 +326,17 @@ def print_summary(stats):
     print(line)
     print(f"  Discovered tokens ................. {stats['discovered']:>5}")
     print("  " + "-" * 46)
+    print("  FILTER 2 - age >= 10 days  (RUNS FIRST)")
+    print(f"    Passed age ...................... {stats['passed_age']:>5}")
+    print(f"      - skipped (too new, <10d) ..... {stats['skipped_too_new']:>5}")
+    print(f"      - skipped (age unknown) ....... {stats['skipped_no_age']:>5}")
+    print(f"      - via CG/CMC fallback ......... {stats['age_via_fallback']:>5}")
+    print("  " + "-" * 46)
     print("  FILTER 1 - market cap $1M-$500M")
-    print(f"    Passed market cap ............... {stats['passed_mcap']:>5}")
+    print(f"    ALSO passed market cap .......... {stats['passed_mcap']:>5}")
     print(f"      - skipped (below $1M) ......... {stats['skipped_below']:>5}")
     print(f"      - skipped (above $500M) ....... {stats['skipped_above']:>5}")
     print(f"      - skipped (no market cap) ..... {stats['skipped_no_mcap']:>5}")
-    print("  " + "-" * 46)
-    print("  FILTER 2 - age > 10 days")
-    print(f"    ALSO passed age ................. {stats['passed_age']:>5}")
-    print(f"      - skipped (too new, <=10d) .... {stats['skipped_too_new']:>5}")
-    print(f"      - skipped (no age data) ....... {stats['skipped_no_age']:>5}")
     print("  " + "-" * 46)
     print("  FILTER 3 - 24h volume > $50K (temporary)")
     print(f"    ALSO passed volume ............. {stats['passed_volume']:>5}")

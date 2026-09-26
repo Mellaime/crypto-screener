@@ -39,10 +39,10 @@ from save_to_db import (
     to_float,
     MIN_MARKET_CAP,
     MAX_MARKET_CAP,
-    MIN_AGE_DAYS,
     MIN_VOLUME_24H,
     MIN_LIQUIDITY,
 )
+from age_check import MIN_AGE_DAYS   # the age gate's single source of truth
 
 # Extra drop-trigger thresholds.
 MAX_LIQ_DROP_PCT = 20        # drop if liquidity fell more than 20% vs yesterday
@@ -94,11 +94,11 @@ def check_failures(rec, prev_snap):
     elif mcap > MAX_MARKET_CAP:
         reasons.append("MCap above $500M")
 
-    # --- Filter 2: age ---
+    # --- Filter 2: age (same boundary as the saver: keep only age >= 10d) ---
     if age is None:
         reasons.append("No age data")
-    elif age <= MIN_AGE_DAYS:
-        reasons.append("Age <= 10 days (too new)")
+    elif age < MIN_AGE_DAYS:
+        reasons.append("Age < 10 days (too new)")
 
     # --- Filter 3: volume (temporary rule) ---
     if volume <= MIN_VOLUME_24H:
