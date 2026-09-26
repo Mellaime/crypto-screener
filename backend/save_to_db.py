@@ -9,8 +9,10 @@ FILTER RULES (the core of the project) - a coin must pass every gate:
        pairCreatedAt, and if that's unknown, CoinMarketCap/CoinGecko listing
        date. Anything younger than 10 days, OR of unknowable age, is dropped
        here before any other filter runs.
+    3. Volume rising - RUNS RIGHT AFTER AGE. CoinGecko daily volume over the
+       last 5 complete days (see volume_check.py); rising (day5 > day1) keeps,
+       falling or unknown drops. Replaces the old temporary ">$50K" rule.
     1. Market cap between $1M and $500M (inclusive).
-    3. 24h volume greater than $50,000 (TEMPORARY simple rule - see note below).
     4. Liquidity greater than $30,000 (too-thin liquidity = can't exit safely).
     (Then holders > 0, revenue exists, and the honeypot check - see below.)
     Skip anything that fails any rule (or is missing the data to check).
@@ -38,6 +40,8 @@ from narrative_check import get_category
 from holders_check import get_holder_count
 from age_check import decide_age   # Filter 2 (runs FIRST): two-step age gate
                                    # (DexScreener pairCreatedAt, else CG/CMC date)
+from volume_check import check_volume_rising   # Filter 3 (right after age):
+                                   # CoinGecko 5-day volume-rising gate
 
 # Filter 1: target market-cap window.
 MIN_MARKET_CAP = 1_000_000        # $1M
@@ -46,7 +50,9 @@ MAX_MARKET_CAP = 500_000_000      # $500M
 # Filter 2: minimum age lives in age_check.py (MIN_AGE_DAYS there). It runs
 # FIRST in the loop below, so anything too new never reaches the other filters.
 
-# Filter 3: minimum 24h volume (TEMPORARY - see the note in the save loop).
+# Filter 3: volume rising now lives in volume_check.py (CoinGecko 5-day) and
+# runs right after age. This legacy 24h-volume floor is kept ONLY for
+# drop_logic's temporary volume re-check, until that's aligned too.
 MIN_VOLUME_24H = 50_000           # $50K
 
 # Filter 4: minimum liquidity.
@@ -127,8 +133,9 @@ def save_tokens(tokens):
         "skipped_too_new": 0,
         "skipped_no_age": 0,
         "age_via_fallback": 0,   # Step 2 (CG/CMC) was used for the age decision
-        "passed_volume": 0,
-        "skipped_low_volume": 0,
+        "passed_volume": 0,          # volume rising (CoinGecko 5-day)
+        "skipped_vol_falling": 0,
+        "skipped_vol_unknown": 0,    # no CoinGecko history / chain not on CG
         "passed_liquidity": 0,
         "skipped_low_liquidity": 0,
         "passed_holders": 0,
@@ -166,6 +173,23 @@ def save_tokens(tokens):
                 continue
             stats["passed_age"] += 1
 
+            # --- Filter 3: VOLUME RISING (runs right after age) ------------
+            # CoinGecko daily volume over the last 5 COMPLETE days, by contract
+            # (see volume_check). Like age this is a CORE gate: rising -> keep,
+            # falling -> drop, unknown (no CoinGecko history) -> drop. Replaces
+            # the old temporary "24h volume > $50K" placeholder.
+            vol = check_volume_rising(t["contract"], t["chain"])
+            if vol["verdict"] != "rising":
+                if vol["verdict"] == "falling":
+                    stats["skipped_vol_falling"] += 1
+                else:
+                    stats["skipped_vol_unknown"] += 1
+                continue
+            stats["passed_volume"] += 1
+            # DexScreener's 24h volume is still what we STORE in the snapshot
+            # (for the dashboard + the Vol/Liq and Vol/MCap scores).
+            volume_24h = to_float(t.get("volume_24h")) or 0
+
             # --- Filter 1: market cap must be inside our window -------------
             mcap = to_float(t.get("market_cap"))
             if mcap is None:
@@ -177,19 +201,7 @@ def save_tokens(tokens):
             if mcap > MAX_MARKET_CAP:
                 stats["skipped_above"] += 1
                 continue
-            stats["passed_mcap"] += 1  # passed age + market cap
-
-            # --- Filter 3: 24h volume must be alive, not dead ---------------
-            # TEMPORARY - replace with rolling 5-day rising check once 5 days
-            # of snapshots exist (see is_volume_rising() below). We can't
-            # measure a trend yet with only 1 day of history, so for now we
-            # simply require 24h volume > $50,000. Every run still SAVES today's
-            # volume into daily_snapshots, so the 5-day history builds itself.
-            volume_24h = to_float(t.get("volume_24h")) or 0
-            if volume_24h <= MIN_VOLUME_24H:
-                stats["skipped_low_volume"] += 1
-                continue
-            stats["passed_volume"] += 1  # passed filters 1-3
+            stats["passed_mcap"] += 1  # passed age + volume + market cap
 
             # --- Filter 4: liquidity must be deep enough to exit safely -----
             liquidity = to_float(t.get("liquidity_usd")) or 0
@@ -332,15 +344,16 @@ def print_summary(stats):
     print(f"      - skipped (age unknown) ....... {stats['skipped_no_age']:>5}")
     print(f"      - via CG/CMC fallback ......... {stats['age_via_fallback']:>5}")
     print("  " + "-" * 46)
+    print("  FILTER 3 - volume rising (CoinGecko, 5 complete days)")
+    print(f"    ALSO passed volume (rising) ..... {stats['passed_volume']:>5}")
+    print(f"      - skipped (falling) ........... {stats['skipped_vol_falling']:>5}")
+    print(f"      - skipped (no CG history) ..... {stats['skipped_vol_unknown']:>5}")
+    print("  " + "-" * 46)
     print("  FILTER 1 - market cap $1M-$500M")
     print(f"    ALSO passed market cap .......... {stats['passed_mcap']:>5}")
     print(f"      - skipped (below $1M) ......... {stats['skipped_below']:>5}")
     print(f"      - skipped (above $500M) ....... {stats['skipped_above']:>5}")
     print(f"      - skipped (no market cap) ..... {stats['skipped_no_mcap']:>5}")
-    print("  " + "-" * 46)
-    print("  FILTER 3 - 24h volume > $50K (temporary)")
-    print(f"    ALSO passed volume ............. {stats['passed_volume']:>5}")
-    print(f"      - skipped (volume <= $50K) .... {stats['skipped_low_volume']:>5}")
     print("  " + "-" * 46)
     print("  FILTER 4 - liquidity > $30K")
     print(f"    ALSO passed liquidity .......... {stats['passed_liquidity']:>5}")
