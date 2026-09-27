@@ -5,7 +5,7 @@ Early MEME filter for the DISCOVERY step. Meme coins are removed right after
 discovery and BEFORE the Age / Volume / ... filter chain, so we never spend
 per-coin API calls on coins we don't want.
 
-Three signals (checked by CONTRACT + CHAIN). If ANY fires -> DROP; none -> KEEP:
+Two signals (checked by CONTRACT + CHAIN). If ANY fires -> DROP; none -> KEEP:
   1. CATEGORY  - the coin is in CoinGecko's "meme" category. We fetch that
      whole category ONCE per run in BULK (fetch_cg_meme_keys) and build a set
      of {(chain, contract)} - so the category check is a free set lookup, not
@@ -13,16 +13,16 @@ Three signals (checked by CONTRACT + CHAIN). If ANY fires -> DROP; none -> KEEP:
   2. TAG       - a CoinMarketCap tag contains "meme" (e.g. "memes",
      "animal-memes"). CMC tags come from the listings data discovery already
      fetches - no extra call.
-  3. DESCRIPTION - the coin's description text contains "meme". Only checked
-     when a description is supplied (descriptions aren't in the bulk data, so
-     this signal stays dormant unless a caller passes one).
+
+(These two signals caught 100% of test memes with zero false positives, so the
+earlier free-text "description" signal was dropped as redundant.)
 
 Unknown / no data never drops a coin (same "only drop on a positive signal"
 policy used by the revenue and security checks).
 
 Public API:
   fetch_cg_meme_keys() -> set of (chain, contract_lower)   [call once per run]
-  is_meme(contract, chain, cg_meme_keys, cmc_tags=None, description=None) -> dict
+  is_meme(contract, chain, cg_meme_keys, cmc_tags=None) -> dict
 Never raises.
 """
 
@@ -104,11 +104,11 @@ def fetch_cg_meme_keys(id_platforms=None, min_mcap=MIN_MCAP, max_pages=8):
     return keys, len(meme_ids)
 
 
-def is_meme(contract, chain, cg_meme_keys, cmc_tags=None, description=None):
+def is_meme(contract, chain, cg_meme_keys, cmc_tags=None):
     """
     Decide whether a candidate is a meme. Pure (no network I/O): the caller
-    supplies the bulk meme-key set, plus any CMC tags / description it already
-    has. Returns {"is_meme", "signals" {..}, "matched"}.
+    supplies the bulk meme-key set plus any CMC tags it already has.
+    Returns {"is_meme", "signals" {..}, "matched"}.
     """
     signals = {}
 
@@ -120,10 +120,6 @@ def is_meme(contract, chain, cg_meme_keys, cmc_tags=None, description=None):
     if tag_hit:
         signals["tag"] = f"CMC tag '{tag_hit}'"
 
-    desc_kw = _text_has_meme(description)
-    if desc_kw:
-        signals["description"] = f"description contains '{desc_kw}'"
-
     return {
         "is_meme": bool(signals),
         "signals": signals,
@@ -132,15 +128,15 @@ def is_meme(contract, chain, cg_meme_keys, cmc_tags=None, description=None):
 
 
 # ---------------------------------------------------------------------------
-# Per-coin CMC tags + description (used for the read-only test, and available
-# as an optional fallback). In production, tags come from discovery's listings.
+# Per-coin CMC tags (used for testing the tag signal). In production, tags come
+# from discovery's listings pull - no extra call.
 # ---------------------------------------------------------------------------
-def fetch_cmc_tags_description(contract):
-    """(tags list, description str) from CoinMarketCap /info, or ([], '')."""
+def fetch_cmc_tags(contract):
+    """CoinMarketCap tag slugs for a contract, or []. Never raises."""
     import requests
     key = os.getenv("COINMARKETCAP_API_KEY")
     if not contract or not key:
-        return [], ""
+        return []
     try:
         r = requests.get(
             "https://pro-api.coinmarketcap.com/v2/cryptocurrency/info",
@@ -149,10 +145,10 @@ def fetch_cmc_tags_description(contract):
             timeout=20,
         )
         if r.status_code != 200:
-            return [], ""
+            return []
         data = (r.json() or {}).get("data") or {}
     except (requests.exceptions.RequestException, ValueError):
-        return [], ""
+        return []
     for value in data.values():
         entry = value[0] if isinstance(value, list) else value
         if not entry:
@@ -160,8 +156,8 @@ def fetch_cmc_tags_description(contract):
         tags = []
         for t in entry.get("tags") or []:
             tags.append(t.get("name") or t.get("slug") if isinstance(t, dict) else str(t))
-        return tags, (entry.get("description") or "")
-    return [], ""
+        return tags
+    return []
 
 
 if __name__ == "__main__":
