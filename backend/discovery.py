@@ -1,16 +1,19 @@
 """
 discovery.py
 ------------
-Multi-source candidate discovery. This REPLACES DexScreener as the SOURCE of
-the coin list. Candidates are pulled from:
+Candidate discovery. This REPLACES DexScreener as the SOURCE of the coin list.
+Candidates are pulled from:
   * CoinGecko     - /coins/markets (mcap, paginated) joined with /coins/list
                     (contract + chain), filtered to MCap $1M-$500M.
   * CoinMarketCap - /cryptocurrency/listings/latest with market_cap_min/max
-                    (contract + chain + mcap server-side filtered).
-  * Bitquery      - realtime top-traded Solana tokens (new/active pairs).
+                    (contract + chain + mcap + tags, server-side filtered).
 
-Each candidate carries: {contract, chain, mcap (may be None), source}.
-They are merged and DEDUPED by (chain, lowercased contract).
+Each candidate carries: {contract, chain, mcap, tags, source}. They are merged,
+DEDUPED by (chain, lowercased contract), and then MEME coins are removed early
+(see meme_filter) before the cap / enrichment / filter chain.
+
+(Bitquery is no longer a discovery source - from_bitquery is kept for later use
+elsewhere but is not called here.)
 
 IMPORTANT: discover_candidates() does NOT call DexScreener at all. DexScreener
 is only used AFTER discovery, by contract, to enrich age/volume/liquidity -
@@ -93,14 +96,22 @@ def _get(url, params=None, headers=None, timeout=40):
 # ---------------------------------------------------------------------------
 # Source 1: CoinGecko
 # ---------------------------------------------------------------------------
+_ID_PLATFORMS_CACHE = None
+
+
 def _cg_id_to_platforms():
-    """Map every CoinGecko id -> {platform: contract} (one call)."""
+    """Map every CoinGecko id -> {platform: contract}. Cached for the process so
+    discovery and the meme filter share ONE fetch of the (large) coins list."""
+    global _ID_PLATFORMS_CACHE
+    if _ID_PLATFORMS_CACHE is not None:
+        return _ID_PLATFORMS_CACHE
     data = _get(CG_LIST_URL, {"include_platform": "true"}, {"x-cg-demo-api-key": CG_KEY})
     out = {}
     for x in data or []:
         plats = {p: a for p, a in (x.get("platforms") or {}).items() if a}
         if plats:
             out[x["id"]] = plats
+    _ID_PLATFORMS_CACHE = out
     return out
 
 
@@ -161,6 +172,7 @@ def from_coinmarketcap(limit=5000):
             "contract": plat["token_address"],
             "chain": CMC_PLATFORM_TO_CHAIN.get(name, (name or "").lower()),
             "mcap": (x.get("quote", {}).get("USD", {}) or {}).get("market_cap"),
+            "tags": x.get("tags") or [],     # CMC tag slugs (incl. "memes") - free here
             "source": "coinmarketcap",
         })
     return out
@@ -170,7 +182,11 @@ def from_coinmarketcap(limit=5000):
 # Source 3: Bitquery (realtime, Solana - new/active tokens by recent volume)
 # ---------------------------------------------------------------------------
 def from_bitquery(limit=120, since_hours=24):
-    """Recently/actively traded Solana tokens from Bitquery realtime."""
+    """Recently/actively traded Solana tokens from Bitquery realtime.
+
+    NOTE: no longer used as a discovery source (discover_candidates uses only
+    CoinGecko + CoinMarketCap). Kept for later use elsewhere.
+    """
     if not BQ_KEY:
         return []
     from datetime import datetime, timezone, timedelta
@@ -202,14 +218,17 @@ def from_bitquery(limit=120, since_hours=24):
 # Merge + dedupe
 # ---------------------------------------------------------------------------
 def discover_candidates(verbose=True):
-    """Pull all three sources, merge, and dedupe by (chain, contract)."""
+    """
+    Pull CoinGecko + CoinMarketCap, merge and dedupe by (chain, contract), then
+    remove meme coins EARLY (before the cap / enrichment / filter chain) and
+    keep the smallest-mcap survivors.
+    """
     cg = from_coingecko()
     cmc = from_coinmarketcap()
-    bq = from_bitquery()
 
     seen = set()
     merged = []
-    for c in cg + cmc + bq:                 # order = priority when duplicated
+    for c in cg + cmc:                      # order = priority when duplicated
         contract = (c.get("contract") or "").strip()
         if not contract:
             continue
@@ -220,26 +239,38 @@ def discover_candidates(verbose=True):
         merged.append(c)
     unique_count = len(merged)
 
+    # --- MEME FILTER (right after discovery, before cap + everything else) --
+    # Free per coin: one BULK pull of CoinGecko's meme category (a set lookup)
+    # plus the CMC tags we already fetched. Drops memes so they never reach the
+    # cap, DexScreener enrichment, or the age/volume/... chain.
+    from meme_filter import fetch_cg_meme_keys, is_meme
+    meme_keys, _ = fetch_cg_meme_keys()     # reuses the cached id->platforms map
+    kept, meme_dropped = [], 0
+    for c in merged:
+        if is_meme(c["contract"], c["chain"], meme_keys, cmc_tags=c.get("tags"))["is_meme"]:
+            meme_dropped += 1
+        else:
+            kept.append(c)
+    merged = kept
+    after_meme = len(merged)
+
     # --- TEMPORARY cap (see MAX_CANDIDATES) --------------------------------
-    # Keep the SMALLEST-market-cap candidates: the screener targets small/fresh
+    # Keep the SMALLEST-market-cap survivors: the screener targets small/fresh
     # coins, so we want the lower end of the $1M-$500M window, not the megacaps.
-    # Bitquery candidates have mcap=None (fresh realtime tokens); we treat them
-    # as the small/fresh end and KEEP them (sorted first) rather than discard a
-    # whole discovery source. Sort key: (has_mcap, mcap) -> None first, then
-    # ascending market cap.
     merged.sort(key=lambda c: (c.get("mcap") is not None, c.get("mcap") or 0))
     merged = merged[:MAX_CANDIDATES]
 
     if verbose:
         print("=" * 52)
-        print("  DISCOVERY (CoinGecko + CoinMarketCap + Bitquery)")
+        print("  DISCOVERY (CoinGecko + CoinMarketCap)")
         print("=" * 52)
         print(f"  CoinGecko returned ....... {len(cg):>5}")
         print(f"  CoinMarketCap returned ... {len(cmc):>5}")
-        print(f"  Bitquery returned ........ {len(bq):>5}")
         print(f"  {'-'*48}")
-        print(f"  TOTAL before dedup ....... {len(cg)+len(cmc)+len(bq):>5}")
+        print(f"  TOTAL before dedup ....... {len(cg)+len(cmc):>5}")
         print(f"  AFTER dedup (unique) ..... {unique_count:>5}")
+        print(f"  MEME filter dropped ...... {meme_dropped:>5}")
+        print(f"  AFTER meme filter ........ {after_meme:>5}")
         print(f"  AFTER cap ({MAX_CANDIDATES} smallest mcap) . {len(merged):>5}")
         print("=" * 52)
     return merged
