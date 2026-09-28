@@ -1,27 +1,30 @@
 """
 save_to_db.py
 -------------
-Phase 2 - Step (b): discover tokens, apply our market-cap filter, and save
-the survivors into the database.
+Phase 2 - Step (b): run the filter chain on discovered tokens and save the
+survivors into the database.
 
-FILTER RULES (the core of the project) - a coin must pass every gate:
-    2. Age >= 10 days - RUNS FIRST. Two steps (see age_check.py): DexScreener
-       pairCreatedAt, and if that's unknown, CoinMarketCap/CoinGecko listing
-       date. Anything younger than 10 days, OR of unknowable age, is dropped
-       here before any other filter runs.
-    3. Volume rising - RUNS RIGHT AFTER AGE. CoinGecko daily volume over the
-       last 5 complete days (see volume_check.py); rising (day5 > day1) keeps,
-       falling or unknown drops. Replaces the old temporary ">$50K" rule.
-    1. Market cap between $1M and $500M (inclusive).
-    4. Liquidity greater than $30,000 (too-thin liquidity = can't exit safely).
-    (Then holders > 0, revenue exists, and the honeypot check - see below.)
-    Skip anything that fails any rule (or is missing the data to check).
+THE FILTER - exactly these 7 steps, in this order:
+    1. Discovery  - CoinGecko + CoinMarketCap, MCap $1M-$500M (discovery.py).
+                    MCap is enforced HERE only - there is no later mcap step.
+    2. Meme       - memes removed right after discovery (meme_filter.py).
+    3. Age        - >= 10 days; DexScreener pairCreatedAt, else CMC/CoinGecko
+                    listing date; too new or unknown -> DROP (age_check.py).
+    4. Volume     - CoinGecko 5 complete days, day5 > day1; falling or
+                    unknown -> DROP (volume_check.py).
+    5. Revenue    - DefiLlama; DROP only on confirmed NO_REVENUE.
+    6. Honeypot   - GoPlus; DROP only on confirmed unsafe.
+    7. Liquidity  - Codex daily liquidity over min(30d, age); down > 5% ->
+                    DROP; unknown -> PASS (liquidity_check.py). LAST step.
+Steps 1-2 run inside discover_tokens(); steps 3-7 run in save_tokens() below.
+
+Holders are NOT a filter: the holder count is only stored for display.
 
 What gets saved:
     coins            -> contract, chain, name, first_seen, status="active"
                         (contract is UNIQUE, so we never insert duplicates)
-    daily_snapshots  -> coin_id, date, volume, liquidity, mcap
-                        (holders / revenue / score stay NULL for now)
+    daily_snapshots  -> coin_id, date, volume, liquidity, mcap, revenue,
+                        holders (stored for display/scoring, never a gate)
 
 Run it:
     python save_to_db.py
@@ -31,31 +34,22 @@ from datetime import date
 
 from database import SessionLocal, init_db
 from models import Coin, DailySnapshot
-from discovery import discover_tokens   # NEW source: CoinGecko + CMC + Bitquery
-                                        # (DexScreener no longer discovers; it only
-                                        # enriches by contract inside discover_tokens)
-from revenue_check import check_revenue
-from security_check import check_token_security
+from discovery import discover_tokens   # steps 1-2: discovery + meme filter
+                                        # (DexScreener only enriches by contract)
+from age_check import decide_age                    # step 3
+from volume_check import check_volume_rising        # step 4
+from revenue_check import check_revenue             # step 5
+from security_check import check_token_security     # step 6 (honeypot)
+from liquidity_check import check_liquidity_trend   # step 7 (LAST)
 from narrative_check import get_category
-from holders_check import get_holder_count
-from age_check import decide_age   # Filter 2 (runs FIRST): two-step age gate
-                                   # (DexScreener pairCreatedAt, else CG/CMC date)
-from volume_check import check_volume_rising   # Filter 3 (right after age):
-                                   # CoinGecko 5-day volume-rising gate
+from holders_check import get_holder_count          # stored only - NOT a filter
 
-# Filter 1: target market-cap window.
+# NOTE: the constants below are NO LONGER filter gates here. MCap is enforced
+# at discovery; liquidity is now the Codex trend check (step 7). They are kept
+# only because drop_logic.py imports them for its own re-check.
 MIN_MARKET_CAP = 1_000_000        # $1M
 MAX_MARKET_CAP = 500_000_000      # $500M
-
-# Filter 2: minimum age lives in age_check.py (MIN_AGE_DAYS there). It runs
-# FIRST in the loop below, so anything too new never reaches the other filters.
-
-# Filter 3: volume rising now lives in volume_check.py (CoinGecko 5-day) and
-# runs right after age. This legacy 24h-volume floor is kept ONLY for
-# drop_logic's temporary volume re-check, until that's aligned too.
 MIN_VOLUME_24H = 50_000           # $50K
-
-# Filter 4: minimum liquidity.
 MIN_LIQUIDITY = 30_000            # $30K
 
 
@@ -125,23 +119,16 @@ def save_tokens(tokens):
     # Counters for the summary at the end.
     stats = {
         "discovered": len(tokens),
-        "passed_mcap": 0,
-        "skipped_below": 0,
-        "skipped_above": 0,
-        "skipped_no_mcap": 0,
         "passed_age": 0,
         "skipped_too_new": 0,
         "skipped_no_age": 0,
-        "age_via_fallback": 0,   # Step 2 (CG/CMC) was used for the age decision
+        "age_via_fallback": 0,   # CG/CMC fallback was used for the age decision
         "passed_volume": 0,          # volume rising (CoinGecko 5-day)
         "skipped_vol_falling": 0,
         "skipped_vol_unknown": 0,    # no CoinGecko history / chain not on CG
-        "passed_liquidity": 0,
-        "skipped_low_liquidity": 0,
-        "passed_holders": 0,
-        "skipped_no_holders": 0,
-        "holders_has": 0,
-        "holders_unknown": 0,
+        "passed_liquidity": 0,       # Codex liquidity trend (step 7)
+        "skipped_liq_falling": 0,    # down more than 5% over the window
+        "liquidity_unknown": 0,      # no Codex data -> passed, not dropped
         "passed_revenue": 0,
         "skipped_no_revenue": 0,
         "revenue_has": 0,
@@ -158,10 +145,10 @@ def save_tokens(tokens):
     session = SessionLocal()
     try:
         for t in tokens:
-            # --- Filter 2: AGE - RUNS FIRST (two-step, by contract + chain) -
+            # --- Step 3: AGE (two-step, by contract + chain) ----------------
             # DexScreener pairCreatedAt, else CoinMarketCap/CoinGecko listing
             # date (see age_check.decide_age). Anything younger than 10 days,
-            # OR of unknowable age, is dropped HERE before any other filter.
+            # OR of unknowable age, is dropped here.
             keep_age, age_days, age_source = decide_age(t)
             if age_source == "fallback":
                 stats["age_via_fallback"] += 1
@@ -173,11 +160,8 @@ def save_tokens(tokens):
                 continue
             stats["passed_age"] += 1
 
-            # --- Filter 3: VOLUME RISING (runs right after age) ------------
-            # CoinGecko daily volume over the last 5 COMPLETE days, by contract
-            # (see volume_check). Like age this is a CORE gate: rising -> keep,
-            # falling -> drop, unknown (no CoinGecko history) -> drop. Replaces
-            # the old temporary "24h volume > $50K" placeholder.
+            # --- Step 4: VOLUME RISING (CoinGecko, 5 complete days) --------
+            # rising -> keep; falling or unknown (no CoinGecko history) -> drop.
             vol = check_volume_rising(t["contract"], t["chain"])
             if vol["verdict"] != "rising":
                 if vol["verdict"] == "falling":
@@ -186,49 +170,8 @@ def save_tokens(tokens):
                     stats["skipped_vol_unknown"] += 1
                 continue
             stats["passed_volume"] += 1
-            # DexScreener's 24h volume is still what we STORE in the snapshot
-            # (for the dashboard + the Vol/Liq and Vol/MCap scores).
-            volume_24h = to_float(t.get("volume_24h")) or 0
 
-            # --- Filter 1: market cap must be inside our window -------------
-            mcap = to_float(t.get("market_cap"))
-            if mcap is None:
-                stats["skipped_no_mcap"] += 1
-                continue
-            if mcap < MIN_MARKET_CAP:
-                stats["skipped_below"] += 1
-                continue
-            if mcap > MAX_MARKET_CAP:
-                stats["skipped_above"] += 1
-                continue
-            stats["passed_mcap"] += 1  # passed age + volume + market cap
-
-            # --- Filter 4: liquidity must be deep enough to exit safely -----
-            liquidity = to_float(t.get("liquidity_usd")) or 0
-            if liquidity <= MIN_LIQUIDITY:
-                stats["skipped_low_liquidity"] += 1
-                continue
-            stats["passed_liquidity"] += 1  # passed filters 1-4
-
-            # --- Filter 4b: HOLDERS (CMC DEX) ------------------------------
-            # TEMPORARY - with only 1 day of history we can't measure holder
-            # GROWTH yet, so for now we just require a positive holder count.
-            # Switch to holders_check.is_holders_rising() once a few days of
-            # snapshots exist. "unknown" (unsupported chain / API issue) does
-            # NOT reject - same rule as the honeypot check. Every run also
-            # STORES the count, so the growth history builds itself.
-            holders_result = get_holder_count(t["contract"], t["chain"])
-            holder_num = holders_result if isinstance(holders_result, int) else None
-            if isinstance(holders_result, int) and holders_result <= 0:
-                stats["skipped_no_holders"] += 1
-                continue
-            if holders_result == "unknown":
-                stats["holders_unknown"] += 1
-            else:
-                stats["holders_has"] += 1
-            stats["passed_holders"] += 1
-
-            # --- Filter 6: revenue EXISTENCE (DefiLlama) -------------------
+            # --- Step 5: revenue EXISTENCE (DefiLlama) ---------------------
             # Reject ONLY when NO_REVENUE is positively confirmed (DefiLlama
             # tracks the token but it has no fees mechanism). HAS_REVENUE (any
             # amount, even $0.01) and UNKNOWN (not listed) both PASS - we don't
@@ -244,7 +187,7 @@ def save_tokens(tokens):
                 stats["revenue_unknown"] += 1
             stats["passed_revenue"] += 1
 
-            # --- Filter 7: security / honeypot check (GoPlus) --------------
+            # --- Step 6: honeypot / security check (GoPlus) ----------------
             # Only a CONFIRMED honeypot / cannot-sell rejects the coin.
             # "unknown" (API down, unsupported chain, no data) does NOT reject,
             # because we don't want to lose good coins over a missing check.
@@ -254,7 +197,26 @@ def save_tokens(tokens):
                 continue
             if security["verdict"] == "unknown":
                 stats["security_unknown"] += 1
-            stats["passed_security"] += 1  # passed ALL gates -> save it
+            stats["passed_security"] += 1
+
+            # --- Step 7 (LAST): LIQUIDITY TREND (Codex) --------------------
+            # % change over min(30 days, age): down > 5% -> drop; rising /
+            # stable / down <= 5% -> keep; unknown (no Codex data) -> pass.
+            liq = check_liquidity_trend(t["contract"], t["chain"])
+            if liq["verdict"] == "drop":
+                stats["skipped_liq_falling"] += 1
+                continue
+            if liq["verdict"] == "unknown":
+                stats["liquidity_unknown"] += 1
+            stats["passed_liquidity"] += 1  # passed ALL 7 steps -> save it
+
+            # --- Values STORED on the snapshot (display / scoring only) ----
+            # None of these keep or drop a coin any more.
+            volume_24h = to_float(t.get("volume_24h")) or 0   # DexScreener 24h
+            liquidity = to_float(t.get("liquidity_usd")) or 0  # DexScreener now
+            mcap = to_float(t.get("market_cap"))
+            holders_result = get_holder_count(t["contract"], t["chain"])
+            holder_num = holders_result if isinstance(holders_result, int) else None
 
             # --- Find or create the coin (unique by contract) ---------------
             coin = session.query(Coin).filter_by(contract=t["contract"]).first()
@@ -264,7 +226,7 @@ def save_tokens(tokens):
                     chain=t["chain"],
                     name=t.get("name") or t.get("symbol") or "unknown",
                     status="active",
-                    ever_qualified=True,  # it passed all 4 filters to get here
+                    ever_qualified=True,  # it passed all 7 filter steps to get here
                     # first_seen is filled in automatically (default = now).
                 )
                 session.add(coin)
@@ -275,7 +237,7 @@ def save_tokens(tokens):
                 coin.ever_qualified = True
                 stats["existing_coins"] += 1
 
-            # Store the security info (filter 7) on the coin so the dashboard
+            # Store the security info (step 6) on the coin so the dashboard
             # can show it. Applies to both new and existing coins.
             coin.security_verdict = security["verdict"]
             coin.verified = security["verified"]
@@ -287,7 +249,7 @@ def save_tokens(tokens):
             if not coin.category:
                 coin.category = get_category(t["contract"], t["chain"])
 
-            # The DefiLlama daily revenue number (filter 6); None if UNKNOWN.
+            # The DefiLlama daily revenue number (step 5); None if UNKNOWN.
             rev_num = revenue.get("daily_revenue")
 
             # --- Insert or update today's snapshot --------------------------
@@ -332,54 +294,39 @@ def save_tokens(tokens):
 
 def print_summary(stats):
     """Print a clear, human-readable summary of what happened."""
-    line = "=" * 50
+    from discovery import LAST_COUNTS
+    dc = LAST_COUNTS
+    line = "=" * 56
+    sub = "  " + "-" * 52
     print(line)
-    print("  SAVE SUMMARY")
+    print("  FILTER FUNNEL (7 steps)")
     print(line)
-    print(f"  Discovered tokens ................. {stats['discovered']:>5}")
-    print("  " + "-" * 46)
-    print("  FILTER 2 - age >= 10 days  (RUNS FIRST)")
-    print(f"    Passed age ...................... {stats['passed_age']:>5}")
-    print(f"      - skipped (too new, <10d) ..... {stats['skipped_too_new']:>5}")
-    print(f"      - skipped (age unknown) ....... {stats['skipped_no_age']:>5}")
-    print(f"      - via CG/CMC fallback ......... {stats['age_via_fallback']:>5}")
-    print("  " + "-" * 46)
-    print("  FILTER 3 - volume rising (CoinGecko, 5 complete days)")
-    print(f"    ALSO passed volume (rising) ..... {stats['passed_volume']:>5}")
-    print(f"      - skipped (falling) ........... {stats['skipped_vol_falling']:>5}")
-    print(f"      - skipped (no CG history) ..... {stats['skipped_vol_unknown']:>5}")
-    print("  " + "-" * 46)
-    print("  FILTER 1 - market cap $1M-$500M")
-    print(f"    ALSO passed market cap .......... {stats['passed_mcap']:>5}")
-    print(f"      - skipped (below $1M) ......... {stats['skipped_below']:>5}")
-    print(f"      - skipped (above $500M) ....... {stats['skipped_above']:>5}")
-    print(f"      - skipped (no market cap) ..... {stats['skipped_no_mcap']:>5}")
-    print("  " + "-" * 46)
-    print("  FILTER 4 - liquidity > $30K")
-    print(f"    ALSO passed liquidity .......... {stats['passed_liquidity']:>5}")
-    print(f"      - skipped (liq <= $30K) ....... {stats['skipped_low_liquidity']:>5}")
-    print("  " + "-" * 46)
-    print("  FILTER 4b - holders > 0 (temporary)")
-    print(f"    ALSO passed holders ........... {stats['passed_holders']:>5}")
-    print(f"      - skipped (0 holders) ........ {stats['skipped_no_holders']:>5}")
-    print(f"      - has count .................. {stats['holders_has']:>5}")
-    print(f"      - unknown (chain n/a) ........ {stats['holders_unknown']:>5}")
-    print("  " + "-" * 46)
-    print("  FILTER 6 - revenue exists (DefiLlama)")
-    print(f"    ALSO passed revenue ........... {stats['passed_revenue']:>5}")
-    print(f"      - skipped (NO_REVENUE) ....... {stats['skipped_no_revenue']:>5}")
-    print(f"      - has revenue ................ {stats['revenue_has']:>5}")
-    print(f"      - unknown (not listed) ....... {stats['revenue_unknown']:>5}")
-    print("  " + "-" * 46)
-    print("  FILTER 7 - security (GoPlus honeypot)")
-    print(f"    ALSO passed security (ALL) ..... {stats['passed_security']:>5}")
-    print(f"      - skipped (honeypot/unsafe) .. {stats['skipped_unsafe']:>5}")
-    print(f"      - passed but unknown ......... {stats['security_unknown']:>5}")
-    print("  " + "-" * 46)
-    print(f"  Saved as NEW coins ................ {stats['new_coins']:>5}")
-    print(f"  Already existed ................... {stats['existing_coins']:>5}")
-    print(f"  Snapshots inserted (today) ....... {stats['snapshots_inserted']:>5}")
-    print(f"  Snapshots updated (today) ........ {stats['snapshots_updated']:>5}")
+    print(f"  1. Discovery (CG+CMC, $1M-$500M) - unique .. {dc.get('discovery', '?'):>6}")
+    print(f"  2. Meme filter - passed .................... {dc.get('after_meme', '?'):>6}")
+    print(f"       - dropped as meme ..................... {dc.get('meme_dropped', '?'):>6}")
+    print(f"       (not filters: temp cap -> {dc.get('after_cap', '?')}, "
+          f"with DexScreener data -> {stats['discovered']})")
+    print(sub)
+    print(f"  3. Age >= 10 days - passed ................. {stats['passed_age']:>6}")
+    print(f"       - dropped (too new, <10d) ............. {stats['skipped_too_new']:>6}")
+    print(f"       - dropped (age unknown) ............... {stats['skipped_no_age']:>6}")
+    print(f"  4. Volume rising (CoinGecko) - passed ...... {stats['passed_volume']:>6}")
+    print(f"       - dropped (falling) ................... {stats['skipped_vol_falling']:>6}")
+    print(f"       - dropped (no CG history) ............. {stats['skipped_vol_unknown']:>6}")
+    print(f"  5. Revenue (DefiLlama) - passed ............ {stats['passed_revenue']:>6}")
+    print(f"       - dropped (NO_REVENUE) ................ {stats['skipped_no_revenue']:>6}")
+    print(f"       - passed as unknown ................... {stats['revenue_unknown']:>6}")
+    print(f"  6. Honeypot (GoPlus) - passed .............. {stats['passed_security']:>6}")
+    print(f"       - dropped (honeypot/unsafe) ........... {stats['skipped_unsafe']:>6}")
+    print(f"       - passed as unknown ................... {stats['security_unknown']:>6}")
+    print(f"  7. Liquidity trend (Codex) - passed ........ {stats['passed_liquidity']:>6}")
+    print(f"       - dropped (down > 5%) ................. {stats['skipped_liq_falling']:>6}")
+    print(f"       - passed as unknown ................... {stats['liquidity_unknown']:>6}")
+    print(sub)
+    print(f"  SAVED -> NEW coins ......................... {stats['new_coins']:>6}")
+    print(f"         + already existed (re-saved) ........ {stats['existing_coins']:>6}")
+    print(f"  Snapshots inserted / updated today ......... "
+          f"{stats['snapshots_inserted']:>3} / {stats['snapshots_updated']}")
     print(line)
 
 

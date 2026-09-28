@@ -77,13 +77,14 @@ def run_pipeline(raise_on_error=False):
         tokens = discover_tokens()
         if tokens:
             stats = save_tokens(tokens)
+            from discovery import LAST_COUNTS
             log.info(
-                "FUNNEL  discovered=%d | age=%d | volume=%d | mcap=%d | liquidity=%d "
-                "|| new=%d existing=%d snapshots(ins=%d, upd=%d)",
-                stats["discovered"], stats["passed_age"], stats["passed_volume"],
-                stats["passed_mcap"], stats["passed_liquidity"],
+                "FUNNEL  discovery=%s | meme=%s | age=%d | volume=%d | revenue=%d "
+                "| honeypot=%d | liquidity=%d || saved new=%d existing=%d",
+                LAST_COUNTS.get("discovery", "?"), LAST_COUNTS.get("after_meme", "?"),
+                stats["passed_age"], stats["passed_volume"], stats["passed_revenue"],
+                stats["passed_security"], stats["passed_liquidity"],
                 stats["new_coins"], stats["existing_coins"],
-                stats["snapshots_inserted"], stats["snapshots_updated"],
             )
             print_summary(stats)
             saved_new = stats["new_coins"]

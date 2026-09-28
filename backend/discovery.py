@@ -98,6 +98,10 @@ def _get(url, params=None, headers=None, timeout=40):
 # ---------------------------------------------------------------------------
 _ID_PLATFORMS_CACHE = None
 
+# Counts from the most recent discover_candidates()/discover_tokens() run
+# (discovery, meme, cap, enriched), read by the save summary and the funnel.
+LAST_COUNTS = {}
+
 
 def _cg_id_to_platforms():
     """Map every CoinGecko id -> {platform: contract}. Cached for the process so
@@ -260,6 +264,12 @@ def discover_candidates(verbose=True):
     merged.sort(key=lambda c: (c.get("mcap") is not None, c.get("mcap") or 0))
     merged = merged[:MAX_CANDIDATES]
 
+    # Remember this run's counts so the save summary / scheduler funnel can
+    # show the full chain starting at discovery.
+    LAST_COUNTS.clear()
+    LAST_COUNTS.update({"discovery": unique_count, "meme_dropped": meme_dropped,
+                        "after_meme": after_meme, "after_cap": len(merged)})
+
     if verbose:
         print("=" * 52)
         print("  DISCOVERY (CoinGecko + CoinMarketCap)")
@@ -293,6 +303,7 @@ def discover_tokens():
     tokens = build_token_records(pairs, keep_addresses=keep)
     tokens.sort(key=lambda t: t["liquidity_usd"] or 0, reverse=True)
     print(f"  => {len(tokens)} candidates had DexScreener data (enriched).")
+    LAST_COUNTS["enriched"] = len(tokens)
     return tokens
 
 
