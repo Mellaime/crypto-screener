@@ -41,15 +41,6 @@ BQ_URL = "https://streaming.bitquery.io/graphql"
 MIN_MCAP = 1_000_000        # $1M
 MAX_MCAP = 500_000_000      # $500M
 
-# TEMPORARY stopgap: after discovery + dedup we keep only the SMALLEST-N
-# candidates by market cap (the screener targets small/fresh coins, so we want
-# the lower end of the $1M-$500M window). This keeps a daily run fast/green
-# instead of enriching thousands of coins via DexScreener (~1 call per 30
-# addresses, rate-limit risk). Raise or remove this once Moralis / Volume-OHLCV
-# can supply age + volume for coins that aren't on DexScreener - only then is
-# the full candidate list actually usable.
-MAX_CANDIDATES = 300
-
 CG_DELAY = 2.5              # CoinGecko demo rate limit friendliness
 
 # CoinGecko platform id -> our chain name.
@@ -224,8 +215,8 @@ def from_bitquery(limit=120, since_hours=24):
 def discover_candidates(verbose=True):
     """
     Pull CoinGecko + CoinMarketCap, merge and dedupe by (chain, contract), then
-    remove meme coins EARLY (before the cap / enrichment / filter chain) and
-    keep the smallest-mcap survivors.
+    remove meme coins EARLY (before enrichment / the filter chain). Every
+    non-meme candidate goes on to the filter - there is no cap.
     """
     cg = from_coingecko()
     cmc = from_coinmarketcap()
@@ -243,10 +234,10 @@ def discover_candidates(verbose=True):
         merged.append(c)
     unique_count = len(merged)
 
-    # --- MEME FILTER (right after discovery, before cap + everything else) --
+    # --- MEME FILTER (right after discovery, before everything else) --------
     # Free per coin: one BULK pull of CoinGecko's meme category (a set lookup)
-    # plus the CMC tags we already fetched. Drops memes so they never reach the
-    # cap, DexScreener enrichment, or the age/volume/... chain.
+    # plus the CMC tags we already fetched. Drops memes so they never reach
+    # DexScreener enrichment or the age/volume/... chain.
     from meme_filter import fetch_cg_meme_keys, is_meme
     meme_keys, _ = fetch_cg_meme_keys()     # reuses the cached id->platforms map
     kept, meme_dropped = [], 0
@@ -258,17 +249,11 @@ def discover_candidates(verbose=True):
     merged = kept
     after_meme = len(merged)
 
-    # --- TEMPORARY cap (see MAX_CANDIDATES) --------------------------------
-    # Keep the SMALLEST-market-cap survivors: the screener targets small/fresh
-    # coins, so we want the lower end of the $1M-$500M window, not the megacaps.
-    merged.sort(key=lambda c: (c.get("mcap") is not None, c.get("mcap") or 0))
-    merged = merged[:MAX_CANDIDATES]
-
     # Remember this run's counts so the save summary / scheduler funnel can
     # show the full chain starting at discovery.
     LAST_COUNTS.clear()
     LAST_COUNTS.update({"discovery": unique_count, "meme_dropped": meme_dropped,
-                        "after_meme": after_meme, "after_cap": len(merged)})
+                        "after_meme": after_meme})
 
     if verbose:
         print("=" * 52)
@@ -281,7 +266,6 @@ def discover_candidates(verbose=True):
         print(f"  AFTER dedup (unique) ..... {unique_count:>5}")
         print(f"  MEME filter dropped ...... {meme_dropped:>5}")
         print(f"  AFTER meme filter ........ {after_meme:>5}")
-        print(f"  AFTER cap ({MAX_CANDIDATES} smallest mcap) . {len(merged):>5}")
         print("=" * 52)
     return merged
 

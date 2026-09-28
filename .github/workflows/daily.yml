@@ -11,7 +11,9 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # ~25 min expected: no candidate cap, CoinGecko volume on a rotating
+    # budget (see volume_check.VOLUME_BUDGET). 45 leaves headroom.
+    timeout-minutes: 45
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
@@ -31,4 +33,5 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
           COINMARKETCAP_API_KEY: ${{ secrets.COINMARKETCAP_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}   # step 7 liquidity trend
         run: python scheduler.py --once

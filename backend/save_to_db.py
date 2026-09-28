@@ -37,7 +37,8 @@ from models import Coin, DailySnapshot
 from discovery import discover_tokens   # steps 1-2: discovery + meme filter
                                         # (DexScreener only enriches by contract)
 from age_check import decide_age                    # step 3
-from volume_check import check_volume_rising        # step 4
+from volume_check import (check_volume_rising,      # step 4
+                          pick_for_volume_check, record_volume_check, VOLUME_BUDGET)
 from revenue_check import check_revenue             # step 5
 from security_check import check_token_security     # step 6 (honeypot)
 from liquidity_check import check_liquidity_trend   # step 7 (LAST)
@@ -126,6 +127,7 @@ def save_tokens(tokens):
         "passed_volume": 0,          # volume rising (CoinGecko 5-day)
         "skipped_vol_falling": 0,
         "skipped_vol_unknown": 0,    # no CoinGecko history / chain not on CG
+        "vol_deferred": 0,           # not checked this run (rotating budget)
         "passed_liquidity": 0,       # Codex liquidity trend (step 7)
         "skipped_liq_falling": 0,    # down more than 5% over the window
         "liquidity_unknown": 0,      # no Codex data -> passed, not dropped
@@ -144,11 +146,13 @@ def save_tokens(tokens):
 
     session = SessionLocal()
     try:
+        # --- Step 3: AGE (two-step, by contract + chain) --------------------
+        # Run over every token first, so we know exactly who reaches step 4.
+        # DexScreener pairCreatedAt, else CoinMarketCap/CoinGecko listing date
+        # (see age_check.decide_age). Younger than 10 days, OR of unknowable
+        # age, is dropped here.
+        age_passed = []
         for t in tokens:
-            # --- Step 3: AGE (two-step, by contract + chain) ----------------
-            # DexScreener pairCreatedAt, else CoinMarketCap/CoinGecko listing
-            # date (see age_check.decide_age). Anything younger than 10 days,
-            # OR of unknowable age, is dropped here.
             keep_age, age_days, age_source = decide_age(t)
             if age_source == "fallback":
                 stats["age_via_fallback"] += 1
@@ -159,10 +163,22 @@ def save_tokens(tokens):
                     stats["skipped_too_new"] += 1    # younger than 10 days
                 continue
             stats["passed_age"] += 1
+            age_passed.append(t)
 
+        # Step 4 runs on a ROTATING BUDGET (volume_check.VOLUME_BUDGET): this
+        # run checks the age-passers checked longest ago; the rest wait for a
+        # later run (skipped - not saved, not dropped).
+        chosen = pick_for_volume_check(
+            session, [(t["chain"], t["contract"]) for t in age_passed])
+
+        for t in age_passed:
             # --- Step 4: VOLUME RISING (CoinGecko, 5 complete days) --------
             # rising -> keep; falling or unknown (no CoinGecko history) -> drop.
+            if ((t["chain"] or "").lower(), (t["contract"] or "").lower()) not in chosen:
+                stats["vol_deferred"] += 1
+                continue
             vol = check_volume_rising(t["contract"], t["chain"])
+            record_volume_check(session, t["chain"], t["contract"], vol["verdict"], today)
             if vol["verdict"] != "rising":
                 if vol["verdict"] == "falling":
                     stats["skipped_vol_falling"] += 1
@@ -304,8 +320,7 @@ def print_summary(stats):
     print(f"  1. Discovery (CG+CMC, $1M-$500M) - unique .. {dc.get('discovery', '?'):>6}")
     print(f"  2. Meme filter - passed .................... {dc.get('after_meme', '?'):>6}")
     print(f"       - dropped as meme ..................... {dc.get('meme_dropped', '?'):>6}")
-    print(f"       (not filters: temp cap -> {dc.get('after_cap', '?')}, "
-          f"with DexScreener data -> {stats['discovered']})")
+    print(f"       (not a filter: with DexScreener data -> {stats['discovered']})")
     print(sub)
     print(f"  3. Age >= 10 days - passed ................. {stats['passed_age']:>6}")
     print(f"       - dropped (too new, <10d) ............. {stats['skipped_too_new']:>6}")
@@ -313,6 +328,7 @@ def print_summary(stats):
     print(f"  4. Volume rising (CoinGecko) - passed ...... {stats['passed_volume']:>6}")
     print(f"       - dropped (falling) ................... {stats['skipped_vol_falling']:>6}")
     print(f"       - dropped (no CG history) ............. {stats['skipped_vol_unknown']:>6}")
+    print(f"       - waiting (rotation, {VOLUME_BUDGET}/run budget) .... {stats['vol_deferred']:>6}")
     print(f"  5. Revenue (DefiLlama) - passed ............ {stats['passed_revenue']:>6}")
     print(f"       - dropped (NO_REVENUE) ................ {stats['skipped_no_revenue']:>6}")
     print(f"       - passed as unknown ................... {stats['revenue_unknown']:>6}")

@@ -79,10 +79,11 @@ def run_pipeline(raise_on_error=False):
             stats = save_tokens(tokens)
             from discovery import LAST_COUNTS
             log.info(
-                "FUNNEL  discovery=%s | meme=%s | age=%d | volume=%d | revenue=%d "
-                "| honeypot=%d | liquidity=%d || saved new=%d existing=%d",
+                "FUNNEL  discovery=%s | meme=%s | age=%d | volume=%d (waiting=%d) "
+                "| revenue=%d | honeypot=%d | liquidity=%d || saved new=%d existing=%d",
                 LAST_COUNTS.get("discovery", "?"), LAST_COUNTS.get("after_meme", "?"),
-                stats["passed_age"], stats["passed_volume"], stats["passed_revenue"],
+                stats["passed_age"], stats["passed_volume"], stats["vol_deferred"],
+                stats["passed_revenue"],
                 stats["passed_security"], stats["passed_liquidity"],
                 stats["new_coins"], stats["existing_coins"],
             )

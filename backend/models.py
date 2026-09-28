@@ -19,6 +19,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -131,3 +132,28 @@ class RankHistory(Base):
 
     def __repr__(self):
         return f"<RankHistory coin_id={self.coin_id} {self.source} {self.week} #{self.rank}>"
+
+
+class VolumeCheck(Base):
+    """
+    When each candidate's CoinGecko volume was last checked (filter step 4).
+
+    The volume check costs one CoinGecko call per coin, and the free tier
+    can't cover every age-passing candidate every day. So each run checks a
+    fixed budget of coins, choosing the ones checked longest ago (never-checked
+    first). This table is what makes that rotation work. It's keyed by
+    chain + contract (not coin_id) because most candidates are never saved as
+    coins.
+    """
+    __tablename__ = "volume_checks"
+    # The same address can exist on several EVM chains -> unique per chain.
+    __table_args__ = (UniqueConstraint("chain", "contract"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chain = Column(String, nullable=False)
+    contract = Column(String, nullable=False, index=True)   # stored lowercased
+    last_checked = Column(Date, nullable=False)
+    last_verdict = Column(String)   # "rising" / "falling" / "unknown"
+
+    def __repr__(self):
+        return f"<VolumeCheck {self.chain}:{self.contract} {self.last_checked} {self.last_verdict}>"
