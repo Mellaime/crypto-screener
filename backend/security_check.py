@@ -23,7 +23,17 @@ Run it (tests a few coins):
     python security_check.py
 """
 
+import time
+
 import requests
+
+# Free (keyless) GoPlus is rate-limited: after a burst of ~20 calls it answers
+# code 4029 "too many requests". A 4029 must never become "unknown" (which
+# PASSES the coin) - so we pace calls and back off + retry instead. Free GoPlus
+# also returns only ONE token per request, so batching addresses doesn't help.
+REQUEST_DELAY = 2.0        # seconds between calls (~30/min)
+RATE_LIMIT_CODE = 4029
+RETRY_WAITS = [10, 20, 40, 60]   # back-off before each retry after a 4029
 
 # EVM chains: /token_security/{chain_id}?contract_addresses=...
 GOPLUS_EVM = "https://api.gopluslabs.io/api/v1/token_security"
@@ -66,6 +76,24 @@ def _get_json(url, params, timeout=15):
     except ValueError:
         print("[WARN] GoPlus returned invalid JSON")
         return None
+
+
+def _goplus(url, params):
+    """
+    Paced GoPlus call that retries on rate limiting (code 4029). Returns the
+    parsed JSON, or None on a real failure. After all retries are used up, the
+    last 4029 response is returned so the caller reports it (as "unknown").
+    """
+    data = None
+    for wait in [0] + RETRY_WAITS:
+        if wait:
+            print(f"[INFO] GoPlus rate limit - waiting {wait}s and retrying")
+            time.sleep(wait)
+        time.sleep(REQUEST_DELAY)
+        data = _get_json(url, params)
+        if not data or data.get("code") != RATE_LIMIT_CODE:
+            return data
+    return data
 
 
 def _flag(v):
@@ -144,7 +172,7 @@ def classify_evm(info):
 
 
 def _check_evm(contract, chain_id):
-    data = _get_json(f"{GOPLUS_EVM}/{chain_id}", {"contract_addresses": contract})
+    data = _goplus(f"{GOPLUS_EVM}/{chain_id}", {"contract_addresses": contract})
     if not data:
         return _unknown("GoPlus API error")
     if data.get("code") != 1:
@@ -167,7 +195,7 @@ def _solana_status(x):
 
 
 def _check_solana(contract):
-    data = _get_json(GOPLUS_SOLANA, {"contract_addresses": contract})
+    data = _goplus(GOPLUS_SOLANA, {"contract_addresses": contract})
     if not data:
         return _unknown("GoPlus API error (solana)")
     if data.get("code") != 1:

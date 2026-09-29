@@ -32,7 +32,7 @@ Never raises; any network/parse error degrades to "unknown".
 
 import os
 import time
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -50,13 +50,11 @@ CG_DELAY = 2.5       # be gentle with CoinGecko's demo rate limit
 WINDOW_DAYS = 5      # compare over the last 5 COMPLETE days
 FETCH_DAYS = 7       # request extra to cover the partial start + today
 
-# ROTATING BUDGET: each run checks volume for at most this many coins. Without
-# a candidate cap ~1,500 coins pass age daily, but each check is one CoinGecko
-# call and the free tier allows 10,000/month (30/min). So each run picks the
-# coins checked longest ago (never-checked first), and every candidate gets
-# its turn over several days. Coins not picked this run are SKIPPED (neither
-# saved nor dropped). Raise this if you move to a paid CoinGecko plan.
-VOLUME_BUDGET = 150
+# Which coins get this check each run is decided by the single rotation queue
+# (rotation.py, ROTATION_BUDGET) - not here.
+
+# Live CoinGecko calls made by the volume step in this process (for reporting).
+CALLS = 0
 
 # Per-process cache: fetch each coin's volume history at most once per run.
 _memo = {}
@@ -76,6 +74,8 @@ def get_daily_volumes(contract, chain, window=WINDOW_DAYS):
     if key in _memo:
         return _memo[key]
 
+    global CALLS
+    CALLS += 1
     time.sleep(CG_DELAY)
     url = CG_MC_URL.format(platform=platform, contract=contract)
     try:
@@ -119,44 +119,6 @@ def check_volume_rising(contract, chain):
     day1, day5 = vols[0], vols[-1]
     verdict = "rising" if day5 > day1 else "falling"
     return {"verdict": verdict, "volumes": vols, "day1": day1, "day5": day5}
-
-
-# ---------------------------------------------------------------------------
-# Rotation (see VOLUME_BUDGET) - state lives in the volume_checks table so it
-# survives between runs (the GitHub Actions runner starts fresh every day).
-# ---------------------------------------------------------------------------
-def _rotation_key(chain, contract):
-    return ((chain or "").lower(), (contract or "").lower())
-
-
-def pick_for_volume_check(session, coins, budget=VOLUME_BUDGET):
-    """
-    From (chain, contract) pairs, choose up to `budget` to check this run:
-    never-checked first, then the ones checked longest ago. Returns the chosen
-    keys as a set of (chain_lower, contract_lower).
-    """
-    from models import VolumeCheck
-
-    last = {(r.chain, r.contract): r.last_checked
-            for r in session.query(VolumeCheck.chain, VolumeCheck.contract,
-                                   VolumeCheck.last_checked)}
-    keys = sorted({_rotation_key(ch, ct) for ch, ct in coins},
-                  key=lambda k: (last.get(k) is not None, last.get(k) or date.min, k))
-    return set(keys[:budget])
-
-
-def record_volume_check(session, chain, contract, verdict, today):
-    """Remember that this coin's volume was checked today (and the verdict)."""
-    from models import VolumeCheck
-
-    ch, ct = _rotation_key(chain, contract)
-    row = session.query(VolumeCheck).filter_by(chain=ch, contract=ct).first()
-    if row is None:
-        session.add(VolumeCheck(chain=ch, contract=ct, last_checked=today,
-                                last_verdict=verdict))
-    else:
-        row.last_checked = today
-        row.last_verdict = verdict
 
 
 # ---------------------------------------------------------------------------

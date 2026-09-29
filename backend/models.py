@@ -134,26 +134,24 @@ class RankHistory(Base):
         return f"<RankHistory coin_id={self.coin_id} {self.source} {self.week} #{self.rank}>"
 
 
-class VolumeCheck(Base):
+class CoinQueue(Base):
     """
-    When each candidate's CoinGecko volume was last checked (filter step 4).
+    The single rotation queue for the expensive filter steps (see rotation.py).
 
-    The volume check costs one CoinGecko call per coin, and the free tier
-    can't cover every age-passing candidate every day. So each run checks a
-    fixed budget of coins, choosing the ones checked longest ago (never-checked
-    first). This table is what makes that rotation work. It's keyed by
-    chain + contract (not coin_id) because most candidates are never saved as
-    coins.
+    One row per age-passing candidate we've ever seen, keyed by chain +
+    contract (not coin_id - most candidates are never saved as coins). Queue
+    position = last_checked, or first_seen while the coin has never been
+    checked; `id` preserves insertion order for ties.
     """
-    __tablename__ = "volume_checks"
+    __tablename__ = "coin_queue"
     # The same address can exist on several EVM chains -> unique per chain.
     __table_args__ = (UniqueConstraint("chain", "contract"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     chain = Column(String, nullable=False)
     contract = Column(String, nullable=False, index=True)   # stored lowercased
-    last_checked = Column(Date, nullable=False)
-    last_verdict = Column(String)   # "rising" / "falling" / "unknown"
+    first_seen = Column(DateTime, nullable=False)            # when it joined the queue
+    last_checked = Column(DateTime)                          # NULL until its first turn
 
     def __repr__(self):
-        return f"<VolumeCheck {self.chain}:{self.contract} {self.last_checked} {self.last_verdict}>"
+        return f"<CoinQueue {self.chain}:{self.contract} seen={self.first_seen} checked={self.last_checked}>"

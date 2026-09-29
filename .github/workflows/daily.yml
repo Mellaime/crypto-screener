@@ -11,9 +11,9 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    # ~25 min expected: no candidate cap, CoinGecko volume on a rotating
-    # budget (see volume_check.VOLUME_BUDGET). 45 leaves headroom.
-    timeout-minutes: 45
+    # ~35-40 min measured: no candidate cap; the expensive steps run on a
+    # rotating queue (see rotation.ROTATION_BUDGET). 60 leaves headroom.
+    timeout-minutes: 60
     steps:
       - name: Check out the code
         uses: actions/checkout@v4

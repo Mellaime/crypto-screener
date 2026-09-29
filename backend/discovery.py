@@ -9,8 +9,8 @@ Candidates are pulled from:
                     (contract + chain + mcap + tags, server-side filtered).
 
 Each candidate carries: {contract, chain, mcap, tags, source}. They are merged,
-DEDUPED by (chain, lowercased contract), and then MEME coins are removed early
-(see meme_filter) before the cap / enrichment / filter chain.
+DEDUPED by (chain, lowercased contract), and then MEME coins and STABLECOINS
+are removed early (see meme_filter) before enrichment / the filter chain.
 
 (Bitquery is no longer a discovery source - from_bitquery is kept for later use
 elsewhere but is not called here.)
@@ -215,8 +215,8 @@ def from_bitquery(limit=120, since_hours=24):
 def discover_candidates(verbose=True):
     """
     Pull CoinGecko + CoinMarketCap, merge and dedupe by (chain, contract), then
-    remove meme coins EARLY (before enrichment / the filter chain). Every
-    non-meme candidate goes on to the filter - there is no cap.
+    remove memes and stablecoins EARLY (before enrichment / the filter chain).
+    Every remaining candidate goes on to the filter - there is no cap.
     """
     cg = from_coingecko()
     cmc = from_coinmarketcap()
@@ -234,26 +234,32 @@ def discover_candidates(verbose=True):
         merged.append(c)
     unique_count = len(merged)
 
-    # --- MEME FILTER (right after discovery, before everything else) --------
-    # Free per coin: one BULK pull of CoinGecko's meme category (a set lookup)
-    # plus the CMC tags we already fetched. Drops memes so they never reach
-    # DexScreener enrichment or the age/volume/... chain.
-    from meme_filter import fetch_cg_meme_keys, is_meme
-    meme_keys, _ = fetch_cg_meme_keys()     # reuses the cached id->platforms map
-    kept, meme_dropped = [], 0
+    # --- MEME + STABLECOIN FILTER (step 2, before everything else) ----------
+    # Free per coin: one BULK pull each of CoinGecko's meme and stablecoin
+    # categories (set lookups) plus the CMC tags we already fetched. Drops
+    # memes and stablecoins so they never reach DexScreener enrichment or the
+    # age/revenue/... chain.
+    from meme_filter import fetch_cg_meme_keys, fetch_cg_stablecoin_keys, classify_excluded
+    meme_keys, _ = fetch_cg_meme_keys()          # reuse the cached id->platforms map
+    stable_keys, _ = fetch_cg_stablecoin_keys()
+    kept, meme_dropped, stable_dropped = [], 0, 0
     for c in merged:
-        if is_meme(c["contract"], c["chain"], meme_keys, cmc_tags=c.get("tags"))["is_meme"]:
+        kind = classify_excluded(c["contract"], c["chain"], meme_keys, stable_keys,
+                                 cmc_tags=c.get("tags"))
+        if kind == "meme":
             meme_dropped += 1
+        elif kind == "stablecoin":
+            stable_dropped += 1
         else:
             kept.append(c)
     merged = kept
-    after_meme = len(merged)
+    after_excl = len(merged)
 
     # Remember this run's counts so the save summary / scheduler funnel can
     # show the full chain starting at discovery.
     LAST_COUNTS.clear()
     LAST_COUNTS.update({"discovery": unique_count, "meme_dropped": meme_dropped,
-                        "after_meme": after_meme})
+                        "stable_dropped": stable_dropped, "after_excl": after_excl})
 
     if verbose:
         print("=" * 52)
@@ -264,8 +270,9 @@ def discover_candidates(verbose=True):
         print(f"  {'-'*48}")
         print(f"  TOTAL before dedup ....... {len(cg)+len(cmc):>5}")
         print(f"  AFTER dedup (unique) ..... {unique_count:>5}")
-        print(f"  MEME filter dropped ...... {meme_dropped:>5}")
-        print(f"  AFTER meme filter ........ {after_meme:>5}")
+        print(f"  MEME dropped ............. {meme_dropped:>5}")
+        print(f"  STABLECOIN dropped ....... {stable_dropped:>5}")
+        print(f"  AFTER meme+stable filter . {after_excl:>5}")
         print("=" * 52)
     return merged
 

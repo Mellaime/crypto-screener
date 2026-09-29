@@ -7,13 +7,17 @@ survivors into the database.
 THE FILTER - exactly these 7 steps, in this order:
     1. Discovery  - CoinGecko + CoinMarketCap, MCap $1M-$500M (discovery.py).
                     MCap is enforced HERE only - there is no later mcap step.
-    2. Meme       - memes removed right after discovery (meme_filter.py).
+    2. Meme +     - memes AND stablecoins removed right after discovery
+       Stablecoin   (meme_filter.py).
     3. Age        - >= 10 days; DexScreener pairCreatedAt, else CMC/CoinGecko
                     listing date; too new or unknown -> DROP (age_check.py).
-    4. Volume     - CoinGecko 5 complete days, day5 > day1; falling or
+    -- ROTATION QUEUE (rotation.py): steps 4-7 run only on ROTATION_BUDGET
+       age-passers per run, first-come-first-served; the rest wait. --
+    4. Revenue    - DefiLlama; DROP only on confirmed NO_REVENUE.
+    5. Volume     - CoinGecko 5 complete days, day5 > day1; falling or
                     unknown -> DROP (volume_check.py).
-    5. Revenue    - DefiLlama; DROP only on confirmed NO_REVENUE.
-    6. Honeypot   - GoPlus; DROP only on confirmed unsafe.
+    6. Honeypot   - GoPlus; DROP only on confirmed unsafe. After volume
+                    because free GoPlus is rate-limited (~20-30 calls/min).
     7. Liquidity  - Codex daily liquidity over min(30d, age); down > 5% ->
                     DROP; unknown -> PASS (liquidity_check.py). LAST step.
 Steps 1-2 run inside discover_tokens(); steps 3-7 run in save_tokens() below.
@@ -34,12 +38,12 @@ from datetime import date
 
 from database import SessionLocal, init_db
 from models import Coin, DailySnapshot
-from discovery import discover_tokens   # steps 1-2: discovery + meme filter
+from discovery import discover_tokens   # steps 1-2: discovery + meme/stablecoin
                                         # (DexScreener only enriches by contract)
 from age_check import decide_age                    # step 3
-from volume_check import (check_volume_rising,      # step 4
-                          pick_for_volume_check, record_volume_check, VOLUME_BUDGET)
-from revenue_check import check_revenue             # step 5
+from revenue_check import check_revenue             # step 4
+from volume_check import check_volume_rising       # step 5
+from rotation import pick_batch, mark_checked, ROTATION_BUDGET   # queue for 4-7
 from security_check import check_token_security     # step 6 (honeypot)
 from liquidity_check import check_liquidity_trend   # step 7 (LAST)
 from narrative_check import get_category
@@ -127,7 +131,10 @@ def save_tokens(tokens):
         "passed_volume": 0,          # volume rising (CoinGecko 5-day)
         "skipped_vol_falling": 0,
         "skipped_vol_unknown": 0,    # no CoinGecko history / chain not on CG
-        "vol_deferred": 0,           # not checked this run (rotating budget)
+        "queue_new": 0,              # age-passers seen for the first time
+        "queue_known": 0,            # age-passers already in the queue
+        "queue_picked": 0,           # got the expensive steps this run
+        "queue_waiting": 0,          # waiting for a later run
         "passed_liquidity": 0,       # Codex liquidity trend (step 7)
         "skipped_liq_falling": 0,    # down more than 5% over the window
         "liquidity_unknown": 0,      # no Codex data -> passed, not dropped
@@ -165,29 +172,19 @@ def save_tokens(tokens):
             stats["passed_age"] += 1
             age_passed.append(t)
 
-        # Step 4 runs on a ROTATING BUDGET (volume_check.VOLUME_BUDGET): this
-        # run checks the age-passers checked longest ago; the rest wait for a
-        # later run (skipped - not saved, not dropped).
-        chosen = pick_for_volume_check(
-            session, [(t["chain"], t["contract"]) for t in age_passed])
+        # --- ROTATION QUEUE (rotation.py) -----------------------------------
+        # The expensive steps 4-7 run only on ROTATION_BUDGET age-passers per
+        # run: the ones that have waited longest. New coins join at the back
+        # of the queue (no priority). Everyone else waits for a later run -
+        # skipped this run, neither saved nor dropped.
+        picked, queue = pick_batch(session, age_passed)
+        stats["queue_new"] = queue["new"]
+        stats["queue_known"] = queue["known"]
+        stats["queue_picked"] = len(picked)
+        stats["queue_waiting"] = queue["queued"] - len(picked)
 
-        for t in age_passed:
-            # --- Step 4: VOLUME RISING (CoinGecko, 5 complete days) --------
-            # rising -> keep; falling or unknown (no CoinGecko history) -> drop.
-            if ((t["chain"] or "").lower(), (t["contract"] or "").lower()) not in chosen:
-                stats["vol_deferred"] += 1
-                continue
-            vol = check_volume_rising(t["contract"], t["chain"])
-            record_volume_check(session, t["chain"], t["contract"], vol["verdict"], today)
-            if vol["verdict"] != "rising":
-                if vol["verdict"] == "falling":
-                    stats["skipped_vol_falling"] += 1
-                else:
-                    stats["skipped_vol_unknown"] += 1
-                continue
-            stats["passed_volume"] += 1
-
-            # --- Step 5: revenue EXISTENCE (DefiLlama) ---------------------
+        for t in picked:
+            # --- Step 4: revenue EXISTENCE (DefiLlama) ---------------------
             # Reject ONLY when NO_REVENUE is positively confirmed (DefiLlama
             # tracks the token but it has no fees mechanism). HAS_REVENUE (any
             # amount, even $0.01) and UNKNOWN (not listed) both PASS - we don't
@@ -203,10 +200,22 @@ def save_tokens(tokens):
                 stats["revenue_unknown"] += 1
             stats["passed_revenue"] += 1
 
+            # --- Step 5: VOLUME RISING (CoinGecko, 5 complete days) --------
+            # rising -> keep; falling or unknown (no CoinGecko history) -> drop.
+            vol = check_volume_rising(t["contract"], t["chain"])
+            if vol["verdict"] != "rising":
+                if vol["verdict"] == "falling":
+                    stats["skipped_vol_falling"] += 1
+                else:
+                    stats["skipped_vol_unknown"] += 1
+                continue
+            stats["passed_volume"] += 1
+
             # --- Step 6: honeypot / security check (GoPlus) ----------------
-            # Only a CONFIRMED honeypot / cannot-sell rejects the coin.
-            # "unknown" (API down, unsupported chain, no data) does NOT reject,
-            # because we don't want to lose good coins over a missing check.
+            # Placed AFTER volume: free GoPlus is rate-limited, so it runs on
+            # the small volume-passing set. Only a CONFIRMED honeypot /
+            # cannot-sell rejects the coin; "unknown" (unsupported chain, no
+            # data) does NOT reject.
             security = check_token_security(t["contract"], t["chain"])
             if security["verdict"] == "unsafe":
                 stats["skipped_unsafe"] += 1
@@ -265,7 +274,7 @@ def save_tokens(tokens):
             if not coin.category:
                 coin.category = get_category(t["contract"], t["chain"])
 
-            # The DefiLlama daily revenue number (step 5); None if UNKNOWN.
+            # The DefiLlama daily revenue number (step 4); None if UNKNOWN.
             rev_num = revenue.get("daily_revenue")
 
             # --- Insert or update today's snapshot --------------------------
@@ -297,6 +306,11 @@ def save_tokens(tokens):
                 snapshot.holders = holder_num
                 stats["snapshots_updated"] += 1
 
+        # Every coin that had its turn this run goes to the back of the queue
+        # (whatever its result). Same transaction as the saves: if the run
+        # fails, nothing is marked and those coins keep their place.
+        mark_checked(session, picked)
+
         # Save everything at once. If anything above had failed, we'd roll back.
         session.commit()
     except Exception:
@@ -318,20 +332,28 @@ def print_summary(stats):
     print("  FILTER FUNNEL (7 steps)")
     print(line)
     print(f"  1. Discovery (CG+CMC, $1M-$500M) - unique .. {dc.get('discovery', '?'):>6}")
-    print(f"  2. Meme filter - passed .................... {dc.get('after_meme', '?'):>6}")
+    print(f"  2. Meme + stablecoin filter - passed ....... {dc.get('after_excl', '?'):>6}")
     print(f"       - dropped as meme ..................... {dc.get('meme_dropped', '?'):>6}")
+    print(f"       - dropped as stablecoin ............... {dc.get('stable_dropped', '?'):>6}")
     print(f"       (not a filter: with DexScreener data -> {stats['discovered']})")
     print(sub)
     print(f"  3. Age >= 10 days - passed ................. {stats['passed_age']:>6}")
     print(f"       - dropped (too new, <10d) ............. {stats['skipped_too_new']:>6}")
     print(f"       - dropped (age unknown) ............... {stats['skipped_no_age']:>6}")
-    print(f"  4. Volume rising (CoinGecko) - passed ...... {stats['passed_volume']:>6}")
-    print(f"       - dropped (falling) ................... {stats['skipped_vol_falling']:>6}")
-    print(f"       - dropped (no CG history) ............. {stats['skipped_vol_unknown']:>6}")
-    print(f"       - waiting (rotation, {VOLUME_BUDGET}/run budget) .... {stats['vol_deferred']:>6}")
-    print(f"  5. Revenue (DefiLlama) - passed ............ {stats['passed_revenue']:>6}")
+    print(sub)
+    print(f"  ROTATION QUEUE (budget {ROTATION_BUDGET}/run) - not a filter:")
+    print(f"       age-passers: new {stats['queue_new']} + known {stats['queue_known']}")
+    print(f"       picked this run (waited longest) ...... {stats['queue_picked']:>6}")
+    print(f"       waiting for a later run ............... {stats['queue_waiting']:>6}")
+    print(sub)
+    print(f"  4. Revenue (DefiLlama) - passed ............ {stats['passed_revenue']:>6}")
     print(f"       - dropped (NO_REVENUE) ................ {stats['skipped_no_revenue']:>6}")
     print(f"       - passed as unknown ................... {stats['revenue_unknown']:>6}")
+    import volume_check
+    print(f"  5. Volume rising (CoinGecko) - passed ...... {stats['passed_volume']:>6}"
+          f"   ({volume_check.CALLS} CoinGecko calls)")
+    print(f"       - dropped (falling) ................... {stats['skipped_vol_falling']:>6}")
+    print(f"       - dropped (no CG history) ............. {stats['skipped_vol_unknown']:>6}")
     print(f"  6. Honeypot (GoPlus) - passed .............. {stats['passed_security']:>6}")
     print(f"       - dropped (honeypot/unsafe) ........... {stats['skipped_unsafe']:>6}")
     print(f"       - passed as unknown ................... {stats['security_unknown']:>6}")

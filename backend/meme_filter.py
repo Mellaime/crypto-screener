@@ -1,28 +1,36 @@
 """
 meme_filter.py
 --------------
-Early MEME filter for the DISCOVERY step. Meme coins are removed right after
-discovery and BEFORE the Age / Volume / ... filter chain, so we never spend
-per-coin API calls on coins we don't want.
+Early MEME + STABLECOIN filter for the DISCOVERY step (filter step 2). These
+coins are removed right after discovery, BEFORE the age / revenue / honeypot /
+volume / liquidity chain, so we never spend per-coin API calls on coins we
+don't want:
+  * memes       - not screening targets
+  * stablecoins - they don't move (USDC, USDT, DAI, ...), so not targets either
 
-Two signals (checked by CONTRACT + CHAIN). If ANY fires -> DROP; none -> KEEP:
-  1. CATEGORY  - the coin is in CoinGecko's "meme" category. We fetch that
-     whole category ONCE per run in BULK (fetch_cg_meme_keys) and build a set
-     of {(chain, contract)} - so the category check is a free set lookup, not
-     a per-coin API call.
-  2. TAG       - a CoinMarketCap tag contains "meme" (e.g. "memes",
-     "animal-memes"). CMC tags come from the listings data discovery already
+A coin is DROPPED if it is a meme OR a stablecoin. Each kind uses the same two
+signals (checked by CONTRACT + CHAIN):
+  1. CATEGORY - the coin is in a CoinGecko category for that kind. Each
+     category is fetched ONCE per run in BULK and turned into a set of
+     {(chain, contract)}, so the check is a free set lookup, not a per-coin
+     API call.
+       memes       -> "meme-token"
+       stablecoins -> "stablecoins" + "bridged-stablecoins" (bridged copies
+                      like USDC.e live on other chains with their own contract)
+  2. TAG - a CoinMarketCap tag contains the kind's keyword ("meme",
+     "stablecoin"). CMC tags come from the listings data discovery already
      fetches - no extra call.
-
-(These two signals caught 100% of test memes with zero false positives, so the
-earlier free-text "description" signal was dropped as redundant.)
 
 Unknown / no data never drops a coin (same "only drop on a positive signal"
 policy used by the revenue and security checks).
 
 Public API:
-  fetch_cg_meme_keys() -> set of (chain, contract_lower)   [call once per run]
-  is_meme(contract, chain, cg_meme_keys, cmc_tags=None) -> dict
+  fetch_cg_meme_keys()       -> (set of (chain, contract_lower), id_count)
+  fetch_cg_stablecoin_keys() -> (set of (chain, contract_lower), id_count)
+  is_meme(contract, chain, cg_meme_keys, cmc_tags=None)          -> dict
+  is_stablecoin(contract, chain, cg_stable_keys, cmc_tags=None)  -> dict
+  classify_excluded(contract, chain, meme_keys, stable_keys, cmc_tags=None)
+      -> "meme" | "stablecoin" | None
 Never raises.
 """
 
@@ -38,93 +46,121 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 CG_KEY = os.getenv("COINGECKO_API_KEY")
 
 CG_DELAY = 2.5
-MIN_MCAP = 1_000_000        # match discovery's window: memes below this can't
-                            # be candidates anyway, so we stop the bulk pull here.
+MIN_MCAP = 1_000_000        # match discovery's window: coins below this can't be
+                            # candidates anyway, so each bulk pull stops here.
 
-# CoinGecko's umbrella meme category slug (its /coins/markets `category` filter).
-CG_MEME_CATEGORY = "meme-token"
+# CoinGecko category slugs (their /coins/markets `category` filter).
+CG_MEME_CATEGORIES = ["meme-token"]
+CG_STABLECOIN_CATEGORIES = ["stablecoins", "bridged-stablecoins"]
 
-# Meme keywords - plain, easy to extend. Matched case-insensitively as
-# substrings, so "meme" already covers "Memes", "animal-memes", "Meme Coin".
+# Keywords - plain, easy to extend. Matched case-insensitively as substrings,
+# so "meme" covers "Memes"/"animal-memes" and "stablecoin" covers
+# "fiat-stablecoin"/"usd-stablecoin"/"Stablecoins".
 MEME_KEYWORDS = ["meme", "memecoin", "meme coin", "meme coins", "memes"]
+STABLECOIN_KEYWORDS = ["stablecoin", "stablecoins"]
 
 
-def _text_has_meme(text):
-    """Return the meme keyword found in `text`, or None."""
+def _match(text, keywords):
+    """Return the keyword found in `text` (case-insensitive), or None."""
     if not text:
         return None
     low = str(text).lower()
-    for kw in MEME_KEYWORDS:
+    for kw in keywords:
         if kw in low:
             return kw
     return None
 
 
-def _list_has_meme(items):
-    """Return the first list entry that contains a meme keyword, or None."""
+def _list_match(items, keywords):
+    """Return the first list entry that contains one of `keywords`, or None."""
     for item in items or []:
-        if _text_has_meme(item):
+        if _match(item, keywords):
             return str(item)
     return None
 
 
-def fetch_cg_meme_keys(id_platforms=None, min_mcap=MIN_MCAP, max_pages=8):
+def _fetch_cg_category_keys(categories, id_platforms=None, min_mcap=MIN_MCAP,
+                            max_pages=8):
     """
-    BULK: one pull of CoinGecko's meme category -> a set of (chain, contract)
-    keys for every meme coin at/above min_mcap. Reuses discovery's id->platforms
-    map (pass it in to avoid re-fetching). Returns (keys_set, meme_id_count).
+    BULK: pull each CoinGecko category (mcap-desc, stopping below min_mcap) and
+    map its coin ids to {(chain, contract)} keys via discovery's cached
+    id->platforms map. Returns (keys_set, coin_id_count).
     """
     if not CG_KEY:
         return set(), 0
     if id_platforms is None:
-        id_platforms = _cg_id_to_platforms()      # 1 call (also used by discovery)
+        id_platforms = _cg_id_to_platforms()      # cached - shared with discovery
 
-    meme_ids = []
-    for page in range(1, max_pages + 1):
-        time.sleep(CG_DELAY)
-        rows = _get(CG_MARKETS_URL,
-                    {"vs_currency": "usd", "category": CG_MEME_CATEGORY,
-                     "order": "market_cap_desc", "per_page": 250, "page": page},
-                    {"x-cg-demo-api-key": CG_KEY})
-        if not rows:
-            break
-        for coin in rows:
-            mc = coin.get("market_cap")
-            if mc is None or mc >= min_mcap:
-                meme_ids.append(coin["id"])
-        last_mc = rows[-1].get("market_cap")
-        if (last_mc is not None and last_mc < min_mcap) or len(rows) < 250:
-            break                                  # past our mcap window -> stop
+    ids = set()
+    for category in categories:
+        for page in range(1, max_pages + 1):
+            time.sleep(CG_DELAY)
+            rows = _get(CG_MARKETS_URL,
+                        {"vs_currency": "usd", "category": category,
+                         "order": "market_cap_desc", "per_page": 250, "page": page},
+                        {"x-cg-demo-api-key": CG_KEY})
+            if not rows:
+                break
+            for coin in rows:
+                mc = coin.get("market_cap")
+                if mc is None or mc >= min_mcap:
+                    ids.add(coin["id"])
+            last_mc = rows[-1].get("market_cap")
+            if (last_mc is not None and last_mc < min_mcap) or len(rows) < 250:
+                break                              # past our mcap window -> stop
 
     keys = set()
-    for cid in meme_ids:
+    for cid in ids:
         for platform, addr in (id_platforms.get(cid) or {}).items():
             chain = CG_PLATFORM_TO_CHAIN.get(platform, platform)
             keys.add((chain, addr.lower()))
-    return keys, len(meme_ids)
+    return keys, len(ids)
+
+
+def fetch_cg_meme_keys(id_platforms=None, min_mcap=MIN_MCAP, max_pages=8):
+    """BULK set of CoinGecko meme-category (chain, contract) keys."""
+    return _fetch_cg_category_keys(CG_MEME_CATEGORIES, id_platforms, min_mcap, max_pages)
+
+
+def fetch_cg_stablecoin_keys(id_platforms=None, min_mcap=MIN_MCAP, max_pages=8):
+    """BULK set of CoinGecko stablecoin-category (chain, contract) keys."""
+    return _fetch_cg_category_keys(CG_STABLECOIN_CATEGORIES, id_platforms,
+                                   min_mcap, max_pages)
+
+
+def _check(kind_label, keywords, contract, chain, cg_keys, cmc_tags):
+    """Shared category + tag check. Pure (no network I/O)."""
+    signals = {}
+    key = ((chain or "").lower(), (contract or "").lower())
+    if key in cg_keys:
+        signals["category"] = f"CoinGecko {kind_label} category"
+    tag_hit = _list_match(cmc_tags, keywords)
+    if tag_hit:
+        signals["tag"] = f"CMC tag '{tag_hit}'"
+    return {"hit": bool(signals), "signals": signals,
+            "matched": "; ".join(signals.values()) if signals else None}
 
 
 def is_meme(contract, chain, cg_meme_keys, cmc_tags=None):
-    """
-    Decide whether a candidate is a meme. Pure (no network I/O): the caller
-    supplies the bulk meme-key set plus any CMC tags it already has.
-    Returns {"is_meme", "signals" {..}, "matched"}.
-    """
-    signals = {}
+    """Meme check. Returns {"is_meme", "signals", "matched"}."""
+    r = _check("meme", MEME_KEYWORDS, contract, chain, cg_meme_keys, cmc_tags)
+    return {"is_meme": r["hit"], "signals": r["signals"], "matched": r["matched"]}
 
-    key = ((chain or "").lower(), (contract or "").lower())
-    if key in cg_meme_keys:
-        signals["category"] = "CoinGecko meme category"
 
-    tag_hit = _list_has_meme(cmc_tags)
-    if tag_hit:
-        signals["tag"] = f"CMC tag '{tag_hit}'"
+def is_stablecoin(contract, chain, cg_stable_keys, cmc_tags=None):
+    """Stablecoin check. Returns {"is_stablecoin", "signals", "matched"}."""
+    r = _check("stablecoin", STABLECOIN_KEYWORDS, contract, chain, cg_stable_keys,
+               cmc_tags)
+    return {"is_stablecoin": r["hit"], "signals": r["signals"], "matched": r["matched"]}
 
-    return {
-        "is_meme": bool(signals),
-        "signals": signals,
-        "matched": "; ".join(signals.values()) if signals else None,
-    }
+
+def classify_excluded(contract, chain, meme_keys, stable_keys, cmc_tags=None):
+    """'meme', 'stablecoin', or None (keep). Memes are checked first."""
+    if is_meme(contract, chain, meme_keys, cmc_tags)["is_meme"]:
+        return "meme"
+    if is_stablecoin(contract, chain, stable_keys, cmc_tags)["is_stablecoin"]:
+        return "stablecoin"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -161,5 +197,7 @@ def fetch_cmc_tags(contract):
 
 
 if __name__ == "__main__":
-    keys, n = fetch_cg_meme_keys()
-    print(f"CoinGecko meme category: {n} meme ids -> {len(keys)} (chain,contract) keys")
+    mk, mn = fetch_cg_meme_keys()
+    sk, sn = fetch_cg_stablecoin_keys()
+    print(f"meme category:       {mn} ids -> {len(mk)} (chain,contract) keys")
+    print(f"stablecoin category: {sn} ids -> {len(sk)} (chain,contract) keys")
