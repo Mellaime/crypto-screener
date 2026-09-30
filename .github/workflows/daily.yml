@@ -11,9 +11,11 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    # ~35-40 min measured: no candidate cap; the expensive steps run on a
-    # rotating queue (see rotation.ROTATION_BUDGET). 60 leaves headroom.
-    timeout-minutes: 60
+    # STOPGAP: runs currently take ~60-80+ min (drop_logic re-checks and
+    # rank_check scale with the active + dropped lists). Raised from 60 so a
+    # run isn't killed half-way; revisit once the per-coin daily checks are
+    # budgeted within CoinGecko's free quota.
+    timeout-minutes: 120
     steps:
       - name: Check out the code
         uses: actions/checkout@v4

@@ -77,6 +77,11 @@ def make_narrative(chain, mcap, vol_liq_ratio):
     return f"{size} token on {chain} with {activity}."
 
 
+def _iso(dt):
+    """Datetime -> 'YYYY-MM-DDTHH:MM:SSZ' (UTC), or None."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
+
+
 @app.get("/api/coins")
 def get_coins():
     """Return ACTIVE coins only, ranked by score (highest first)."""
@@ -100,6 +105,8 @@ def get_coins():
                 "name": coin.name,
                 "chain": coin.chain,
                 "contract": coin.contract,
+                "price": coin.price_usd,            # current USD price (refreshed each run)
+                "price_updated": _iso(coin.price_updated_at),
                 "mcap": snap.mcap,
                 "liquidity": snap.liquidity,
                 "volume": snap.volume,
@@ -144,6 +151,8 @@ def get_dropped():
         rows = [{
             "name": coin.name,
             "chain": coin.chain,
+            "price": coin.price_usd,                # current USD price (refreshed each run)
+            "price_updated": _iso(coin.price_updated_at),
             "date": dropped.dropped_date.strftime("%Y-%m-%d"),
             "reason": dropped.reason,
         } for dropped, coin in results]

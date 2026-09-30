@@ -25,6 +25,7 @@ Run it:
     python fetch_dexscreener.py
 """
 
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -162,20 +163,235 @@ def chunked(items, size):
         yield items[i:i + size]
 
 
+def usable_for_dexscreener(address):
+    """
+    False for addresses that can't go in a /tokens URL. A "/" (Cosmos-style
+    ibc/..., factory/..., persistence/...) breaks the URL path, so DexScreener
+    404s the WHOLE batch and the other 29 good addresses get no data. Commas
+    and whitespace would break the comma-separated list the same way.
+    """
+    return bool(address) and not any(ch in address for ch in "/, \t\n")
+
+
+# Counts from the most recent fetch_pairs_for_addresses() call (for reporting).
+LAST_FETCH_STATS = {}
+
+RETRY_WAITS = [2, 5, 10]    # back-off for rate limits / server errors / timeouts
+
+# /tokens returns at most 30 POOLS per response, however many addresses are
+# asked for. With 30 addresses, coins with many pools crowd the others out and
+# those get NO data - silently, the request still "succeeds". So we start with
+# small batches and, whenever a response comes back AT the cap, split the batch
+# and ask again, so every coin gets its pools.
+BATCH_SIZE = 10
+PAIRS_CAP = 30
+REQUEST_DELAY = 0.2         # pace to DexScreener's 300 requests/minute
+
+
+def _fetch_batch(batch):
+    """
+    One /tokens request. Returns (pairs, status): status is the HTTP code,
+    or None on a timeout / connection error. Retries 429, 5xx and network
+    errors; a 4xx like 404 is returned at once (a bad address - don't retry).
+    """
+    url = TOKENS_URL.format(addresses=",".join(batch))
+    status = None
+    for wait in [0] + RETRY_WAITS:
+        time.sleep(wait or REQUEST_DELAY)
+        try:
+            r = SESSION.get(url, timeout=15)
+        except requests.exceptions.RequestException:
+            status = None
+            continue                                    # network blip -> retry
+        status = r.status_code
+        if status == 200:
+            try:
+                return (r.json().get("pairs") or []), 200
+            except ValueError:
+                return [], 200
+        if status == 429 or status >= 500:
+            continue                                    # rate limit / server -> retry
+        return [], status                               # 404 etc -> bad address
+    return [], status
+
+
+def _fetch_isolating_bad(batch, stats):
+    """
+    Fetch a batch, splitting it in halves and retrying each half when either:
+      * DexScreener rejects it (404-type error) -> down to single addresses,
+        so only the truly bad address is skipped; or
+      * the response hit the 30-pool cap -> some coins may have been crowded
+        out, so re-ask in smaller pieces until every coin gets its pools.
+    """
+    stats["requests"] += 1
+    pairs, status = _fetch_batch(batch)
+    if status == 200:
+        if len(pairs) >= PAIRS_CAP and len(batch) > 1:
+            stats["batches_split_cap"] += 1
+            mid = len(batch) // 2
+            return (_fetch_isolating_bad(batch[:mid], stats)
+                    + _fetch_isolating_bad(batch[mid:], stats))
+        return pairs
+    if status is None or status == 429 or status >= 500:
+        stats["lost_batches"] += 1                      # retries exhausted
+        stats["lost_addresses"] += len(batch)
+        print(f"[WARN] DexScreener batch of {len(batch)} failed after retries "
+              f"(status {status}) - those coins get no data this run")
+        return []
+    if len(batch) == 1:
+        stats["bad_addresses"].append(batch[0])        # the truly bad one
+        return []
+    stats["batches_split"] += 1
+    mid = len(batch) // 2
+    return (_fetch_isolating_bad(batch[:mid], stats)
+            + _fetch_isolating_bad(batch[mid:], stats))
+
+
 def fetch_pairs_for_addresses(addresses):
     """
     Look up trading data for a list of addresses via the /tokens endpoint.
     Returns a flat list of "pair" dicts (raw from DexScreener).
+
+    Addresses DexScreener can't take are dropped BEFORE batching; any batch it
+    still rejects is split until the bad address is isolated; and any response
+    that hits the 30-pool cap is split and re-asked. So no coin loses its data
+    because of the other coins it was batched with.
     """
+    stats = _new_stats(len(addresses))
+    pairs = _fetch_all_pools(addresses, stats)
+    LAST_FETCH_STATS.clear()
+    LAST_FETCH_STATS.update(stats)
+    return pairs
+
+
+def _new_stats(requested):
+    return {"requested": requested, "skipped_unusable": 0, "batches": 0,
+            "batches_split": 0, "batches_split_cap": 0, "bad_addresses": [],
+            "lost_batches": 0, "lost_addresses": 0, "requests": 0,
+            "v1_requests": 0, "v1_failed": 0, "v1_covered": 0,
+            "fallback_addresses": 0, "young_rechecked": 0}
+
+
+def _fetch_all_pools(addresses, stats):
+    """The chain-agnostic /latest/dex/tokens endpoint (ALL pools per coin, up
+    to 30), with the bad-address filter and split-on-404 / split-on-cap."""
+    usable = [a for a in addresses if usable_for_dexscreener(a)]
+    stats["skipped_unusable"] += len(addresses) - len(usable)
     all_pairs = []
-    # The endpoint accepts up to 30 comma-separated addresses per request.
-    for batch in chunked(addresses, 30):
-        url = TOKENS_URL.format(addresses=",".join(batch))
-        data = get_json(url)
-        if not data:
-            continue
-        all_pairs.extend(data.get("pairs") or [])
+    for batch in chunked(usable, BATCH_SIZE):
+        stats["batches"] += 1
+        all_pairs.extend(_fetch_isolating_bad(batch, stats))
     return all_pairs
+
+
+# ---------------------------------------------------------------------------
+# Fast path for discovery: /tokens/v1/{chainId}/{addresses} returns ONE pool
+# per coin (its main pool) for up to 30 coins per request, with no crowding -
+# ~15x fewer requests than the all-pools endpoint.
+# ---------------------------------------------------------------------------
+TOKENS_V1_URL = "https://api.dexscreener.com/tokens/v1/{chain}/{addresses}"
+V1_BATCH = 30
+
+# Chains DexScreener's v1 endpoint knows under OUR chain name. Coins on any
+# other chain skip v1 and go straight to the chain-agnostic all-pools endpoint
+# (an unknown chainId would just fail every request).
+V1_CHAINS = {"ethereum", "bsc", "base", "solana", "polygon", "arbitrum", "optimism",
+             "avalanche", "fantom", "cronos", "zksync", "linea", "scroll", "mantle",
+             "blast", "sui", "aptos", "ton", "tron", "robinhood"}
+
+
+def _fetch_v1(chain, batch, stats):
+    """One /tokens/v1 request (retries 429 / 5xx / network). Returns the pools,
+    or [] on failure - failed coins are then picked up by the fallback."""
+    stats["v1_requests"] += 1
+    url = TOKENS_V1_URL.format(chain=chain, addresses=",".join(batch))
+    for wait in [0] + RETRY_WAITS:
+        time.sleep(wait or REQUEST_DELAY)
+        try:
+            r = SESSION.get(url, timeout=15)
+        except requests.exceptions.RequestException:
+            continue
+        if r.status_code == 200:
+            try:
+                data = r.json()
+            except ValueError:
+                break
+            return data if isinstance(data, list) else (data.get("pairs") or [])
+        if r.status_code == 429 or r.status_code >= 500:
+            continue
+        break
+    stats["v1_failed"] += 1
+    return []
+
+
+def _base_address(p):
+    return ((p.get("baseToken") or {}).get("address") or "").lower()
+
+
+def fetch_pairs_for_candidates(candidates):
+    """
+    Enrich discovery candidates ({"contract", "chain"}) with DexScreener pools.
+      1. /tokens/v1 per chain, 30 coins/request -> each coin's main pool.
+      2. Coins v1 didn't return (other chains, failed requests, not listed
+         under that chain) -> the chain-agnostic all-pools endpoint.
+      3. Coins that look younger than MIN_AGE_DAYS from those pools -> also
+         fetch ALL their pools, so the age filter sees the OLDEST pool (a coin
+         whose main pool is new, but which traded long before, is old).
+    Pools are de-duplicated. Returns a flat list of pair dicts.
+    """
+    from age_check import MIN_AGE_DAYS
+
+    stats = _new_stats(len(candidates))
+    v1_groups, other = {}, []
+    for c in candidates:
+        addr = c.get("contract") or ""
+        if not usable_for_dexscreener(addr):
+            stats["skipped_unusable"] += 1
+            continue
+        chain = (c.get("chain") or "").lower()
+        if chain in V1_CHAINS:
+            v1_groups.setdefault(chain, []).append(addr)
+        else:
+            other.append(addr)
+
+    pairs = []
+    for chain, addrs in v1_groups.items():
+        for batch in chunked(addrs, V1_BATCH):
+            pairs.extend(_fetch_v1(chain, batch, stats))
+    covered = {_base_address(p) for p in pairs}
+    stats["v1_covered"] = len(covered)
+
+    # 2. Everything v1 didn't cover -> all-pools endpoint (chain-agnostic).
+    missing = other + [a for addrs in v1_groups.values() for a in addrs
+                       if a.lower() not in covered]
+    stats["fallback_addresses"] = len(missing)
+    pairs.extend(_fetch_all_pools(missing, stats))
+
+    # 3. Young-looking coins -> check ALL their pools for an older one.
+    #    (Re-fetch with the original spelling: Solana addresses are case-sensitive.)
+    original = {a.lower(): a for a in other}
+    original.update({a.lower(): a for addrs in v1_groups.values() for a in addrs})
+    created = {}
+    for p in pairs:
+        if p.get("pairCreatedAt"):
+            k = _base_address(p)
+            created[k] = min(created.get(k, p["pairCreatedAt"]), p["pairCreatedAt"])
+    young = [original[k] for k in {_base_address(p) for p in pairs}
+             if k in original and (age_in_days(created.get(k)) or 0) < MIN_AGE_DAYS]
+    stats["young_rechecked"] = len(young)
+    pairs.extend(_fetch_all_pools(young, stats))
+
+    # De-duplicate pools that came back from more than one request.
+    seen, unique = set(), []
+    for p in pairs:
+        k = (p.get("chainId"), p.get("pairAddress"))
+        if k not in seen:
+            seen.add(k)
+            unique.append(p)
+
+    LAST_FETCH_STATS.clear()
+    LAST_FETCH_STATS.update(stats)
+    return unique
 
 
 # ---------------------------------------------------------------------------

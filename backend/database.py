@@ -93,4 +93,41 @@ def init_db():
     import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _add_missing_columns()
     return DB_DESCRIPTION
+
+
+# Columns added to EXISTING tables after they were first created. create_all()
+# only creates missing tables, never missing columns, so add them here. Each
+# entry: (table, column, SQL type, backfill statement or None).
+_NEW_COLUMNS = [
+    # When the coin (last) entered the active list - drop_logic's 5-day grace.
+    ("coins", "active_since", "TIMESTAMP",
+     "UPDATE coins SET active_since = first_seen WHERE active_since IS NULL"),
+    # Holder count when it entered active - drop_logic's holders baseline.
+    # (Kept on the coin because the daily holders update overwrites the
+    # latest snapshot's count, which is often the entry snapshot.)
+    ("coins", "holders_at_entry", "INTEGER",
+     "UPDATE coins SET holders_at_entry = (SELECT s.holders FROM daily_snapshots s "
+     "WHERE s.coin_id = coins.id AND s.holders IS NOT NULL "
+     "ORDER BY s.date, s.id LIMIT 1) WHERE holders_at_entry IS NULL"),
+    # USD price: per snapshot (history), and the current one on the coin,
+    # refreshed every daily run for active + dropped coins.
+    ("daily_snapshots", "price_usd", "FLOAT", None),
+    ("coins", "price_usd", "FLOAT", None),
+    ("coins", "price_updated_at", "TIMESTAMP", None),
+]
+
+
+def _add_missing_columns():
+    from sqlalchemy import inspect, text
+
+    for table, column, sql_type, backfill in _NEW_COLUMNS:
+        existing = {c["name"] for c in inspect(engine).get_columns(table)}
+        if column in existing:
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+            if backfill:
+                conn.execute(text(backfill))
+        print(f"[DB] added column {table}.{column}")

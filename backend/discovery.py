@@ -283,17 +283,28 @@ def discover_candidates(verbose=True):
 # for enrichment - never for discovery.
 # ---------------------------------------------------------------------------
 def discover_tokens():
-    from fetch_dexscreener import fetch_pairs_for_addresses, build_token_records
+    import time as _time
+    from fetch_dexscreener import fetch_pairs_for_candidates, build_token_records
 
     candidates = discover_candidates()
     addresses = [c["contract"] for c in candidates]
 
     print(f"Enriching {len(addresses)} candidates via DexScreener (by contract)...")
-    pairs = fetch_pairs_for_addresses(addresses)
+    t0 = _time.time()
+    pairs = fetch_pairs_for_candidates(candidates)
+    LAST_COUNTS["enrich_seconds"] = round(_time.time() - t0)
     keep = {a.lower() for a in addresses}
     tokens = build_token_records(pairs, keep_addresses=keep)
     tokens.sort(key=lambda t: t["liquidity_usd"] or 0, reverse=True)
+    from fetch_dexscreener import LAST_FETCH_STATS as fs
     print(f"  => {len(tokens)} candidates had DexScreener data (enriched).")
+    print(f"     {LAST_COUNTS['enrich_seconds']}s | main-pool requests {fs.get('v1_requests')} "
+          f"(covered {fs.get('v1_covered')}, failed {fs.get('v1_failed')}) | all-pools "
+          f"fallback {fs.get('fallback_addresses')} coins + young re-check "
+          f"{fs.get('young_rechecked')} coins = {fs.get('requests')} requests | skipped "
+          f"unusable (e.g. ibc/...) {fs.get('skipped_unusable')} | bad addresses isolated "
+          f"{len(fs.get('bad_addresses', []))} | coins lost to failed batches "
+          f"{fs.get('lost_addresses')}")
     LAST_COUNTS["enriched"] = len(tokens)
     return tokens
 

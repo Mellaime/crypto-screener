@@ -37,6 +37,7 @@ from database import init_db
 from discovery import discover_tokens   # NEW multi-source discovery (CG + CMC + Bitquery)
 from save_to_db import save_tokens, print_summary
 from drop_logic import run_drop_logic
+from price_update import run_price_update
 from rank_check import run_rank_update
 from holders_check import run_holders_update
 from scoring import score_all, print_ranking
@@ -100,6 +101,10 @@ def run_pipeline(raise_on_error=False):
         # dropping when it can't fetch live data, so there are no false drops.)
         log.info("Running drop/recovery/cleanup pass...")
         drop_stats = run_drop_logic()
+
+        # After drop logic, so the active + dropped lists are final for today.
+        log.info("Refreshing current prices (active + dropped)...")
+        run_price_update()
 
         log.info("Updating market ranks (CoinGecko + CoinMarketCap)...")
         run_rank_update()

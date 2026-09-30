@@ -36,7 +36,7 @@ Run it:
 
 from datetime import date
 
-from database import SessionLocal, init_db
+from database import SessionLocal, init_db, utcnow
 from models import Coin, DailySnapshot
 from discovery import discover_tokens   # steps 1-2: discovery + meme/stablecoin
                                         # (DexScreener only enriches by contract)
@@ -48,14 +48,6 @@ from security_check import check_token_security     # step 6 (honeypot)
 from liquidity_check import check_liquidity_trend   # step 7 (LAST)
 from narrative_check import get_category
 from holders_check import get_holder_count          # stored only - NOT a filter
-
-# NOTE: the constants below are NO LONGER filter gates here. MCap is enforced
-# at discovery; liquidity is now the Codex trend check (step 7). They are kept
-# only because drop_logic.py imports them for its own re-check.
-MIN_MARKET_CAP = 1_000_000        # $1M
-MAX_MARKET_CAP = 500_000_000      # $500M
-MIN_VOLUME_24H = 50_000           # $50K
-MIN_LIQUIDITY = 30_000            # $30K
 
 
 def to_float(value):
@@ -242,6 +234,7 @@ def save_tokens(tokens):
             mcap = to_float(t.get("market_cap"))
             holders_result = get_holder_count(t["contract"], t["chain"])
             holder_num = holders_result if isinstance(holders_result, int) else None
+            price = to_float(t.get("price_usd"))             # DexScreener, main pool
 
             # --- Find or create the coin (unique by contract) ---------------
             coin = session.query(Coin).filter_by(contract=t["contract"]).first()
@@ -252,14 +245,21 @@ def save_tokens(tokens):
                     name=t.get("name") or t.get("symbol") or "unknown",
                     status="active",
                     ever_qualified=True,  # it passed all 7 filter steps to get here
-                    # first_seen is filled in automatically (default = now).
+                    # first_seen and active_since default to now.
+                    # Baseline for drop_logic's "holders down > 10%" check.
+                    holders_at_entry=holder_num,
                 )
                 session.add(coin)
                 session.flush()  # flush so the new coin gets its id now
                 stats["new_coins"] += 1
             else:
                 # It qualified again -> mark it as a legitimate opportunity.
+                # Status is never changed here: the filter only brings NEW
+                # coins into active. Recovering a DROPPED coin is drop_logic's
+                # job, on its own 4 health criteria.
                 coin.ever_qualified = True
+                if coin.status == "active" and coin.holders_at_entry is None:
+                    coin.holders_at_entry = holder_num   # fill a missing baseline
                 stats["existing_coins"] += 1
 
             # Store the security info (step 6) on the coin so the dashboard
@@ -268,6 +268,12 @@ def save_tokens(tokens):
             coin.verified = security["verified"]
             coin.renounced = security["renounced"]
             coin.mint_disabled = security["mint_disabled"]
+
+            # Current price for the dashboard. price_update.py refreshes it
+            # again at the end of every run, for active + dropped coins.
+            if price is not None:
+                coin.price_usd = price
+                coin.price_updated_at = utcnow()
 
             # Real category/narrative from CoinGecko. Only look it up once per
             # coin (cached); None -> the dashboard uses the generic sentence.
@@ -293,6 +299,7 @@ def save_tokens(tokens):
                     liquidity=liquidity,
                     mcap=mcap,
                     revenue=rev_num,      # DefiLlama daily revenue (None if unknown)
+                    price_usd=price,      # USD price that day
                     holders=holder_num,   # CMC DEX holder count (None if unknown)
                     # score is filled in later by the scoring step.
                 )
@@ -303,6 +310,7 @@ def save_tokens(tokens):
                 snapshot.liquidity = liquidity
                 snapshot.mcap = mcap
                 snapshot.revenue = rev_num
+                snapshot.price_usd = price
                 snapshot.holders = holder_num
                 stats["snapshots_updated"] += 1
 

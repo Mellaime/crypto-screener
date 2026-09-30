@@ -46,6 +46,17 @@ class Coin(Base):
     # qualifying run). Coins that never qualified are removed silently and
     # never appear in the dropped_coins table.
     ever_qualified = Column(Boolean, default=False)
+    # When it (last) entered the active list - fresh or recovered. drop_logic
+    # leaves a coin alone for its first 5 days in active.
+    active_since = Column(DateTime, default=utcnow)
+    # Holder count when it entered active: the baseline for drop_logic's
+    # "holders down > 10%" check. None -> not enough history, check skipped.
+    holders_at_entry = Column(Integer)
+    # CURRENT USD price (DexScreener, most-liquid pool). Refreshed on EVERY
+    # daily run for active + dropped coins (price_update.py) - this is the
+    # price the dashboard shows, never more than ~24h old.
+    price_usd = Column(Float)
+    price_updated_at = Column(DateTime)
 
     # Security info (from GoPlus, filter #7) - stored so the dashboard shows it.
     security_verdict = Column(String)   # "safe" / "unsafe" / "unknown"
@@ -89,6 +100,7 @@ class DailySnapshot(Base):
     mcap = Column(Float)        # market capitalization
     holders = Column(Integer)   # number of holders
     revenue = Column(Float)     # protocol/token revenue
+    price_usd = Column(Float)   # USD price on that day (DexScreener)
     score = Column(Float)       # our computed ranking score
 
     coin = relationship("Coin", back_populates="snapshots")
