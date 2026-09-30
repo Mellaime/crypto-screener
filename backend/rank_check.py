@@ -45,6 +45,13 @@ CMC_BASE = "https://pro-api.coinmarketcap.com"
 
 REQUEST_DELAY = 2.5  # seconds before each LIVE call (free tiers are limited)
 
+# CoinGecko calls budget. A coin's CoinGecko rank comes, in order, from:
+#   1. this run's discovery pages (discovery.LAST_CG_RANKS) - free
+#   2. the rank already stored for it THIS ISO week      - free (rank change
+#      is week-over-week, so one reading per week is enough)
+#   3. an individual lookup - 1 CoinGecko call, at most this many per run
+RANK_LOOKUP_BUDGET = 10
+
 # Per-process memo so we never fetch the same coin twice in one run.
 _memo = {}
 
@@ -212,20 +219,44 @@ def _upsert_and_change(session, coin_id, source, week, rank):
     return compute_change(prev_rank, rank)
 
 
+def _cg_rank_this_run(session, coin, week, stats):
+    """CoinGecko rank with as few CoinGecko calls as possible (see
+    RANK_LOOKUP_BUDGET). Returns the rank or None."""
+    from discovery import LAST_CG_RANKS
+    from models import RankHistory
+
+    rank = LAST_CG_RANKS.get(coin.contract.lower())
+    if rank is not None:
+        stats["cg_from_discovery"] += 1
+        return rank
+    stored = (session.query(RankHistory)
+              .filter_by(coin_id=coin.id, source="coingecko", week=week).first())
+    if stored is not None and stored.rank is not None:
+        stats["cg_from_this_week"] += 1
+        return stored.rank
+    if stats["cg_looked_up"] < RANK_LOOKUP_BUDGET:
+        stats["cg_looked_up"] += 1
+        return get_coingecko_rank(coin.contract, coin.chain)
+    stats["cg_over_budget"] += 1
+    return None
+
+
 def run_rank_update():
     """Fetch + store ranks for every ACTIVE coin and compute the change."""
     from database import SessionLocal
     from models import Coin
 
     week = _iso_week()
-    stats = {"coins": 0, "cg_found": 0, "cmc_found": 0, "with_change": 0}
+    stats = {"coins": 0, "cg_found": 0, "cmc_found": 0, "with_change": 0,
+             "cg_from_discovery": 0, "cg_from_this_week": 0, "cg_looked_up": 0,
+             "cg_over_budget": 0}
     details = []
 
     session = SessionLocal()
     try:
         coins = session.query(Coin).filter_by(status="active").all()
         for coin in coins:
-            cg = get_coingecko_rank(coin.contract, coin.chain)
+            cg = _cg_rank_this_run(session, coin, week, stats)
             cmc = get_cmc_rank(coin.contract, coin.chain)
             if cg is not None:
                 stats["cg_found"] += 1
@@ -236,8 +267,11 @@ def run_rank_update():
             cmc_change = _upsert_and_change(session, coin.id, "cmc", week, cmc)
             avg, signal = combine_signal(cg_change, cmc_change)
 
-            coin.cg_rank = cg
-            coin.cmc_rank = cmc
+            # No rank this run -> keep the last known one for display.
+            if cg is not None:
+                coin.cg_rank = cg
+            if cmc is not None:
+                coin.cmc_rank = cmc
             coin.rank_change = avg
             coin.rank_signal = signal
 
@@ -263,7 +297,11 @@ def _print_summary(stats, details, week):
     print(f"  RANK UPDATE ({week})")
     print(line)
     print(f"  active coins ......... {stats['coins']:>4}")
-    print(f"  CoinGecko ranks ...... {stats['cg_found']:>4}")
+    print(f"  CoinGecko ranks ...... {stats['cg_found']:>4}"
+          f"   (from discovery pages {stats.get('cg_from_discovery', 0)}, "
+          f"stored this week {stats.get('cg_from_this_week', 0)}, "
+          f"looked up {stats.get('cg_looked_up', 0)}/{RANK_LOOKUP_BUDGET} CoinGecko "
+          f"calls, over budget {stats.get('cg_over_budget', 0)})")
     print(f"  CoinMarketCap ranks .. {stats['cmc_found']:>4}")
     print(f"  with change vs last wk {stats['with_change']:>4}")
     print("  " + "-" * 56)

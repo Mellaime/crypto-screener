@@ -93,6 +93,38 @@ _ID_PLATFORMS_CACHE = None
 # (discovery, meme, cap, enriched), read by the save summary and the funnel.
 LAST_COUNTS = {}
 
+# CoinGecko market-cap rank of every coin seen on this run's discovery pages,
+# keyed by lowercased contract. Free (the pages are fetched anyway), so
+# rank_check reads ranks from here instead of one CoinGecko call per coin.
+LAST_CG_RANKS = {}
+
+
+# Retry a failed discovery request with back-off before giving up on it.
+RETRY_WAITS = [5, 15, 30]
+# If this many pages IN A ROW still fail after retries, the API is down: stop
+# that source (loudly) instead of hammering it for every remaining page.
+MAX_CONSECUTIVE_FAILED_PAGES = 3
+
+# Pages that still failed after retries in the latest run (for reporting).
+DISCOVERY_ISSUES = {}
+
+
+def _get_retry(url, params=None, headers=None, timeout=40):
+    """
+    _get() with retries: a failed request (network error, HTTP error, bad
+    JSON) is retried after 5s, 15s, 30s. Returns the JSON, or None if every
+    attempt failed. NOTE: an EMPTY result ([]) is a success, not a failure -
+    callers must treat None ("failed") and [] ("genuinely empty") differently.
+    """
+    for wait in [0] + RETRY_WAITS:
+        if wait:
+            print(f"[INFO] retrying in {wait}s: {url}")
+            time.sleep(wait)
+        data = _get(url, params, headers, timeout)
+        if data is not None:
+            return data
+    return None
+
 
 def _cg_id_to_platforms():
     """Map every CoinGecko id -> {platform: contract}. Cached for the process so
@@ -100,9 +132,18 @@ def _cg_id_to_platforms():
     global _ID_PLATFORMS_CACHE
     if _ID_PLATFORMS_CACHE is not None:
         return _ID_PLATFORMS_CACHE
-    data = _get(CG_LIST_URL, {"include_platform": "true"}, {"x-cg-demo-api-key": CG_KEY})
+    data = _get_retry(CG_LIST_URL, {"include_platform": "true"},
+                      {"x-cg-demo-api-key": CG_KEY})
+    if data is None:
+        # Without this list no CoinGecko coin has a contract address, so the
+        # whole CoinGecko source would come back empty. Don't cache the
+        # failure - a later caller in this run tries again.
+        print("[WARN] CoinGecko coins list failed after retries - CoinGecko "
+              "candidates will be missing this run")
+        DISCOVERY_ISSUES["coingecko_coins_list_failed"] = True
+        return {}
     out = {}
-    for x in data or []:
+    for x in data:
         plats = {p: a for p, a in (x.get("platforms") or {}).items() if a}
         if plats:
             out[x["id"]] = plats
@@ -116,16 +157,34 @@ def from_coingecko(max_pages=30):
         return []
     id_platforms = _cg_id_to_platforms()
     out = []
+    failed_pages, consecutive = [], 0
     for page in range(1, max_pages + 1):
         time.sleep(CG_DELAY)
-        rows = _get(CG_MARKETS_URL,
-                    {"vs_currency": "usd", "order": "market_cap_desc",
-                     "per_page": 250, "page": page},
-                    {"x-cg-demo-api-key": CG_KEY})
+        rows = _get_retry(CG_MARKETS_URL,
+                          {"vs_currency": "usd", "order": "market_cap_desc",
+                           "per_page": 250, "page": page},
+                          {"x-cg-demo-api-key": CG_KEY})
+        if rows is None:
+            # This page failed even after retries: skip JUST this page and
+            # carry on with the next one - don't end discovery.
+            failed_pages.append(page)
+            consecutive += 1
+            print(f"[WARN] CoinGecko markets page {page} failed after retries - skipped")
+            if consecutive >= MAX_CONSECUTIVE_FAILED_PAGES:
+                print(f"[WARN] {consecutive} CoinGecko pages in a row failed - "
+                      f"CoinGecko looks down, stopping CoinGecko discovery")
+                break
+            continue
+        consecutive = 0
         if not rows:
-            break
+            break                           # genuinely past the end of the list
         below = False
         for coin in rows:
+            # Remember every coin's CoinGecko market-cap rank: rank_check reads
+            # it from here instead of one CoinGecko call per coin.
+            if coin.get("market_cap_rank") is not None:
+                for addr in id_platforms.get(coin["id"], {}).values():
+                    LAST_CG_RANKS[addr.lower()] = coin["market_cap_rank"]
             mc = coin.get("market_cap")
             if mc is None:
                 continue
@@ -143,6 +202,7 @@ def from_coingecko(max_pages=30):
                 })
         if below or len(rows) < 250:
             break
+    DISCOVERY_ISSUES["coingecko_failed_pages"] = failed_pages
     return out
 
 
@@ -153,10 +213,14 @@ def from_coinmarketcap(limit=5000):
     """CMC listings filtered to the mcap window (server-side)."""
     if not CMC_KEY:
         return []
-    data = _get(CMC_LISTINGS_URL,
+    data = _get_retry(CMC_LISTINGS_URL,
                 {"start": 1, "limit": limit,
                  "market_cap_min": MIN_MCAP, "market_cap_max": MAX_MCAP},
                 {"X-CMC_PRO_API_KEY": CMC_KEY, "Accept": "application/json"})
+    if data is None:
+        print("[WARN] CoinMarketCap listings failed after retries - CMC "
+              "candidates will be missing this run")
+        DISCOVERY_ISSUES["cmc_failed"] = True
     out = []
     for x in (data or {}).get("data", []) or []:
         plat = x.get("platform")
@@ -218,6 +282,8 @@ def discover_candidates(verbose=True):
     remove memes and stablecoins EARLY (before enrichment / the filter chain).
     Every remaining candidate goes on to the filter - there is no cap.
     """
+    DISCOVERY_ISSUES.clear()
+    LAST_CG_RANKS.clear()
     cg = from_coingecko()
     cmc = from_coinmarketcap()
 
@@ -273,6 +339,11 @@ def discover_candidates(verbose=True):
         print(f"  MEME dropped ............. {meme_dropped:>5}")
         print(f"  STABLECOIN dropped ....... {stable_dropped:>5}")
         print(f"  AFTER meme+stable filter . {after_excl:>5}")
+        failed = DISCOVERY_ISSUES.get("coingecko_failed_pages") or []
+        print(f"  CoinGecko pages skipped (failed after retries): "
+              f"{failed if failed else 'none'}")
+        if DISCOVERY_ISSUES.get("cmc_failed"):
+            print("  CoinMarketCap listings: FAILED after retries")
         print("=" * 52)
     return merged
 

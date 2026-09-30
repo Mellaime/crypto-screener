@@ -108,6 +108,30 @@ def get_daily_volumes(contract, chain, window=WINDOW_DAYS):
     return vols
 
 
+def record_verdict(session, contract, verdict, when):
+    """Store the latest volume verdict for a coin (the volume_verdicts table),
+    so a later check - e.g. drop_logic's - can reuse it without a new call."""
+    from models import VolumeVerdict
+
+    key = (contract or "").lower()
+    row = session.query(VolumeVerdict).filter_by(contract=key).first()
+    if row is None:
+        session.add(VolumeVerdict(contract=key, verdict=verdict, checked_at=when))
+        session.flush()   # so a 2nd check of the same contract in this run finds it
+    else:
+        row.verdict = verdict
+        row.checked_at = when
+
+
+def latest_verdict(session, contract):
+    """(verdict, checked_at) of the latest stored volume check, or (None, None)."""
+    from models import VolumeVerdict
+
+    row = (session.query(VolumeVerdict)
+           .filter_by(contract=(contract or "").lower()).first())
+    return (row.verdict, row.checked_at) if row else (None, None)
+
+
 def check_volume_rising(contract, chain):
     """
     Decide the volume filter for one coin. Returns a dict (see module docstring):

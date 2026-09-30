@@ -42,11 +42,11 @@ from discovery import discover_tokens   # steps 1-2: discovery + meme/stablecoin
                                         # (DexScreener only enriches by contract)
 from age_check import decide_age                    # step 3
 from revenue_check import check_revenue             # step 4
-from volume_check import check_volume_rising       # step 5
+from volume_check import check_volume_rising, record_verdict   # step 5
 from rotation import pick_batch, mark_checked, ROTATION_BUDGET   # queue for 4-7
 from security_check import check_token_security     # step 6 (honeypot)
 from liquidity_check import check_liquidity_trend   # step 7 (LAST)
-from narrative_check import get_category
+from narrative_check import lookup_category, CATEGORY_BUDGET
 from holders_check import get_holder_count          # stored only - NOT a filter
 
 
@@ -141,6 +141,7 @@ def save_tokens(tokens):
         "existing_coins": 0,
         "snapshots_inserted": 0,
         "snapshots_updated": 0,
+        "category_lookups": 0,       # live CoinGecko category calls this run
     }
 
     session = SessionLocal()
@@ -195,6 +196,8 @@ def save_tokens(tokens):
             # --- Step 5: VOLUME RISING (CoinGecko, 5 complete days) --------
             # rising -> keep; falling or unknown (no CoinGecko history) -> drop.
             vol = check_volume_rising(t["contract"], t["chain"])
+            # Keep the verdict so drop_logic can reuse it (no 2nd CoinGecko call).
+            record_verdict(session, t["contract"], vol["verdict"], utcnow())
             if vol["verdict"] != "rising":
                 if vol["verdict"] == "falling":
                     stats["skipped_vol_falling"] += 1
@@ -275,10 +278,20 @@ def save_tokens(tokens):
                 coin.price_usd = price
                 coin.price_updated_at = utcnow()
 
-            # Real category/narrative from CoinGecko. Only look it up once per
-            # coin (cached); None -> the dashboard uses the generic sentence.
-            if not coin.category:
-                coin.category = get_category(t["contract"], t["chain"])
+            # Real category/narrative from CoinGecko - looked up ONCE per coin:
+            #   None -> not looked up yet (the dashboard shows the generic
+            #           sentence); tried within CATEGORY_BUDGET per run
+            #   ""   -> looked up, CoinGecko has no usable category (final -
+            #           never looked up again)
+            # A transient failure leaves it None, so it's retried later.
+            if (coin.category is None
+                    and stats["category_lookups"] < CATEGORY_BUDGET):
+                cat, definitive, called = lookup_category(t["contract"], t["chain"])
+                stats["category_lookups"] += int(called)
+                if cat:
+                    coin.category = cat
+                elif definitive:
+                    coin.category = ""
 
             # The DefiLlama daily revenue number (step 4); None if UNKNOWN.
             rev_num = revenue.get("daily_revenue")
@@ -373,6 +386,8 @@ def print_summary(stats):
     print(f"         + already existed (re-saved) ........ {stats['existing_coins']:>6}")
     print(f"  Snapshots inserted / updated today ......... "
           f"{stats['snapshots_inserted']:>3} / {stats['snapshots_updated']}")
+    print(f"  Category lookups (CoinGecko calls) ......... "
+          f"{stats['category_lookups']:>3} / {CATEGORY_BUDGET} budget")
     print(line)
 
 

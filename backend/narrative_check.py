@@ -82,6 +82,10 @@ PREFERRED = [
 # Seconds to wait before each LIVE call (cached lookups don't wait).
 REQUEST_DELAY = 2.5
 
+# Max live CoinGecko category lookups per daily run (display-only info; a coin
+# not looked up yet shows the generic narrative and gets its turn later).
+CATEGORY_BUDGET = 20
+
 CACHE_FILE = Path(__file__).resolve().parent / "coingecko_cache.json"
 
 
@@ -122,17 +126,32 @@ def get_category(contract, chain):
     Return a short category tag for the coin, or None to signal 'use the
     generic narrative instead'. Never raises.
     """
+    return lookup_category(contract, chain)[0]
+
+
+def lookup_category(contract, chain):
+    """
+    Like get_category, but also says whether the answer is FINAL. Returns
+    (category_or_None, definitive, made_call):
+      * definitive=True  -> CoinGecko really has this answer (a tag, or no
+        usable category / not listed / chain not on CoinGecko) - safe to
+        remember forever, never look up again.
+      * definitive=False -> a transient failure (network, 429, bad status):
+        try again on a later run.
+      * made_call        -> a live CoinGecko request was made (for budgeting).
+    Never raises.
+    """
     platform = CHAIN_TO_PLATFORM.get((chain or "").lower())
     if not platform or not contract:
-        return None  # chain not supported by CoinGecko -> fall back
+        return None, True, False  # chain not supported by CoinGecko -> final
 
     key = f"{platform}:{contract.lower()}"
     if key in _CACHE:
-        return _CACHE[key]  # cached (may be None = "looked up, nothing useful")
+        return _CACHE[key], True, False  # cached definitive result (may be None)
 
     if not API_KEY:
         print("[WARN] No COINGECKO_API_KEY found in .env - skipping narrative.")
-        return None
+        return None, False, False
 
     # Be polite to the rate limiter before a real network call.
     time.sleep(REQUEST_DELAY)
@@ -145,28 +164,28 @@ def get_category(contract, chain):
         )
     except requests.exceptions.RequestException as e:
         print(f"[WARN] CoinGecko request failed: {e}")
-        return None  # don't cache transient failures
+        return None, False, True  # don't cache transient failures
 
     if r.status_code == 404:
         _CACHE[key] = None  # definitively not on CoinGecko
         _save_cache()
-        return None
+        return None, True, True
     if r.status_code == 429:
         print("[WARN] CoinGecko rate limit (429) - falling back this time.")
-        return None  # don't cache; try again later
+        return None, False, True  # don't cache; try again later
     if r.status_code != 200:
         print(f"[WARN] CoinGecko returned status {r.status_code}")
-        return None
+        return None, False, True
 
     try:
         data = r.json()
     except ValueError:
-        return None
+        return None, False, True
 
     category = _pick_category(data.get("categories") or [])
     _CACHE[key] = category  # cache the definitive result (tag or None)
     _save_cache()
-    return category
+    return category, True, True
 
 
 # ---------------------------------------------------------------------------

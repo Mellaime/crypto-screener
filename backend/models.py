@@ -167,3 +167,24 @@ class CoinQueue(Base):
 
     def __repr__(self):
         return f"<CoinQueue {self.chain}:{self.contract} seen={self.first_seen} checked={self.last_checked}>"
+
+
+class VolumeVerdict(Base):
+    """
+    The latest CoinGecko volume verdict per coin ("rising" / "falling" /
+    "unknown"), written every time volume is checked - by the filter's rotation
+    or by drop_logic. drop_logic REUSES a recent verdict instead of paying
+    another CoinGecko call for the same coin (see drop_logic.VOLUME_REUSE_DAYS).
+
+    Keyed by lowercased contract only: saved coins carry DexScreener's chain
+    name, discovery candidates CoinGecko/CMC's, and the two can differ.
+    """
+    __tablename__ = "volume_verdicts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    contract = Column(String, nullable=False, unique=True, index=True)   # lowercased
+    verdict = Column(String, nullable=False)
+    checked_at = Column(DateTime, nullable=False)
+
+    def __repr__(self):
+        return f"<VolumeVerdict {self.contract} {self.verdict} at {self.checked_at}>"

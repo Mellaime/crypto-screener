@@ -49,6 +49,16 @@ GRACE_DAYS = 5               # calendar days untouched after entering active
 RECOVERY_DAYS = 7            # daily recovery re-checks before permanent delete
 MAX_HOLDER_DROP_PCT = 10     # holders down more than this -> unhealthy
 
+# VOLUME without a CoinGecko call per coin per day. Every volume check (the
+# filter's rotation or this module) stores its verdict (volume_verdicts); here
+# the latest verdict is REUSED while it's recent, and only refreshed with a
+# new CoinGecko call when it's older than the window - within a per-run budget,
+# oldest verdicts first. Over budget -> the last stored verdict is used as-is
+# ("unknown" only if the coin was never checked).
+VOLUME_REUSE_DAYS = {"active": 7,     # filter re-checks every coin each cycle
+                     "dropped": 2}    # recovery window is 7 days: look again often
+VOLUME_REFRESH_BUDGET = {"active": 10, "dropped": 20}   # CoinGecko calls per run
+
 
 def _delete_coin(session, coin):
     """Remove a coin completely: its snapshots, any dropped_coins rows, itself."""
@@ -72,7 +82,35 @@ def in_grace(coin, today):
     return since is not None and days_since(since, today) < GRACE_DAYS
 
 
-def unhealthy_reason(coin):
+def volume_verdict(session, coin, kind, budget, now):
+    """The coin's volume verdict, reusing the stored one when it's recent (see
+    VOLUME_REUSE_DAYS) and refreshing it within `budget` otherwise."""
+    from volume_check import check_volume_rising, latest_verdict, record_verdict
+
+    verdict, checked_at = latest_verdict(session, coin.contract)
+    fresh = (checked_at is not None
+             and days_since(checked_at, now.date()) <= VOLUME_REUSE_DAYS[kind])
+    if fresh:
+        budget["reused"] += 1
+        return verdict
+    if budget[kind] > 0:
+        budget[kind] -= 1
+        budget["fetched"] += 1
+        verdict = check_volume_rising(coin.contract, coin.chain)["verdict"]
+        record_verdict(session, coin.contract, verdict, now)
+        return verdict
+    budget["stale"] += 1
+    return verdict or "unknown"          # over budget: last stored verdict
+
+
+def _verdict_age_key(session, coin):
+    """Sort key: coins whose volume verdict is oldest (or missing) first."""
+    from volume_check import latest_verdict
+    _, checked_at = latest_verdict(session, coin.contract)
+    return checked_at.isoformat() if checked_at else ""
+
+
+def unhealthy_reason(coin, session=None, kind="active", budget=None, now=None):
     """
     The 4 health criteria. Returns the first one that fires, or None if the
     coin is healthy. Unknown on any check counts as healthy.
@@ -97,8 +135,11 @@ def unhealthy_reason(coin):
     if sec["verdict"] == "unsafe":
         return f"Honeypot flagged ({sec['reason']})"
 
-    vol = check_volume_rising(coin.contract, coin.chain)
-    if vol["verdict"] == "falling":
+    if session is not None and budget is not None:
+        vol = volume_verdict(session, coin, kind, budget, now or utcnow())
+    else:                                  # standalone use: plain live check
+        vol = check_volume_rising(coin.contract, coin.chain)["verdict"]
+    if vol == "falling":
         return "Volume falling (5 complete days)"
 
     return None
@@ -115,16 +156,21 @@ def run_drop_logic():
              "removed_never_qualified": 0}
     dropped_details, recovered_details, removed_details = [], [], []
     just_dropped = set()
+    budget = dict(VOLUME_REFRESH_BUDGET, reused=0, fetched=0, stale=0)
+    stats["volume"] = budget
 
     session = SessionLocal()
     try:
         # --- ACTIVE: grace, then the 4 health criteria -----------------------
-        for coin in session.query(Coin).filter_by(status="active").all():
+        # Oldest volume verdicts first, so the refresh budget goes where needed.
+        active = sorted(session.query(Coin).filter_by(status="active").all(),
+                        key=lambda c: _verdict_age_key(session, c))
+        for coin in active:
             if in_grace(coin, today):
                 stats["in_grace"] += 1
                 continue
             stats["checked"] += 1
-            reason = unhealthy_reason(coin)
+            reason = unhealthy_reason(coin, session, "active", budget, now)
             if reason is None:
                 continue                                   # healthy -> stays
             if not coin.ever_qualified:
@@ -139,7 +185,9 @@ def run_drop_logic():
         session.flush()
 
         # --- DROPPED: re-check the same 4 criteria; recover or, on day 7, delete
-        for coin in session.query(Coin).filter_by(status="dropped").all():
+        dropped = sorted(session.query(Coin).filter_by(status="dropped").all(),
+                         key=lambda c: _verdict_age_key(session, c))
+        for coin in dropped:
             if coin.id in just_dropped:
                 continue                                   # dropped a moment ago
             last = (session.query(DroppedCoin.dropped_date)
@@ -147,7 +195,8 @@ def run_drop_logic():
                     .order_by(DroppedCoin.dropped_date.desc()).first())
             days = days_since(last[0], today) if last else RECOVERY_DAYS
 
-            if unhealthy_reason(coin) is None:             # all 4 healthy -> RECOVER
+            if unhealthy_reason(coin, session, "dropped", budget, now) is None:
+                # all 4 healthy -> RECOVER
                 session.query(DroppedCoin).filter_by(coin_id=coin.id).delete(
                     synchronize_session=False)
                 h = get_holder_count(coin.contract, coin.chain)
@@ -198,6 +247,12 @@ def _print_summary(stats, dropped_details, recovered_details, removed_details):
         print(f"      - {(name or 'unknown')[:18]}")
     print(f"  Removed (never qualified) ......... {stats['removed_never_qualified']:>5}")
     print(f"  Still active ...................... {stats['active_remaining']:>5}")
+    v = stats.get("volume") or {}
+    print(f"  Volume verdicts: reused {v.get('reused', 0)} | fetched "
+          f"{v.get('fetched', 0)} CoinGecko calls (budget "
+          f"{VOLUME_REFRESH_BUDGET['active']} active + "
+          f"{VOLUME_REFRESH_BUDGET['dropped']} dropped) | stale, over budget "
+          f"{v.get('stale', 0)}")
     print(line)
 
 

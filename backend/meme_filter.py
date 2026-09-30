@@ -40,7 +40,9 @@ import time
 from dotenv import load_dotenv
 
 # Reuse discovery's CoinGecko helpers + maps (no duplication, no extra config).
-from discovery import _get, CG_MARKETS_URL, CG_PLATFORM_TO_CHAIN, _cg_id_to_platforms
+from discovery import (_get_retry, CG_MARKETS_URL, CG_PLATFORM_TO_CHAIN,
+                       _cg_id_to_platforms, DISCOVERY_ISSUES,
+                       MAX_CONSECUTIVE_FAILED_PAGES)
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 CG_KEY = os.getenv("COINGECKO_API_KEY")
@@ -93,14 +95,26 @@ def _fetch_cg_category_keys(categories, id_platforms=None, min_mcap=MIN_MCAP,
 
     ids = set()
     for category in categories:
+        consecutive = 0
         for page in range(1, max_pages + 1):
             time.sleep(CG_DELAY)
-            rows = _get(CG_MARKETS_URL,
-                        {"vs_currency": "usd", "category": category,
-                         "order": "market_cap_desc", "per_page": 250, "page": page},
-                        {"x-cg-demo-api-key": CG_KEY})
+            rows = _get_retry(CG_MARKETS_URL,
+                              {"vs_currency": "usd", "category": category,
+                               "order": "market_cap_desc", "per_page": 250, "page": page},
+                              {"x-cg-demo-api-key": CG_KEY})
+            if rows is None:
+                # Failed even after retries: skip just this page, keep going.
+                consecutive += 1
+                print(f"[WARN] CoinGecko '{category}' page {page} failed after "
+                      f"retries - skipped (some of these coins may not be excluded)")
+                DISCOVERY_ISSUES.setdefault("category_failed_pages", []).append(
+                    f"{category} p{page}")
+                if consecutive >= MAX_CONSECUTIVE_FAILED_PAGES:
+                    break
+                continue
+            consecutive = 0
             if not rows:
-                break
+                break                              # genuinely past the end
             for coin in rows:
                 mc = coin.get("market_cap")
                 if mc is None or mc >= min_mcap:
