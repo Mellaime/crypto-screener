@@ -116,6 +116,9 @@ _NEW_COLUMNS = [
     ("daily_snapshots", "price_usd", "FLOAT", None),
     ("coins", "price_usd", "FLOAT", None),
     ("coins", "price_updated_at", "TIMESTAMP", None),
+    # Daily Codex readings (tracking.py) - drop_logic's trend history.
+    ("daily_snapshots", "codex_liquidity", "FLOAT", None),
+    ("daily_snapshots", "codex_volume24", "FLOAT", None),
 ]
 
 

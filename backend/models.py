@@ -53,7 +53,7 @@ class Coin(Base):
     # "holders down > 10%" check. None -> not enough history, check skipped.
     holders_at_entry = Column(Integer)
     # CURRENT USD price (DexScreener, most-liquid pool). Refreshed on EVERY
-    # daily run for active + dropped coins (price_update.py) - this is the
+    # daily run for active + dropped coins (tracking.py) - this is the
     # price the dashboard shows, never more than ~24h old.
     price_usd = Column(Float)
     price_updated_at = Column(DateTime)
@@ -101,6 +101,11 @@ class DailySnapshot(Base):
     holders = Column(Integer)   # number of holders
     revenue = Column(Float)     # protocol/token revenue
     price_usd = Column(Float)   # USD price on that day (DexScreener)
+    # Daily Codex readings for active + dropped coins (tracking.py). drop_logic
+    # computes its volume + liquidity TRENDS from these, day by day - a
+    # separate, consistent source from the display volume/liquidity above.
+    codex_liquidity = Column(Float)
+    codex_volume24 = Column(Float)
     score = Column(Float)       # our computed ranking score
 
     coin = relationship("Coin", back_populates="snapshots")
@@ -167,24 +172,3 @@ class CoinQueue(Base):
 
     def __repr__(self):
         return f"<CoinQueue {self.chain}:{self.contract} seen={self.first_seen} checked={self.last_checked}>"
-
-
-class VolumeVerdict(Base):
-    """
-    The latest CoinGecko volume verdict per coin ("rising" / "falling" /
-    "unknown"), written every time volume is checked - by the filter's rotation
-    or by drop_logic. drop_logic REUSES a recent verdict instead of paying
-    another CoinGecko call for the same coin (see drop_logic.VOLUME_REUSE_DAYS).
-
-    Keyed by lowercased contract only: saved coins carry DexScreener's chain
-    name, discovery candidates CoinGecko/CMC's, and the two can differ.
-    """
-    __tablename__ = "volume_verdicts"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    contract = Column(String, nullable=False, unique=True, index=True)   # lowercased
-    verdict = Column(String, nullable=False)
-    checked_at = Column(DateTime, nullable=False)
-
-    def __repr__(self):
-        return f"<VolumeVerdict {self.contract} {self.verdict} at {self.checked_at}>"

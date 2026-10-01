@@ -5,7 +5,7 @@ Phase 2 - Step (b): run the filter chain on discovered tokens and save the
 survivors into the database.
 
 THE FILTER - exactly these 7 steps, in this order:
-    1. Discovery  - CoinGecko + CoinMarketCap, MCap $1M-$500M (discovery.py).
+    1. Discovery  - CoinGecko + CoinMarketCap, MCap $5M-$350M (discovery.py).
                     MCap is enforced HERE only - there is no later mcap step.
     2. Meme +     - memes AND stablecoins removed right after discovery
        Stablecoin   (meme_filter.py).
@@ -14,7 +14,7 @@ THE FILTER - exactly these 7 steps, in this order:
     -- ROTATION QUEUE (rotation.py): steps 4-7 run only on ROTATION_BUDGET
        age-passers per run, first-come-first-served; the rest wait. --
     4. Revenue    - DefiLlama; DROP only on confirmed NO_REVENUE.
-    5. Volume     - CoinGecko 5 complete days, day5 > day1; falling or
+    5. Volume     - CoinGecko 5 complete days, day5 >= day1 x 1.35 (+35%); less or
                     unknown -> DROP (volume_check.py).
     6. Honeypot   - GoPlus; DROP only on confirmed unsafe. After volume
                     because free GoPlus is rate-limited (~20-30 calls/min).
@@ -42,8 +42,9 @@ from discovery import discover_tokens   # steps 1-2: discovery + meme/stablecoin
                                         # (DexScreener only enriches by contract)
 from age_check import decide_age                    # step 3
 from revenue_check import check_revenue             # step 4
-from volume_check import check_volume_rising, record_verdict   # step 5
-from rotation import pick_batch, mark_checked, ROTATION_BUDGET   # queue for 4-7
+from volume_check import check_volume_rising       # step 5
+from rotation import (pick_batch, mark_checked, analyzed_keys, is_analyzed,
+                      ROTATION_BUDGET)              # entry queue for steps 4-7
 from security_check import check_token_security     # step 6 (honeypot)
 from liquidity_check import check_liquidity_trend   # step 7 (LAST)
 from narrative_check import lookup_category, CATEGORY_BUDGET
@@ -123,10 +124,11 @@ def save_tokens(tokens):
         "passed_volume": 0,          # volume rising (CoinGecko 5-day)
         "skipped_vol_falling": 0,
         "skipped_vol_unknown": 0,    # no CoinGecko history / chain not on CG
+        "already_analyzed": 0,       # analyzed on an earlier run -> skipped
         "queue_new": 0,              # age-passers seen for the first time
-        "queue_known": 0,            # age-passers already in the queue
         "queue_picked": 0,           # got the expensive steps this run
         "queue_waiting": 0,          # waiting for a later run
+        "vol_retry_next_run": 0,     # CoinGecko failed transiently -> retried
         "passed_liquidity": 0,       # Codex liquidity trend (step 7)
         "skipped_liq_falling": 0,    # down more than 5% over the window
         "liquidity_unknown": 0,      # no Codex data -> passed, not dropped
@@ -151,8 +153,16 @@ def save_tokens(tokens):
         # DexScreener pairCreatedAt, else CoinMarketCap/CoinGecko listing date
         # (see age_check.decide_age). Younger than 10 days, OR of unknowable
         # age, is dropped here.
+        # The filter is a ONE-TIME entry gate: coins already analyzed on an
+        # earlier run are skipped right here - never re-analyzed, and no age
+        # fallback calls spent on them. (Coins in active/dropped are tracked
+        # daily by Codex instead: tracking.py + drop_logic.py.)
+        analyzed = analyzed_keys(session)
+        fresh_tokens = [t for t in tokens if not is_analyzed(t, analyzed)]
+        stats["already_analyzed"] = len(tokens) - len(fresh_tokens)
+
         age_passed = []
-        for t in tokens:
+        for t in fresh_tokens:
             keep_age, age_days, age_source = decide_age(t)
             if age_source == "fallback":
                 stats["age_via_fallback"] += 1
@@ -165,16 +175,15 @@ def save_tokens(tokens):
             stats["passed_age"] += 1
             age_passed.append(t)
 
-        # --- ROTATION QUEUE (rotation.py) -----------------------------------
-        # The expensive steps 4-7 run only on ROTATION_BUDGET age-passers per
-        # run: the ones that have waited longest. New coins join at the back
-        # of the queue (no priority). Everyone else waits for a later run -
-        # skipped this run, neither saved nor dropped.
+        # --- ENTRY QUEUE (rotation.py) --------------------------------------
+        # The expensive steps 4-7 run only on ROTATION_BUDGET never-analyzed
+        # age-passers per run, in arrival order. The rest wait for a later run
+        # - skipped this run, neither saved nor dropped.
         picked, queue = pick_batch(session, age_passed)
         stats["queue_new"] = queue["new"]
-        stats["queue_known"] = queue["known"]
         stats["queue_picked"] = len(picked)
         stats["queue_waiting"] = queue["queued"] - len(picked)
+        retry_next_run = []   # CoinGecko failed transiently -> not analyzed yet
 
         for t in picked:
             # --- Step 4: revenue EXISTENCE (DefiLlama) ---------------------
@@ -195,9 +204,14 @@ def save_tokens(tokens):
 
             # --- Step 5: VOLUME RISING (CoinGecko, 5 complete days) --------
             # rising -> keep; falling or unknown (no CoinGecko history) -> drop.
+            # This is the coin's ONE CoinGecko check. If it failed only because
+            # of a network error / rate limit, don't count the coin as analyzed
+            # - it gets another try next run instead of being shut out forever.
             vol = check_volume_rising(t["contract"], t["chain"])
-            # Keep the verdict so drop_logic can reuse it (no 2nd CoinGecko call).
-            record_verdict(session, t["contract"], vol["verdict"], utcnow())
+            if vol.get("transient"):
+                retry_next_run.append(t)
+                stats["vol_retry_next_run"] += 1
+                continue
             if vol["verdict"] != "rising":
                 if vol["verdict"] == "falling":
                     stats["skipped_vol_falling"] += 1
@@ -272,8 +286,8 @@ def save_tokens(tokens):
             coin.renounced = security["renounced"]
             coin.mint_disabled = security["mint_disabled"]
 
-            # Current price for the dashboard. price_update.py refreshes it
-            # again at the end of every run, for active + dropped coins.
+            # Current price for the dashboard. tracking.py refreshes it
+            # again later in every run, for active + dropped coins.
             if price is not None:
                 coin.price_usd = price
                 coin.price_updated_at = utcnow()
@@ -330,7 +344,8 @@ def save_tokens(tokens):
         # Every coin that had its turn this run goes to the back of the queue
         # (whatever its result). Same transaction as the saves: if the run
         # fails, nothing is marked and those coins keep their place.
-        mark_checked(session, picked)
+        retry = {id(t) for t in retry_next_run}
+        mark_checked(session, [t for t in picked if id(t) not in retry])
 
         # Save everything at once. If anything above had failed, we'd roll back.
         session.commit()
@@ -352,29 +367,32 @@ def print_summary(stats):
     print(line)
     print("  FILTER FUNNEL (7 steps)")
     print(line)
-    print(f"  1. Discovery (CG+CMC, $1M-$500M) - unique .. {dc.get('discovery', '?'):>6}")
+    print(f"  1. Discovery (CG+CMC, $5M-$350M) - unique .. {dc.get('discovery', '?'):>6}")
     print(f"  2. Meme + stablecoin filter - passed ....... {dc.get('after_excl', '?'):>6}")
     print(f"       - dropped as meme ..................... {dc.get('meme_dropped', '?'):>6}")
     print(f"       - dropped as stablecoin ............... {dc.get('stable_dropped', '?'):>6}")
     print(f"       (not a filter: with DexScreener data -> {stats['discovered']})")
+    print(f"       (already analyzed on an earlier run -> skipped: "
+          f"{stats['already_analyzed']})")
     print(sub)
     print(f"  3. Age >= 10 days - passed ................. {stats['passed_age']:>6}")
     print(f"       - dropped (too new, <10d) ............. {stats['skipped_too_new']:>6}")
     print(f"       - dropped (age unknown) ............... {stats['skipped_no_age']:>6}")
     print(sub)
-    print(f"  ROTATION QUEUE (budget {ROTATION_BUDGET}/run) - not a filter:")
-    print(f"       age-passers: new {stats['queue_new']} + known {stats['queue_known']}")
-    print(f"       picked this run (waited longest) ...... {stats['queue_picked']:>6}")
+    print(f"  ENTRY QUEUE (never-analyzed coins, budget {ROTATION_BUDGET}/run):")
+    print(f"       first seen this run ................... {stats['queue_new']:>6}")
+    print(f"       picked this run (arrival order) ....... {stats['queue_picked']:>6}")
     print(f"       waiting for a later run ............... {stats['queue_waiting']:>6}")
     print(sub)
     print(f"  4. Revenue (DefiLlama) - passed ............ {stats['passed_revenue']:>6}")
     print(f"       - dropped (NO_REVENUE) ................ {stats['skipped_no_revenue']:>6}")
     print(f"       - passed as unknown ................... {stats['revenue_unknown']:>6}")
     import volume_check
-    print(f"  5. Volume rising (CoinGecko) - passed ...... {stats['passed_volume']:>6}"
+    print(f"  5. Volume +35% (CoinGecko) - passed ........ {stats['passed_volume']:>6}"
           f"   ({volume_check.CALLS} CoinGecko calls)")
     print(f"       - dropped (falling) ................... {stats['skipped_vol_falling']:>6}")
     print(f"       - dropped (no CG history) ............. {stats['skipped_vol_unknown']:>6}")
+    print(f"       - CoinGecko failed, retry next run .... {stats['vol_retry_next_run']:>6}")
     print(f"  6. Honeypot (GoPlus) - passed .............. {stats['passed_security']:>6}")
     print(f"       - dropped (honeypot/unsafe) ........... {stats['skipped_unsafe']:>6}")
     print(f"       - passed as unknown ................... {stats['security_unknown']:>6}")

@@ -48,7 +48,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 CG_KEY = os.getenv("COINGECKO_API_KEY")
 
 CG_DELAY = 2.5
-MIN_MCAP = 1_000_000        # match discovery's window: coins below this can't be
+MIN_MCAP = 5_000_000        # match discovery's window: coins below this can't be
                             # candidates anyway, so each bulk pull stops here.
 
 # CoinGecko category slugs (their /coins/markets `category` filter).

@@ -1,21 +1,26 @@
 """
 drop_logic.py
 -------------
-The DROP LOGIC. Completely separate from the 7-step filter: the filter only
-brings NEW coins into the active list; drop_logic only watches coins ALREADY
-there. It runs as part of the daily pipeline, after discover -> filter -> save.
+The DROP LOGIC. Completely separate from the 7-step filter: the filter is a
+one-time ENTRY gate for new coins; drop_logic only watches coins ALREADY in
+active / dropped. It runs daily after discover -> filter -> save -> tracking.
 
 It uses ONE set of 4 health criteria, both for dropping and for recovery:
-    * volume falling over the last 5 complete days        (CoinGecko)
-    * liquidity down > 5% over min(30 days, age)           (Codex)
-    * holders down > 10% vs the count when it entered active
-      (coins.holders_at_entry; no baseline yet -> this check is skipped)
-    * honeypot flagged unsafe                              (GoPlus)
-"Unknown" on any check counts as healthy - never drop, or keep out, on
-missing data. Revenue is NOT part of this.
+    * volume falling      - last 5 daily Codex readings, day5 <= day1
+    * liquidity down > 5% - today's Codex reading vs the one up to 30 days
+                            ago (or since it entered active, if shorter)
+    * holders down > 10%  - vs the count when it entered active
+                            (coins.holders_at_entry; no baseline -> skipped)
+    * honeypot unsafe     - GoPlus
+Volume + liquidity come ONLY from the daily Codex readings that tracking.py
+stores on each day's snapshot (~3 bulk Codex requests/day for all coins).
+NO CoinGecko here - CoinGecko is only the one-time entry check.
+"Unknown" (not enough readings yet, no data) counts as healthy - never drop,
+or keep out, on missing data. Revenue is NOT part of this.
 
 1. GRACE: a coin is untouched for its first GRACE_DAYS (5) calendar days in
-   active. Entered on day D -> first re-check on day D+5. Counted from
+   active - during which it collects the 5 daily readings the volume trend
+   needs. Entered on day D -> first re-check on day D+5. Counted from
    coins.active_since, which resets when a coin recovers.
 
 2. ACTIVE, past grace: re-checked daily. If ANY criterion fires -> DEGRADED:
@@ -30,17 +35,14 @@ missing data. Revenue is NOT part of this.
    Dropped on day D -> re-checked on days D+1 ... D+7 (7 chances); still
    failing on D+7 -> deleted.
 
-Checks stop at the first criterion that fires, with CoinGecko (the tightest
-free quota) last, so a failing coin doesn't spend CoinGecko calls.
-
 ever_qualified: a coin that never legitimately passed the filter is removed
 silently instead of being recorded in dropped_coins.
 
-Run it standalone:
+Run it standalone (after tracking.py has recorded today's readings):
     python drop_logic.py
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 from database import SessionLocal, init_db, utcnow
 from models import Coin, DailySnapshot, DroppedCoin
@@ -48,16 +50,10 @@ from models import Coin, DailySnapshot, DroppedCoin
 GRACE_DAYS = 5               # calendar days untouched after entering active
 RECOVERY_DAYS = 7            # daily recovery re-checks before permanent delete
 MAX_HOLDER_DROP_PCT = 10     # holders down more than this -> unhealthy
-
-# VOLUME without a CoinGecko call per coin per day. Every volume check (the
-# filter's rotation or this module) stores its verdict (volume_verdicts); here
-# the latest verdict is REUSED while it's recent, and only refreshed with a
-# new CoinGecko call when it's older than the window - within a per-run budget,
-# oldest verdicts first. Over budget -> the last stored verdict is used as-is
-# ("unknown" only if the coin was never checked).
-VOLUME_REUSE_DAYS = {"active": 7,     # filter re-checks every coin each cycle
-                     "dropped": 2}    # recovery window is 7 days: look again often
-VOLUME_REFRESH_BUDGET = {"active": 10, "dropped": 20}   # CoinGecko calls per run
+MAX_LIQ_DROP_PCT = 5         # liquidity down more than this -> unhealthy
+VOLUME_READINGS = 5          # volume trend = last 5 daily readings
+VOLUME_LOOKBACK_DAYS = 10    # ...taken from at most the last 10 days
+LIQ_WINDOW_DAYS = 30         # liquidity: vs up to 30 days back
 
 
 def _delete_coin(session, coin):
@@ -82,65 +78,69 @@ def in_grace(coin, today):
     return since is not None and days_since(since, today) < GRACE_DAYS
 
 
-def volume_verdict(session, coin, kind, budget, now):
-    """The coin's volume verdict, reusing the stored one when it's recent (see
-    VOLUME_REUSE_DAYS) and refreshing it within `budget` otherwise."""
-    from volume_check import check_volume_rising, latest_verdict, record_verdict
-
-    verdict, checked_at = latest_verdict(session, coin.contract)
-    fresh = (checked_at is not None
-             and days_since(checked_at, now.date()) <= VOLUME_REUSE_DAYS[kind])
-    if fresh:
-        budget["reused"] += 1
-        return verdict
-    if budget[kind] > 0:
-        budget[kind] -= 1
-        budget["fetched"] += 1
-        verdict = check_volume_rising(coin.contract, coin.chain)["verdict"]
-        record_verdict(session, coin.contract, verdict, now)
-        return verdict
-    budget["stale"] += 1
-    return verdict or "unknown"          # over budget: last stored verdict
+def codex_volume_trend(session, coin, today):
+    """'rising' / 'falling' from the last 5 daily Codex volume readings
+    (day5 > day1 -> rising), or 'unknown' if there aren't 5 yet."""
+    rows = (session.query(DailySnapshot.codex_volume24)
+            .filter(DailySnapshot.coin_id == coin.id,
+                    DailySnapshot.date <= today,
+                    DailySnapshot.date > today - timedelta(days=VOLUME_LOOKBACK_DAYS),
+                    DailySnapshot.codex_volume24.isnot(None))
+            .order_by(DailySnapshot.date.desc())
+            .limit(VOLUME_READINGS).all())
+    if len(rows) < VOLUME_READINGS:
+        return "unknown"
+    day5, day1 = rows[0][0], rows[-1][0]           # newest first
+    return "rising" if day5 > day1 else "falling"
 
 
-def _verdict_age_key(session, coin):
-    """Sort key: coins whose volume verdict is oldest (or missing) first."""
-    from volume_check import latest_verdict
-    _, checked_at = latest_verdict(session, coin.contract)
-    return checked_at.isoformat() if checked_at else ""
+def codex_liquidity_trend(session, coin, today):
+    """(verdict, pct, base_date): today's Codex liquidity vs the reading from up
+    to 30 days ago, or since the coin entered active if that's shorter.
+    verdict 'drop' if down > 5%, 'keep' otherwise, 'unknown' if < 2 readings."""
+    since = coin.active_since or coin.first_seen
+    start = today - timedelta(days=LIQ_WINDOW_DAYS)
+    if since is not None and since.date() > start:
+        start = since.date()
+    rows = (session.query(DailySnapshot.date, DailySnapshot.codex_liquidity)
+            .filter(DailySnapshot.coin_id == coin.id,
+                    DailySnapshot.date >= start,
+                    DailySnapshot.date <= today,
+                    DailySnapshot.codex_liquidity.isnot(None))
+            .order_by(DailySnapshot.date).all())
+    if len(rows) < 2 or not rows[0][1]:
+        return "unknown", None, None
+    (base_date, base), (_, latest) = rows[0], rows[-1]
+    pct = (latest - base) / base * 100
+    return ("drop" if pct < -MAX_LIQ_DROP_PCT else "keep"), pct, base_date
 
 
-def unhealthy_reason(coin, session=None, kind="active", budget=None, now=None):
+def unhealthy_reason(coin, session, today):
     """
     The 4 health criteria. Returns the first one that fires, or None if the
-    coin is healthy. Unknown on any check counts as healthy.
+    coin is healthy. Unknown on any check counts as healthy. The two free
+    checks (stored Codex history) go first; the network ones after.
     """
-    from liquidity_check import check_liquidity_trend
     from holders_check import get_holder_count
     from security_check import check_token_security
-    from volume_check import check_volume_rising
 
-    liq = check_liquidity_trend(coin.contract, coin.chain)
-    if liq["verdict"] == "drop":
-        return f"Liquidity down {abs(liq['pct']):.1f}% since {liq['base_date']}"
+    if codex_volume_trend(session, coin, today) == "falling":
+        return f"Volume falling (last {VOLUME_READINGS} daily readings)"
+
+    liq, pct, base_date = codex_liquidity_trend(session, coin, today)
+    if liq == "drop":
+        return f"Liquidity down {abs(pct):.1f}% since {base_date}"
 
     base = coin.holders_at_entry
     now_h = get_holder_count(coin.contract, coin.chain)
     if base and isinstance(now_h, int):
-        pct = (now_h - base) / base * 100
-        if pct < -MAX_HOLDER_DROP_PCT:
-            return f"Holders down {abs(pct):.1f}% ({base:,} -> {now_h:,})"
+        hpct = (now_h - base) / base * 100
+        if hpct < -MAX_HOLDER_DROP_PCT:
+            return f"Holders down {abs(hpct):.1f}% ({base:,} -> {now_h:,})"
 
     sec = check_token_security(coin.contract, coin.chain)
     if sec["verdict"] == "unsafe":
         return f"Honeypot flagged ({sec['reason']})"
-
-    if session is not None and budget is not None:
-        vol = volume_verdict(session, coin, kind, budget, now or utcnow())
-    else:                                  # standalone use: plain live check
-        vol = check_volume_rising(coin.contract, coin.chain)["verdict"]
-    if vol == "falling":
-        return "Volume falling (5 complete days)"
 
     return None
 
@@ -156,21 +156,19 @@ def run_drop_logic():
              "removed_never_qualified": 0}
     dropped_details, recovered_details, removed_details = [], [], []
     just_dropped = set()
-    budget = dict(VOLUME_REFRESH_BUDGET, reused=0, fetched=0, stale=0)
-    stats["volume"] = budget
+    # Snapshots are dated with date.today() (like save_to_db / tracking), so
+    # the Codex trend history is read against that same date.
+    snap_day = date.today()
 
     session = SessionLocal()
     try:
         # --- ACTIVE: grace, then the 4 health criteria -----------------------
-        # Oldest volume verdicts first, so the refresh budget goes where needed.
-        active = sorted(session.query(Coin).filter_by(status="active").all(),
-                        key=lambda c: _verdict_age_key(session, c))
-        for coin in active:
+        for coin in session.query(Coin).filter_by(status="active").all():
             if in_grace(coin, today):
                 stats["in_grace"] += 1
                 continue
             stats["checked"] += 1
-            reason = unhealthy_reason(coin, session, "active", budget, now)
+            reason = unhealthy_reason(coin, session, snap_day)
             if reason is None:
                 continue                                   # healthy -> stays
             if not coin.ever_qualified:
@@ -185,9 +183,7 @@ def run_drop_logic():
         session.flush()
 
         # --- DROPPED: re-check the same 4 criteria; recover or, on day 7, delete
-        dropped = sorted(session.query(Coin).filter_by(status="dropped").all(),
-                         key=lambda c: _verdict_age_key(session, c))
-        for coin in dropped:
+        for coin in session.query(Coin).filter_by(status="dropped").all():
             if coin.id in just_dropped:
                 continue                                   # dropped a moment ago
             last = (session.query(DroppedCoin.dropped_date)
@@ -195,7 +191,7 @@ def run_drop_logic():
                     .order_by(DroppedCoin.dropped_date.desc()).first())
             days = days_since(last[0], today) if last else RECOVERY_DAYS
 
-            if unhealthy_reason(coin, session, "dropped", budget, now) is None:
+            if unhealthy_reason(coin, session, snap_day) is None:
                 # all 4 healthy -> RECOVER
                 session.query(DroppedCoin).filter_by(coin_id=coin.id).delete(
                     synchronize_session=False)
@@ -247,12 +243,6 @@ def _print_summary(stats, dropped_details, recovered_details, removed_details):
         print(f"      - {(name or 'unknown')[:18]}")
     print(f"  Removed (never qualified) ......... {stats['removed_never_qualified']:>5}")
     print(f"  Still active ...................... {stats['active_remaining']:>5}")
-    v = stats.get("volume") or {}
-    print(f"  Volume verdicts: reused {v.get('reused', 0)} | fetched "
-          f"{v.get('fetched', 0)} CoinGecko calls (budget "
-          f"{VOLUME_REFRESH_BUDGET['active']} active + "
-          f"{VOLUME_REFRESH_BUDGET['dropped']} dropped) | stale, over budget "
-          f"{v.get('stale', 0)}")
     print(line)
 
 

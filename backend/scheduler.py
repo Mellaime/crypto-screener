@@ -37,7 +37,7 @@ from database import init_db
 from discovery import discover_tokens   # NEW multi-source discovery (CG + CMC + Bitquery)
 from save_to_db import save_tokens, print_summary
 from drop_logic import run_drop_logic
-from price_update import run_price_update
+from tracking import run_daily_tracking
 from rank_check import run_rank_update
 from holders_check import run_holders_update
 from scoring import score_all, print_ranking
@@ -99,12 +99,14 @@ def run_pipeline(raise_on_error=False):
         # These run EVERY day regardless of discovery, so existing coins stay
         # fresh even when DexScreener is down. (drop_logic itself safely skips
         # dropping when it can't fetch live data, so there are no false drops.)
+        # Daily tracking BEFORE drop logic: records today's Codex readings
+        # (drop_logic's volume + liquidity history) and refreshes price / mcap /
+        # volume / liquidity for every active + dropped coin. No CoinGecko.
+        log.info("Daily tracking (Codex readings + prices, active + dropped)...")
+        run_daily_tracking()
+
         log.info("Running drop/recovery/cleanup pass...")
         drop_stats = run_drop_logic()
-
-        # After drop logic, so the active + dropped lists are final for today.
-        log.info("Refreshing current prices (active + dropped)...")
-        run_price_update()
 
         log.info("Updating market ranks (CoinGecko + CoinMarketCap)...")
         run_rank_update()
