@@ -407,6 +407,9 @@ def discover_tokens():
     for t in tokens:
         c = by_contract.get(t["contract"].lower())
         t["listed_at"] = c.get("listed_at") if c else None
+        # CoinGecko/CMC market cap (display only - the dashboard queue table).
+        t["discovery_mcap"] = c.get("mcap") if c else None
+        t["cmc_tags"] = (c.get("tags") or []) if c else []   # queue narrative
     have = {t["contract"].lower() for t in tokens}
     for low, c in by_contract.items():
         if low in have:
@@ -424,6 +427,8 @@ def discover_tokens():
             "age_days": None,            # -> age_check falls back to CMC
             "num_pools": 0,
             "listed_at": c.get("listed_at"),
+            "discovery_mcap": c.get("mcap"),
+            "cmc_tags": c.get("tags") or [],
             "no_dexscreener": True,
         })
     tokens.sort(key=lambda t: t["liquidity_usd"] or 0, reverse=True)

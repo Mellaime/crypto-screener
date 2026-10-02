@@ -41,6 +41,7 @@ from models import Coin, DailySnapshot
 from discovery import discover_tokens   # steps 1-2: discovery + meme/stablecoin
                                         # (DexScreener only enriches by contract)
 from age_check import decide_age                    # step 3
+from queue_view import remember_queue_display
 from revenue_check import check_revenue             # step 4
 from volume_check import check_volume_rising       # step 5
 from rotation import (pick_batch, mark_checked, analyzed_keys, is_analyzed,
@@ -185,6 +186,7 @@ def save_tokens(tokens):
         # age-passers per run, in arrival order. The rest wait for a later run
         # - skipped this run, neither saved nor dropped.
         picked, queue = pick_batch(session, age_passed)
+        remember_queue_display(session, age_passed)   # dashboard only, no calls
         stats["queue_new"] = queue["new"]
         stats["queue_picked"] = len(picked)
         stats["queue_rechecks"] = queue["rechecks"]

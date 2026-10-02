@@ -175,6 +175,13 @@ class CoinQueue(Base):
     # second chance through the entry filter after 15 days (rotation.py).
     outcome = Column(String)
     attempts = Column(Integer, nullable=False, default=0)    # times analyzed
+    # DISPLAY ONLY (the dashboard's "Coming up" table) - copied each run from
+    # the discovery data already in hand; never used to pick or filter.
+    name = Column(String)
+    symbol = Column(String)
+    mcap = Column(Float)
+    narrative = Column(String)         # from its CMC tags (queue_view.py)
+    last_seen = Column(DateTime)       # last run it was discovered + passed age
 
     def __repr__(self):
         return f"<CoinQueue {self.chain}:{self.contract} seen={self.first_seen} checked={self.last_checked}>"

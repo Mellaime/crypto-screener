@@ -66,6 +66,9 @@
   .rankwrap .flat { color: var(--muted); }
 
   .reason { color: #ffb4ac; font-size: 13px; }
+  .contract { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--muted); cursor: copy; }
+  .tag.unknown { color: var(--muted); background: #21262d; border-color: var(--border); }
+  tr.group td { background: #1c2129; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; padding: 8px 14px; }
   .empty { padding: 18px 14px; color: var(--muted); font-size: 14px; }
   .err { background: rgba(248,81,73,0.12); border: 1px solid var(--low); color: #ffb4ac; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; display: none; }
   footer { margin-top: 28px; color: var(--muted); font-size: 12px; line-height: 1.5; }
@@ -114,6 +117,25 @@
         </tr>
       </thead>
       <tbody id="dropped-body"></tbody>
+    </table>
+  </div>
+
+  <h2 id="queue-title">Coming up · <bdi>طابور</bdi></h2>
+  <div class="sub">Coins that passed discovery, meme/stablecoin removal and age, waiting their
+    turn for revenue → volume → honeypot → liquidity. 300 are analyzed per daily run, in this order.
+    Click a contract to copy it.</div>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Chain</th>
+          <th>Narrative</th>
+          <th>Contract</th>
+          <th class="num">Market Cap</th>
+        </tr>
+      </thead>
+      <tbody id="queue-body"></tbody>
     </table>
   </div>
 
@@ -242,17 +264,59 @@
       </tr>`).join("");
   }
 
+  // Contract: shortened, full address on hover, click to copy.
+  function contractCell(addr) {
+    const a = String(addr || "");
+    const short = a.length > 14 ? a.slice(0, 6) + "…" + a.slice(-4) : a;
+    return `<td class="contract" title="${esc(a)}" data-addr="${esc(a)}">${esc(short)}</td>`;
+  }
+
+  function renderQueue(data) {
+    const body = document.getElementById("queue-body");
+    document.getElementById("queue-title").innerHTML =
+      "Coming up · <bdi>طابور</bdi> (" + data.count + ")";
+    if (!data.queue.length) {
+      body.innerHTML = '<tr><td colspan="5" class="empty">Nothing waiting in the queue.</td></tr>';
+      return;
+    }
+    let html = "", group = null;
+    for (const q of data.queue) {
+      if (q.run !== group) {
+        group = q.run;
+        const n = data.queue.filter(x => x.run === group).length;
+        html += `<tr class="group"><td colspan="5">${group === "next run" ? "Next run" : "Run after"} (${n})</td></tr>`;
+      }
+      const unk = q.narrative === "unknown";
+      html += `
+      <tr>
+        <td class="name">${esc(q.name)}</td>
+        <td><span class="chain">${esc(q.chain)}</span></td>
+        <td><span class="tag${unk ? " unknown" : ""}">${esc(q.narrative)}</span></td>
+        ${contractCell(q.contract)}
+        <td class="num">${fmtMoney(q.mcap)}</td>
+      </tr>`;
+    }
+    body.innerHTML = html;
+  }
+
+  document.addEventListener("click", e => {
+    const td = e.target.closest("td.contract");
+    if (td && navigator.clipboard) navigator.clipboard.writeText(td.dataset.addr).catch(() => {});
+  });
+
   // ---- data loading -------------------------------------------------------
   async function loadData() {
     const errBox = document.getElementById("err");
     try {
-      const [coinsRes, droppedRes] = await Promise.all([
+      const [coinsRes, droppedRes, queueRes] = await Promise.all([
         fetch("/api/coins"),
         fetch("/api/dropped"),
+        fetch("/api/queue"),
       ]);
-      if (!coinsRes.ok || !droppedRes.ok) throw new Error("API returned an error");
+      if (!coinsRes.ok || !droppedRes.ok || !queueRes.ok) throw new Error("API returned an error");
       renderCoins(await coinsRes.json());
       renderDropped(await droppedRes.json());
+      renderQueue(await queueRes.json());
       errBox.style.display = "none";
       const now = new Date();
       document.getElementById("status").textContent =

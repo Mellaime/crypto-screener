@@ -7,6 +7,7 @@ frontend, and also serves the frontend page itself.
 Endpoints:
     GET /api/coins    -> ACTIVE coins, ranked by score (highest first)
     GET /api/dropped  -> dropped coins with date + reason
+    GET /api/queue    -> the next 600 coins waiting in the entry queue
     GET /             -> the dashboard web page (from the frontend/ folder)
 
 Run it (from the backend/ folder, with the venv active):
@@ -158,6 +159,19 @@ def get_dropped():
         } for dropped, coin in results]
 
         return {"count": len(rows), "dropped": rows}
+    finally:
+        session.close()
+
+
+@app.get("/api/queue")
+def get_queue():
+    """The next 600 coins in the entry queue (the next 2 daily runs), in the
+    order they'll be analyzed. Reads stored data only - no API calls."""
+    from queue_view import upcoming, QUEUE_DISPLAY_LIMIT
+    session = SessionLocal()
+    try:
+        rows = upcoming(session)
+        return {"count": len(rows), "limit": QUEUE_DISPLAY_LIMIT, "queue": rows}
     finally:
         session.close()
 

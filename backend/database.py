@@ -128,6 +128,12 @@ _NEW_COLUMNS = [
      "UPDATE coin_queue SET outcome = CASE WHEN EXISTS (SELECT 1 FROM coins c "
      "WHERE lower(c.contract) = coin_queue.contract) THEN 'saved' ELSE 'rejected' END "
      "WHERE last_checked IS NOT NULL"),
+    # Display-only fields for the dashboard's "Coming up" (queue) table.
+    ("coin_queue", "name", "VARCHAR", None),
+    ("coin_queue", "symbol", "VARCHAR", None),
+    ("coin_queue", "mcap", "FLOAT", None),
+    ("coin_queue", "narrative", "VARCHAR", None),
+    ("coin_queue", "last_seen", "TIMESTAMP", None),
 ]
 
 
