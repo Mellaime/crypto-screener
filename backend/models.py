@@ -169,6 +169,29 @@ class CoinQueue(Base):
     contract = Column(String, nullable=False, index=True)   # stored lowercased
     first_seen = Column(DateTime, nullable=False)            # when it joined the queue
     last_checked = Column(DateTime)                          # NULL until its first turn
+    # Result of its last analysis: "saved" (entered active), "rejected"
+    # (failed revenue / volume / honeypot / liquidity) or "deleted" (removed by
+    # drop_logic after 7 unhealthy days). rejected / deleted coins get ONE
+    # second chance through the entry filter after 15 days (rotation.py).
+    outcome = Column(String)
+    attempts = Column(Integer, nullable=False, default=0)    # times analyzed
 
     def __repr__(self):
         return f"<CoinQueue {self.chain}:{self.contract} seen={self.first_seen} checked={self.last_checked}>"
+
+
+class AgeLookup(Base):
+    """
+    Persistent cache of the age FALLBACK (CoinMarketCap /info date_added) for
+    coins DexScreener can't date - so each coin costs that call at most once,
+    not every daily run (see age_check.py).
+    listed_at NULL = CMC had no date; asked again after 30 days.
+    """
+    __tablename__ = "age_lookups"
+    __table_args__ = (UniqueConstraint("chain", "contract"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chain = Column(String, nullable=False)
+    contract = Column(String, nullable=False, index=True)   # stored lowercased
+    listed_at = Column(DateTime)                             # NULL = no date found
+    checked_at = Column(DateTime, nullable=False)

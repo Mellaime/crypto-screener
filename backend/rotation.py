@@ -17,13 +17,21 @@ picked from a single first-come-first-served queue (the coin_queue table):
   * a never-seen coin is inserted with first_seen = now, last_checked = NULL
   * picks are in arrival order (first_seen, then insertion order), so a new
     coin waits behind every older un-analyzed coin
-  * a picked coin gets last_checked = now = analyzed, done for good - EXCEPT
-    when its CoinGecko check failed transiently (network / rate limit): then
-    it stays un-analyzed and gets another try next run.
+  * a picked coin gets last_checked = now = analyzed - EXCEPT when its
+    CoinGecko check failed transiently (network / rate limit): then it stays
+    un-analyzed and gets another try next run.
+
+SECOND CHANCE: a coin that was REJECTED (failed revenue / volume / honeypot /
+liquidity) or DELETED by drop_logic after its 7 unhealthy days becomes
+eligible again RECHECK_AFTER_DAYS (15) after that, for ONE more pass through
+the entry filter (MAX_ATTEMPTS = 2 analyses in total). If it fails again it's
+locked for good. Never-analyzed coins are always picked before re-checks.
+(Coins that fail AGE never enter this queue, so they are simply re-checked
+every run until they're old enough - unchanged.)
 """
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # =========================================================================
 # ENTRY BUDGET  <-- change this number to speed up / slow down entry analysis
@@ -35,6 +43,9 @@ from datetime import datetime, timezone
 # analyzes the day's NEW coins, usually far fewer than this.
 ROTATION_BUDGET = 300
 
+RECHECK_AFTER_DAYS = 15   # rejected / deleted -> eligible again after this
+MAX_ATTEMPTS = 2          # the first analysis + ONE second chance
+
 
 def _key(chain, contract):
     return ((chain or "").lower(), (contract or "").lower())
@@ -44,12 +55,22 @@ def _now():
     return datetime.now(timezone.utc).replace(tzinfo=None)   # naive UTC, like utcnow()
 
 
-def analyzed_keys(session):
-    """(chain, contract) of every coin already analyzed - skipped for good."""
+def _recheck_due(row, now):
+    """True if an analyzed coin is due its one 15-day second chance."""
+    return (row.last_checked is not None
+            and row.outcome in ("rejected", "deleted")
+            and (row.attempts or 0) < MAX_ATTEMPTS
+            and row.last_checked <= now - timedelta(days=RECHECK_AFTER_DAYS))
+
+
+def analyzed_keys(session, now=None):
+    """(chain, contract) of every analyzed coin that is NOT due a second
+    chance right now - skipped this run (before age)."""
     from models import CoinQueue
+    now = now or _now()
     return {(r.chain, r.contract) for r in
-            session.query(CoinQueue.chain, CoinQueue.contract)
-            .filter(CoinQueue.last_checked.isnot(None))}
+            session.query(CoinQueue).filter(CoinQueue.last_checked.isnot(None))
+            if not _recheck_due(r, now)}
 
 
 def is_analyzed(token, analyzed):
@@ -59,8 +80,10 @@ def is_analyzed(token, analyzed):
 def pick_batch(session, tokens, budget=ROTATION_BUDGET, now=None):
     """
     Queue any never-seen tokens at the back, then return up to `budget`
-    NEVER-ANALYZED tokens, in arrival order. Returns (picked_tokens, stats),
-    stats = {"queued": waiting incl. picked, "new": first seen this run}.
+    tokens: NEVER-ANALYZED ones first (arrival order), then coins due their
+    15-day second chance (oldest check first). Returns (picked_tokens, stats),
+    stats = {"queued": waiting incl. picked, "new": first seen this run,
+             "rechecks": second-chance coins picked}.
     `now` defaults to the current time (it's settable only for tests).
     """
     from models import CoinQueue
@@ -82,14 +105,19 @@ def pick_batch(session, tokens, budget=ROTATION_BUDGET, now=None):
         rows[k] = row
     session.flush()                                   # assigns ids = insertion order
 
-    waiting = [k for k in by_key if rows[k].last_checked is None]
-    ordered = sorted(waiting, key=lambda k: (rows[k].first_seen, rows[k].id))
-    picked = [by_key[k] for k in ordered[:budget]]
-    return picked, {"queued": len(waiting), "new": len(new_keys)}
+    fresh = sorted((k for k in by_key if rows[k].last_checked is None),
+                   key=lambda k: (rows[k].first_seen, rows[k].id))
+    due = sorted((k for k in by_key if _recheck_due(rows[k], now)),
+                 key=lambda k: (rows[k].last_checked, rows[k].id))
+    ordered = (fresh + due)[:budget]
+    picked = [by_key[k] for k in ordered]
+    rechecks = sum(1 for k in ordered if rows[k].last_checked is not None)
+    return picked, {"queued": len(fresh) + len(due), "new": len(new_keys),
+                    "rechecks": rechecks}
 
 
-def mark_checked(session, tokens, when=None):
-    """Mark tokens as analyzed - they will never be picked again."""
+def mark_checked(session, tokens, outcome, when=None):
+    """Mark tokens as analyzed with their outcome ("saved" / "rejected")."""
     from models import CoinQueue
 
     when = when or _now()
@@ -98,3 +126,21 @@ def mark_checked(session, tokens, when=None):
         row = session.query(CoinQueue).filter_by(chain=ch, contract=ct).first()
         if row is not None:
             row.last_checked = when
+            row.outcome = outcome
+            row.attempts = (row.attempts or 0) + 1
+
+
+def mark_deleted(session, chain, contract, when=None):
+    """drop_logic deleted this coin (7 unhealthy days): it may come back
+    through the entry filter once, RECHECK_AFTER_DAYS after the deletion."""
+    from models import CoinQueue
+
+    when = when or _now()
+    ch, ct = _key(chain, contract)
+    row = session.query(CoinQueue).filter_by(chain=ch, contract=ct).first()
+    if row is None:
+        row = CoinQueue(chain=ch, contract=ct, first_seen=when, attempts=1)
+        session.add(row)
+    row.last_checked = when            # the 15-day clock starts at deletion
+    row.outcome = "deleted"
+    row.attempts = max(row.attempts or 0, 1)

@@ -15,39 +15,46 @@ Two steps:
       age >= MIN_AGE_DAYS    -> KEEP  (done)
       unknown (no pair timestamp) -> go to Step 2
 
-  Step 2 - fallback listing/genesis date, ONLY when DexScreener had none.
-  CoinMarketCap `date_added` (tried first - one fast call), else CoinGecko
-  `genesis_date`:
+  Step 2 - fallback listing date, ONLY when DexScreener had none
+  (no pool timestamp, OR the coin has no DexScreener listing at all - such
+  coins still reach this step; a missing DexScreener listing is NOT a drop):
+    a) CoinMarketCap `date_added` from the listings call discovery already
+       made (token["listed_at"]) - free, no extra call
+    b) else CoinMarketCap /info `date_added` (1 call). The answer is stored in the age_lookups table, so a coin
+       costs these calls ONCE (a "no date anywhere" answer is re-asked after
+       NO_DATE_RETRY_DAYS). At most FALLBACK_BUDGET coins per run use (b);
+       the rest wait for the next run (counted as "deferred", not dropped).
       age <  MIN_AGE_DAYS   -> DROP
       age >= MIN_AGE_DAYS    -> KEEP
-      unknown on BOTH        -> DROP
+      unknown on all three   -> DROP
+  (CoinGecko genesis_date is NOT used: it had a date for only ~2% of these
+  coins and cost a CoinGecko call each.)
 
-decide_age(token) -> (keep: bool, age_days: int | None, source: str)
-    source is "dexscreener", "fallback", or "unknown".
-Never raises; any network / parse error degrades to "unknown".
+decide_age(token, session=None) -> (keep: bool, age_days: int | None, source: str)
+    source is "dexscreener", "fallback", "deferred" or "unknown".
+Never raises; any network / parse error degrades to "unknown" (and a
+transient error is not cached, so it's retried next run).
 """
 
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-CG_KEY = os.getenv("COINGECKO_API_KEY")
 CMC_KEY = os.getenv("COINMARKETCAP_API_KEY")
 
 # A coin must be at least this many days old to pass.
 MIN_AGE_DAYS = 10
 
-CG_CONTRACT_URL = "https://api.coingecko.com/api/v3/coins/{platform}/contract/{contract}"
 CMC_INFO_URL = "https://pro-api.coinmarketcap.com/v2/cryptocurrency/info"
 
-CG_DELAY = 2.5   # be gentle with CoinGecko's demo rate limit
 
 # Our chain name -> CoinGecko asset-platform id (reverse of discovery's map).
+# Not used by the age check any more - volume_check imports it from here.
 CHAIN_TO_CG_PLATFORM = {
     "ethereum": "ethereum", "solana": "solana", "base": "base",
     "bsc": "binance-smart-chain", "polygon": "polygon-pos",
@@ -58,8 +65,16 @@ CHAIN_TO_CG_PLATFORM = {
     "ton": "the-open-network", "tron": "tron",
 }
 
-# Per-process cache: look up each coin's fallback age at most once per run.
+# Coins per run that may spend a live fallback call (CMC /info).
+# Answers are cached in age_lookups, so this only paces the backlog.
+FALLBACK_BUDGET = 150
+# A cached "no date anywhere" answer is asked again after this many days.
+NO_DATE_RETRY_DAYS = 30
+
+# Per-process cache: look up each coin's fallback date at most once per run.
 _memo = {}
+# Live fallback lookups made this run (counts against FALLBACK_BUDGET).
+LOOKUPS = 0
 
 
 def _age_days_from(dt):
@@ -85,9 +100,10 @@ def _parse_iso(s):
 
 
 def _cmc_listing_date(contract):
-    """CoinMarketCap `date_added` for a contract, as a datetime, or None."""
+    """(CoinMarketCap `date_added` as a datetime or None, definitive). Not
+    definitive = network error / rate limit / server error -> ask again."""
     if not contract or not CMC_KEY:
-        return None
+        return None, True
     try:
         r = requests.get(
             CMC_INFO_URL,
@@ -97,11 +113,13 @@ def _cmc_listing_date(contract):
             headers={"X-CMC_PRO_API_KEY": CMC_KEY, "Accept": "application/json"},
             timeout=20,
         )
+        if r.status_code == 429 or r.status_code >= 500:
+            return None, False
         if r.status_code != 200:
-            return None
+            return None, True               # CMC doesn't know this contract
         data = (r.json() or {}).get("data") or {}
     except (requests.exceptions.RequestException, ValueError):
-        return None
+        return None, False
     # `data` is keyed by CMC id; each value may be an object or a list of them.
     dates = []
     for value in data.values():
@@ -110,63 +128,92 @@ def _cmc_listing_date(contract):
             dt = _parse_iso((entry or {}).get("date_added"))
             if dt:
                 dates.append(dt)
-    return min(dates) if dates else None   # earliest listing
+    return (min(dates) if dates else None), True   # earliest listing
 
 
-def _cg_genesis_date(contract, chain):
-    """CoinGecko `genesis_date` for a contract, as a datetime, or None."""
-    platform = CHAIN_TO_CG_PLATFORM.get((chain or "").lower())
-    if not platform or not contract or not CG_KEY:
-        return None
-    time.sleep(CG_DELAY)
-    url = CG_CONTRACT_URL.format(platform=platform, contract=contract)
-    try:
-        r = requests.get(url, headers={"x-cg-demo-api-key": CG_KEY}, timeout=20)
-        if r.status_code != 200:
-            return None
-        return _parse_iso(r.json().get("genesis_date"))
-    except (requests.exceptions.RequestException, ValueError):
-        return None
+def _naive_utc(dt):
+    if dt is not None and dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
-def _fallback_age(contract, chain):
+def _fallback_date(contract, chain, session=None):
     """
-    Age (days) from the listing/genesis date, or None if unknown.
-    CoinMarketCap `date_added` is tried first (one fast call); only if it has
-    nothing do we consult CoinGecko `genesis_date` (which is rate-limited and
-    usually null for tokens anyway).
+    Listing date from CMC /info - via the age_lookups
+    cache when a DB session is given. Returns (datetime | None, status):
+    status "ok" (a date, or a definitive "CMC has none") or "deferred"
+    (budget used up this run, or a transient error -> try again next run).
     """
+    global LOOKUPS
     key = ((chain or "").lower(), (contract or "").lower())
     if key in _memo:
         return _memo[key]
-    dt = _cmc_listing_date(contract)
-    if dt is None:
-        dt = _cg_genesis_date(contract, chain)
-    age = _age_days_from(dt)
-    _memo[key] = age
-    return age
+
+    row = None
+    if session is not None:
+        from models import AgeLookup
+        row = session.query(AgeLookup).filter_by(chain=key[0], contract=key[1]).first()
+        if row is not None:
+            fresh = row.checked_at >= _naive_utc(datetime.now(timezone.utc)) - timedelta(
+                days=NO_DATE_RETRY_DAYS)
+            if row.listed_at is not None or fresh:
+                _memo[key] = (row.listed_at, "ok")       # cached - no calls
+                return _memo[key]
+
+    if LOOKUPS >= FALLBACK_BUDGET:
+        return None, "deferred"
+    LOOKUPS += 1
+    dt, ok = _cmc_listing_date(contract)
+    if dt is None and not ok:
+        return None, "deferred"                          # transient -> not cached
+
+    dt = _naive_utc(dt)
+    if session is not None:
+        from models import AgeLookup
+        if row is None:
+            row = AgeLookup(chain=key[0], contract=key[1])
+            session.add(row)
+        row.listed_at = dt
+        row.checked_at = _naive_utc(datetime.now(timezone.utc))
+    _memo[key] = (dt, "ok")
+    return _memo[key]
 
 
-def decide_age(token):
+def _fallback_age(contract, chain, session=None):
+    """Age (days) from the CMC listing date, or None if unknown."""
+    return _age_days_from(_fallback_date(contract, chain, session)[0])
+
+
+def decide_age(token, session=None):
     """
-    Two-step age decision for one enriched token record.
+    Two-step age decision for one token record (with or without DexScreener
+    data).
 
     Returns (keep, age_days, source):
       * keep      - True if age >= MIN_AGE_DAYS (else False, i.e. drop).
       * age_days  - the age used for the decision, or None if unknown.
-      * source    - "dexscreener", "fallback" (CoinGecko/CMC), or "unknown".
+      * source    - "dexscreener", "fallback" (CMC), "deferred"
+                    (fallback lookup postponed to the next run) or "unknown".
     """
     # Step 1 - DexScreener pairCreatedAt (enriched as age_days).
     age = token.get("age_days")
     if age is not None:
         return (age >= MIN_AGE_DAYS, age, "dexscreener")
 
-    # Step 2 - CoinMarketCap / CoinGecko listing date (only if Step 1 unknown).
-    age = _fallback_age(token.get("contract"), token.get("chain"))
+    # Step 2a - CMC date_added from discovery's listings call (free).
+    age = _age_days_from(token.get("listed_at"))
     if age is not None:
         return (age >= MIN_AGE_DAYS, age, "fallback")
 
-    # Unknown on every source -> drop.
+    # Step 2b - CMC /info date_added (cached in age_lookups).
+    dt, status = _fallback_date(token.get("contract"), token.get("chain"), session)
+    if status == "deferred":
+        return (False, None, "deferred")
+    age = _age_days_from(dt)
+    if age is not None:
+        return (age >= MIN_AGE_DAYS, age, "fallback")
+
+    # Unknown on all three sources -> drop.
     return (False, None, "unknown")
 
 
@@ -188,7 +235,7 @@ def main():
          {"contract": "0xdef", "chain": "ethereum", "age_days": 42}),
     ]
     print("=" * 62)
-    print("  AGE CHECK (two-step: DexScreener -> CoinMarketCap/CoinGecko)")
+    print("  AGE CHECK (DexScreener -> CMC listing date -> CMC /info)")
     print("=" * 62)
     for label, tok in samples:
         keep, age, source = decide_age(tok)

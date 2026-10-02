@@ -27,7 +27,6 @@ Run it (tests a few coins):
     python revenue_check.py
 """
 
-import re
 import requests
 
 FEES_URL = "https://api.llama.fi/overview/fees"
@@ -49,102 +48,56 @@ def _get_json(url, params=None, timeout=30):
         return None
 
 
-def _norm(s):
-    """Normalize a name/symbol: lowercase, keep only letters+digits."""
-    if not s:
-        return ""
-    return re.sub(r"[^a-z0-9]", "", s.lower())
-
-
-def _first_word_key(name):
-    """Normalized FIRST word of a protocol name ('Raydium AMM' -> 'raydium')."""
-    if not name:
-        return ""
-    parts = name.strip().split()
-    return _norm(parts[0]) if parts else ""
-
-
-def _better_entry(a, b):
-    """When two protocols share a key, keep the one with more fees/revenue."""
-    av = (a["revenue"] if a["revenue"] is not None else a["fees"]) or 0
-    bv = (b["revenue"] if b["revenue"] is not None else b["fees"]) or 0
-    return a if av >= bv else b
-
-
 # ---------------------------------------------------------------------------
 # Build the lookup indices from DefiLlama (fetched once, then cached).
+# Everything is matched by CONTRACT ADDRESS -> DefiLlama protocol id. Names and
+# symbols are NOT used for matching: a coin that merely shares a name with a
+# fee-earning protocol must not pass as "has revenue".
 # ---------------------------------------------------------------------------
 _INDICES = None
 
 
 def load_indices():
     """Fetch DefiLlama data and build the indices we match against."""
-    # 1) Fees + revenue overview -> protocols that generate fees/revenue.
+    # 1) Fees + revenue overviews -> protocols that generate fees/revenue,
+    #    keyed by their DefiLlama id (and slug as a backup).
     common = {"excludeTotalDataChart": "true", "excludeTotalDataChartBreakdown": "true"}
     fees = _get_json(FEES_URL, common)
     revenue = _get_json(FEES_URL, {**common, "dataType": "dailyRevenue"})
 
-    # Look up each metric by normalized protocol name.
-    fees_by_key = {}
-    if fees and fees.get("protocols"):
-        for p in fees["protocols"]:
-            fees_by_key[_norm(p.get("name"))] = p.get("total24h")
-    revenue_by_key = {}
-    if revenue and revenue.get("protocols"):
-        for p in revenue["protocols"]:
-            revenue_by_key[_norm(p.get("name"))] = p.get("total24h")
+    fee_by_id, fee_by_slug = {}, {}
+    for src, field in ((fees, "fees"), (revenue, "revenue")):
+        for p in (src or {}).get("protocols") or []:
+            pid = str(p.get("defillamaId") or p.get("id") or "")
+            slug = (p.get("slug") or "").lower()
+            entry = fee_by_id.get(pid) or fee_by_slug.get(slug) or {
+                "name": p.get("displayName") or p.get("name"), "fees": None, "revenue": None}
+            entry[field] = p.get("total24h")
+            if pid:
+                fee_by_id[pid] = entry
+            if slug:
+                fee_by_slug[slug] = entry
 
-    # A protocol counts as "generates fees/revenue" if it appears in the fees
-    # list OR the revenue list -> ONE is enough to pass (any amount). We take
-    # the UNION of both lists so a coin passes on whichever DefiLlama provides.
-    #
-    # Keys are the protocol's full normalized name AND its first word (so
-    # "Aave" matches "Aave V3" and "Raydium" matches "Raydium AMM"), but NOT
-    # arbitrary substrings (so the memecoin "Pepe" does NOT match "PepeTeam").
-    fee_map = {}
-    fee_count = 0
-    seen = set()
-    all_protocols = []
-    if fees and fees.get("protocols"):
-        all_protocols += fees["protocols"]
-    if revenue and revenue.get("protocols"):
-        all_protocols += revenue["protocols"]
-    for p in all_protocols:
-        name = p.get("name")
-        full = _norm(name)
-        if not full or full in seen:
-            continue
-        seen.add(full)
-        fee_count += 1
-        entry = {
-            "name": name,
-            "fees": fees_by_key.get(full),        # from the fees list (or None)
-            "revenue": revenue_by_key.get(full),  # from the revenue list (or None)
-        }
-        for k in {full, _first_word_key(name)}:
-            if not k:
-                continue
-            fee_map[k] = _better_entry(fee_map[k], entry) if k in fee_map else entry
-
-    # 2) Full protocols list -> "does DefiLlama track this token at all?"
-    #    Indexed by contract address (the definitive, collision-free match).
+    # 2) Full protocols list -> which protocols a token CONTRACT belongs to.
+    #    One token can back several protocols (e.g. V2 + V3), so it's a list.
     proto_addr = {}
     protos = _get_json(PROTOCOLS_URL)
     if isinstance(protos, list):
         for p in protos:
             addr = p.get("address")
-            if not addr:
+            if not addr or addr == "-":
                 continue
-            # addresses can look like "ethereum:0xabc..." -> keep the 0x part.
+            # addresses can look like "ethereum:0xabc..." -> keep the address part.
             key = addr.split(":")[-1].lower()
-            proto_addr[key] = {
+            proto_addr.setdefault(key, []).append({
+                "id": str(p.get("id") or ""),
+                "slug": (p.get("slug") or "").lower(),
                 "name": p.get("name"),
-                "slug": p.get("slug"),
-                "symbol": p.get("symbol"),
-                "category": p.get("category"),
-            }
+                "parent": (p.get("parentProtocol") or ""),
+            })
 
-    return {"fee_map": fee_map, "fee_count": fee_count, "proto_addr": proto_addr}
+    return {"fee_by_id": fee_by_id, "fee_by_slug": fee_by_slug,
+            "fee_count": len(fee_by_id), "proto_addr": proto_addr}
 
 
 def _get_indices():
@@ -155,41 +108,27 @@ def _get_indices():
 
 
 # ---------------------------------------------------------------------------
-# Matching logic
+# Matching logic - by contract address only
 # ---------------------------------------------------------------------------
-def _match_fees(coin_keys, idx):
-    """Return the fee entry this coin matches (by full name or first word), else None."""
-    fee_map = idx["fee_map"]
-    for ck in coin_keys:
-        if ck and ck in fee_map:
-            return fee_map[ck]
-    return None
-
-
-def classify(name, symbol, contract, idx):
+def classify(contract, idx):
     """Return (verdict, reason, daily_revenue, matched_name)."""
-    coin_keys = {_norm(name), _norm(symbol)}
+    protocols = idx["proto_addr"].get((contract or "").lower())
+    if not protocols:
+        # DefiLlama doesn't list this contract -> we can't tell -> don't reject.
+        return "UNKNOWN", "contract not listed on DefiLlama", None, None
 
-    # HAS_REVENUE: the coin looks like a protocol that generates fees/revenue.
-    match = _match_fees(coin_keys, idx)
-    if match:
-        num = match["revenue"] if match["revenue"] is not None else match["fees"]
-        return "HAS_REVENUE", f"matches '{match['name']}' in DefiLlama fees/revenue", num, match["name"]
+    for proto in protocols:
+        fee = (idx["fee_by_id"].get(proto["id"])
+               or idx["fee_by_slug"].get(proto["slug"])
+               or (proto["parent"] and idx["fee_by_id"].get(proto["parent"])))
+        if fee:
+            num = fee["revenue"] if fee["revenue"] is not None else fee["fees"]
+            return ("HAS_REVENUE", f"contract is '{proto['name']}', which has fees",
+                    num, proto["name"])
 
-    # Is this exact token tracked by DefiLlama at all (by contract address)?
-    entry = idx["proto_addr"].get((contract or "").lower())
-    if entry:
-        # It's tracked. Is its protocol in the fees list?
-        proto_keys = {_norm(entry["name"]), _norm(entry["slug"])}
-        m2 = _match_fees(proto_keys, idx)
-        if m2:
-            num = m2["revenue"] if m2["revenue"] is not None else m2["fees"]
-            return "HAS_REVENUE", f"tracked as '{entry['name']}' (has fees)", num, entry["name"]
-        # Tracked but NO fees mechanism -> positively confirmed no revenue.
-        return "NO_REVENUE", f"DefiLlama tracks '{entry['name']}' but it has no fees", 0.0, entry["name"]
-
-    # DefiLlama doesn't list it -> we can't tell -> don't reject.
-    return "UNKNOWN", "not listed on DefiLlama", None, None
+    # Tracked by contract, but none of its protocols has a fees mechanism.
+    names = ", ".join(p["name"] or "?" for p in protocols)
+    return "NO_REVENUE", f"DefiLlama tracks '{names}' but it has no fees", 0.0, names
 
 
 def check_revenue(name, symbol, contract, chain=None):
@@ -200,11 +139,12 @@ def check_revenue(name, symbol, contract, chain=None):
     """
     idx = _get_indices()
     # If both DefiLlama sources failed to load, we simply don't know.
-    if not idx["fee_map"] and not idx["proto_addr"]:
+    if not idx["fee_by_id"] and not idx["proto_addr"]:
         return {"verdict": "UNKNOWN", "reason": "DefiLlama unavailable",
                 "daily_revenue": None, "matched": None}
 
-    verdict, reason, revenue, matched = classify(name, symbol, contract, idx)
+    # name / symbol are accepted for compatibility but NOT used for matching.
+    verdict, reason, revenue, matched = classify(contract, idx)
     return {"verdict": verdict, "reason": reason,
             "daily_revenue": revenue, "matched": matched}
 
@@ -248,11 +188,11 @@ def main():
     print("  Logic self-test: token DefiLlama tracks but with no fees (synthetic)")
     print("=" * 74)
     fake_idx = {
-        "fee_map": {},
-        "proto_addr": {"0xdead": {"name": "TrackedNoFeeToken", "slug": "tracked-no-fee",
-                                  "symbol": "TNF", "category": "Token"}},
+        "fee_by_id": {}, "fee_by_slug": {},
+        "proto_addr": {"0xdead": [{"id": "999999", "slug": "tracked-no-fee",
+                                   "name": "TrackedNoFeeToken", "parent": ""}]},
     }
-    verdict, reason, rev, matched = classify("TrackedNoFeeToken", "TNF", "0xDEAD", fake_idx)
+    verdict, reason, rev, matched = classify("0xDEAD", fake_idx)
     print(f"    verdict = {verdict}  ({reason})")
 
 

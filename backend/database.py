@@ -119,6 +119,15 @@ _NEW_COLUMNS = [
     # Daily Codex readings (tracking.py) - drop_logic's trend history.
     ("daily_snapshots", "codex_liquidity", "FLOAT", None),
     ("daily_snapshots", "codex_volume24", "FLOAT", None),
+    # Entry queue: last analysis result + how often analyzed (the 15-day
+    # second chance). Rows analyzed before this existed count as 1 attempt;
+    # their outcome is "saved" if the coin is in our list, else "rejected".
+    ("coin_queue", "attempts", "INTEGER NOT NULL DEFAULT 0",
+     "UPDATE coin_queue SET attempts = 1 WHERE last_checked IS NOT NULL"),
+    ("coin_queue", "outcome", "VARCHAR",
+     "UPDATE coin_queue SET outcome = CASE WHEN EXISTS (SELECT 1 FROM coins c "
+     "WHERE lower(c.contract) = coin_queue.contract) THEN 'saved' ELSE 'rejected' END "
+     "WHERE last_checked IS NOT NULL"),
 ]
 
 

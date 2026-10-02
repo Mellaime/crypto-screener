@@ -9,8 +9,8 @@ THE FILTER - exactly these 7 steps, in this order:
                     MCap is enforced HERE only - there is no later mcap step.
     2. Meme +     - memes AND stablecoins removed right after discovery
        Stablecoin   (meme_filter.py).
-    3. Age        - >= 10 days; DexScreener pairCreatedAt, else CMC/CoinGecko
-                    listing date; too new or unknown -> DROP (age_check.py).
+    3. Age        - >= 10 days; DexScreener pairCreatedAt, else CMC listing
+                    date; too new or unknown -> DROP (age_check.py).
     -- ROTATION QUEUE (rotation.py): steps 4-7 run only on ROTATION_BUDGET
        age-passers per run, first-come-first-served; the rest wait. --
     4. Revenue    - DefiLlama; DROP only on confirmed NO_REVENUE.
@@ -121,6 +121,8 @@ def save_tokens(tokens):
         "skipped_too_new": 0,
         "skipped_no_age": 0,
         "age_via_fallback": 0,   # CG/CMC fallback was used for the age decision
+        "age_deferred": 0,       # fallback lookup budget used up -> next run
+        "queue_rechecks": 0,     # 15-day second chances picked this run
         "passed_volume": 0,          # volume rising (CoinGecko 5-day)
         "skipped_vol_falling": 0,
         "skipped_vol_unknown": 0,    # no CoinGecko history / chain not on CG
@@ -150,7 +152,7 @@ def save_tokens(tokens):
     try:
         # --- Step 3: AGE (two-step, by contract + chain) --------------------
         # Run over every token first, so we know exactly who reaches step 4.
-        # DexScreener pairCreatedAt, else CoinMarketCap/CoinGecko listing date
+        # DexScreener pairCreatedAt, else CoinMarketCap listing date
         # (see age_check.decide_age). Younger than 10 days, OR of unknowable
         # age, is dropped here.
         # The filter is a ONE-TIME entry gate: coins already analyzed on an
@@ -163,9 +165,12 @@ def save_tokens(tokens):
 
         age_passed = []
         for t in fresh_tokens:
-            keep_age, age_days, age_source = decide_age(t)
+            keep_age, age_days, age_source = decide_age(t, session)
             if age_source == "fallback":
                 stats["age_via_fallback"] += 1
+            if age_source == "deferred":
+                stats["age_deferred"] += 1           # fallback lookup next run
+                continue
             if not keep_age:
                 if age_days is None:
                     stats["skipped_no_age"] += 1     # unknown on DS + CG + CMC
@@ -182,8 +187,10 @@ def save_tokens(tokens):
         picked, queue = pick_batch(session, age_passed)
         stats["queue_new"] = queue["new"]
         stats["queue_picked"] = len(picked)
+        stats["queue_rechecks"] = queue["rechecks"]
         stats["queue_waiting"] = queue["queued"] - len(picked)
         retry_next_run = []   # CoinGecko failed transiently -> not analyzed yet
+        saved = []            # passed all 7 steps (queue outcome "saved")
 
         for t in picked:
             # --- Step 4: revenue EXISTENCE (DefiLlama) ---------------------
@@ -243,6 +250,7 @@ def save_tokens(tokens):
             if liq["verdict"] == "unknown":
                 stats["liquidity_unknown"] += 1
             stats["passed_liquidity"] += 1  # passed ALL 7 steps -> save it
+            saved.append(t)
 
             # --- Values STORED on the snapshot (display / scoring only) ----
             # None of these keep or drop a coin any more.
@@ -341,11 +349,15 @@ def save_tokens(tokens):
                 snapshot.holders = holder_num
                 stats["snapshots_updated"] += 1
 
-        # Every coin that had its turn this run goes to the back of the queue
-        # (whatever its result). Same transaction as the saves: if the run
+        # Every coin that had its turn this run is marked analyzed, with its
+        # outcome: "saved", or "rejected" (eligible for ONE second chance in
+        # 15 days - rotation.py). Same transaction as the saves: if the run
         # fails, nothing is marked and those coins keep their place.
-        retry = {id(t) for t in retry_next_run}
-        mark_checked(session, [t for t in picked if id(t) not in retry])
+        skip = {id(t) for t in retry_next_run}
+        saved_ids = {id(t) for t in saved}
+        mark_checked(session, saved, "saved")
+        mark_checked(session, [t for t in picked
+                               if id(t) not in skip and id(t) not in saved_ids], "rejected")
 
         # Save everything at once. If anything above had failed, we'd roll back.
         session.commit()
@@ -371,17 +383,20 @@ def print_summary(stats):
     print(f"  2. Meme + stablecoin filter - passed ....... {dc.get('after_excl', '?'):>6}")
     print(f"       - dropped as meme ..................... {dc.get('meme_dropped', '?'):>6}")
     print(f"       - dropped as stablecoin ............... {dc.get('stable_dropped', '?'):>6}")
-    print(f"       (not a filter: with DexScreener data -> {stats['discovered']})")
+    print(f"       (not a filter: with DexScreener data -> {dc.get('enriched', '?')}, "
+          f"without -> {dc.get('no_dexscreener', '?')}; both go on to age)")
     print(f"       (already analyzed on an earlier run -> skipped: "
           f"{stats['already_analyzed']})")
     print(sub)
     print(f"  3. Age >= 10 days - passed ................. {stats['passed_age']:>6}")
     print(f"       - dropped (too new, <10d) ............. {stats['skipped_too_new']:>6}")
     print(f"       - dropped (age unknown) ............... {stats['skipped_no_age']:>6}")
+    print(f"       - age lookup postponed to next run .... {stats['age_deferred']:>6}")
     print(sub)
     print(f"  ENTRY QUEUE (never-analyzed coins, budget {ROTATION_BUDGET}/run):")
     print(f"       first seen this run ................... {stats['queue_new']:>6}")
     print(f"       picked this run (arrival order) ....... {stats['queue_picked']:>6}")
+    print(f"         of which 15-day second chances ...... {stats['queue_rechecks']:>6}")
     print(f"       waiting for a later run ............... {stats['queue_waiting']:>6}")
     print(sub)
     print(f"  4. Revenue (DefiLlama) - passed ............ {stats['passed_revenue']:>6}")

@@ -6,7 +6,8 @@ one-time ENTRY gate for new coins; drop_logic only watches coins ALREADY in
 active / dropped. It runs daily after discover -> filter -> save -> tracking.
 
 It uses ONE set of 4 health criteria, both for dropping and for recovery:
-    * volume falling      - last 5 daily Codex readings, day5 <= day1
+    * volume falling      - last 5 daily Codex readings, day5 more than 5%
+                            below day1 (rising or flat = healthy)
     * liquidity down > 5% - today's Codex reading vs the one up to 30 days
                             ago (or since it entered active, if shorter)
     * holders down > 10%  - vs the count when it entered active
@@ -30,8 +31,10 @@ or keep out, on missing data. Revenue is NOT part of this.
    (not the full filter):
      all 4 healthy              -> back to active, fresh 5-day grace, and the
                                    holders baseline restarts from today
-     still unhealthy on day 7   -> deleted permanently (coin, snapshots and
-                                   drop rows - it disappears from the site)
+     still unhealthy on day 7   -> deleted (coin, snapshots and drop rows -
+                                   it disappears from the site). It may come
+                                   back ONCE through the full entry filter 15
+                                   days later (rotation.py second chance).
    Dropped on day D -> re-checked on days D+1 ... D+7 (7 chances); still
    failing on D+7 -> deleted.
 
@@ -52,12 +55,18 @@ RECOVERY_DAYS = 7            # daily recovery re-checks before permanent delete
 MAX_HOLDER_DROP_PCT = 10     # holders down more than this -> unhealthy
 MAX_LIQ_DROP_PCT = 5         # liquidity down more than this -> unhealthy
 VOLUME_READINGS = 5          # volume trend = last 5 daily readings
+VOLUME_FALL_PCT = 5          # "falling" = day5 more than 5% below day1;
+                             # rising or flat (within 5%) stays healthy
 VOLUME_LOOKBACK_DAYS = 10    # ...taken from at most the last 10 days
 LIQ_WINDOW_DAYS = 30         # liquidity: vs up to 30 days back
 
 
 def _delete_coin(session, coin):
-    """Remove a coin completely: its snapshots, any dropped_coins rows, itself."""
+    """Remove a coin completely: its snapshots, any dropped_coins rows, itself.
+    The entry queue records the deletion, so the coin can come back through
+    the entry filter ONCE, 15 days from now (rotation.py)."""
+    from rotation import mark_deleted
+    mark_deleted(session, coin.chain, coin.contract)
     session.query(DailySnapshot).filter_by(coin_id=coin.id).delete(
         synchronize_session=False
     )
@@ -79,8 +88,10 @@ def in_grace(coin, today):
 
 
 def codex_volume_trend(session, coin, today):
-    """'rising' / 'falling' from the last 5 daily Codex volume readings
-    (day5 > day1 -> rising), or 'unknown' if there aren't 5 yet."""
+    """From the last 5 daily Codex volume readings: 'falling' only if day5 is
+    CLEARLY lower than day1 (more than VOLUME_FALL_PCT lower); otherwise
+    'rising' (day5 > day1) or 'flat' - both healthy. 'unknown' if there
+    aren't 5 readings yet."""
     rows = (session.query(DailySnapshot.codex_volume24)
             .filter(DailySnapshot.coin_id == coin.id,
                     DailySnapshot.date <= today,
@@ -91,7 +102,9 @@ def codex_volume_trend(session, coin, today):
     if len(rows) < VOLUME_READINGS:
         return "unknown"
     day5, day1 = rows[0][0], rows[-1][0]           # newest first
-    return "rising" if day5 > day1 else "falling"
+    if day5 < day1 * (1 - VOLUME_FALL_PCT / 100):
+        return "falling"                           # clearly lower -> unhealthy
+    return "rising" if day5 > day1 else "flat"     # rising or flat -> healthy
 
 
 def codex_liquidity_trend(session, coin, today):

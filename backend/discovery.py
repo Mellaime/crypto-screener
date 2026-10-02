@@ -200,6 +200,9 @@ def from_coingecko(max_pages=30):
                     "contract": addr,
                     "chain": CG_PLATFORM_TO_CHAIN.get(cg_plat, cg_plat),
                     "mcap": mc,
+                    "name": coin.get("name"),
+                    "symbol": (coin.get("symbol") or "").upper() or None,
+                    "price": coin.get("current_price"),
                     "source": "coingecko",
                 })
         if below or len(rows) < 250:
@@ -211,6 +214,20 @@ def from_coingecko(max_pages=30):
 # ---------------------------------------------------------------------------
 # Source 2: CoinMarketCap
 # ---------------------------------------------------------------------------
+def _parse_date(s):
+    """CMC ISO timestamp -> naive UTC datetime, or None."""
+    from datetime import datetime, timezone
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 def from_coinmarketcap(limit=5000):
     """CMC listings filtered to the mcap window (server-side)."""
     if not CMC_KEY:
@@ -229,11 +246,17 @@ def from_coinmarketcap(limit=5000):
         if not plat or not plat.get("token_address"):
             continue                        # native coin (no contract) -> skip
         name = plat.get("name")
+        usd = x.get("quote", {}).get("USD", {}) or {}
         out.append({
             "contract": plat["token_address"],
             "chain": CMC_PLATFORM_TO_CHAIN.get(name, (name or "").lower()),
-            "mcap": (x.get("quote", {}).get("USD", {}) or {}).get("market_cap"),
+            "mcap": usd.get("market_cap"),
+            "name": x.get("name"),
+            "symbol": x.get("symbol"),
+            "price": usd.get("price"),
             "tags": x.get("tags") or [],     # CMC tag slugs (incl. "memes") - free here
+            # When CMC listed it - the age fallback, free here (age_check.py).
+            "listed_at": _parse_date(x.get("date_added")),
             "source": "coinmarketcap",
         })
     return out
@@ -289,7 +312,7 @@ def discover_candidates(verbose=True):
     cg = from_coingecko()
     cmc = from_coinmarketcap()
 
-    seen = set()
+    seen = {}
     merged = []
     for c in cg + cmc:                      # order = priority when duplicated
         contract = (c.get("contract") or "").strip()
@@ -297,8 +320,12 @@ def discover_candidates(verbose=True):
             continue
         key = (c.get("chain"), contract.lower())
         if key in seen:
+            first = seen[key]
+            for field in ("listed_at", "tags", "name", "symbol", "price"):
+                if not first.get(field) and c.get(field):
+                    first[field] = c[field]
             continue
-        seen.add(key)
+        seen[key] = c
         merged.append(c)
     unique_count = len(merged)
 
@@ -368,9 +395,41 @@ def discover_tokens():
     LAST_COUNTS["enrich_seconds"] = round(_time.time() - t0)
     keep = {a.lower() for a in addresses}
     tokens = build_token_records(pairs, keep_addresses=keep)
+    enriched = len(tokens)
+
+    # Attach the free CMC listing date to every record (age fallback), and
+    # add a minimal record for every candidate DexScreener has NO data for:
+    # a missing DexScreener listing is NOT a drop - age_check still tries the
+    # CMC listing date, and only an age unknown everywhere drops.
+    by_contract = {}
+    for c in candidates:
+        by_contract.setdefault(c["contract"].lower(), c)
+    for t in tokens:
+        c = by_contract.get(t["contract"].lower())
+        t["listed_at"] = c.get("listed_at") if c else None
+    have = {t["contract"].lower() for t in tokens}
+    for low, c in by_contract.items():
+        if low in have:
+            continue
+        tokens.append({
+            "chain": c["chain"],
+            "contract": c["contract"],
+            "name": c.get("name"),
+            "symbol": c.get("symbol"),
+            "price_usd": c.get("price"),
+            "market_cap": c.get("mcap"),
+            "liquidity_usd": None,
+            "volume_24h": None,
+            "pair_created_at": None,
+            "age_days": None,            # -> age_check falls back to CMC
+            "num_pools": 0,
+            "listed_at": c.get("listed_at"),
+            "no_dexscreener": True,
+        })
     tokens.sort(key=lambda t: t["liquidity_usd"] or 0, reverse=True)
     from fetch_dexscreener import LAST_FETCH_STATS as fs
-    print(f"  => {len(tokens)} candidates had DexScreener data (enriched).")
+    print(f"  => {enriched} candidates had DexScreener data (enriched); "
+          f"{len(tokens) - enriched} without it still go on to the age fallback.")
     print(f"     {LAST_COUNTS['enrich_seconds']}s | main-pool requests {fs.get('v1_requests')} "
           f"(covered {fs.get('v1_covered')}, failed {fs.get('v1_failed')}) | all-pools "
           f"fallback {fs.get('fallback_addresses')} coins + young re-check "
@@ -378,7 +437,8 @@ def discover_tokens():
           f"unusable (e.g. ibc/...) {fs.get('skipped_unusable')} | bad addresses isolated "
           f"{len(fs.get('bad_addresses', []))} | coins lost to failed batches "
           f"{fs.get('lost_addresses')}")
-    LAST_COUNTS["enriched"] = len(tokens)
+    LAST_COUNTS["enriched"] = enriched
+    LAST_COUNTS["no_dexscreener"] = len(tokens) - enriched
     return tokens
 
 
