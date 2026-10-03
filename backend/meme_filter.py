@@ -11,6 +11,9 @@ don't want:
   * tokenized stocks / ETFs / commodities - they track real-world stocks,
     funds or gold (xStocks, Ondo / Robinhood stock tokens, tokenized gold...),
     not crypto growth
+  * tokenized treasury / money-market / credit FUNDS (OUSG, JTRSY, Spiko
+    T-Bills, BlackRock / Fidelity liquidity funds, CLO funds...) - fixed-yield
+    real-world funds, not crypto growth
 
 A coin is DROPPED if it is a meme OR a stablecoin OR a tokenized stock. Each
 kind uses the same two signals (checked by CONTRACT + CHAIN):
@@ -22,7 +25,8 @@ kind uses the same two signals (checked by CONTRACT + CHAIN):
        stablecoins -> "stablecoins" + "bridged-stablecoins" (bridged copies
                       like USDC.e live on other chains with their own contract)
        tokenized   -> CG_TOKENIZED_CATEGORIES (stocks, ETFs/ETPs, pre-IPO,
-                      gold / silver / uranium)
+                      gold / silver / uranium, treasuries / T-bills / T-bonds,
+                      money-market funds, tokenized credit)
   2. TAG - a CoinMarketCap tag contains the kind's keyword ("meme",
      "stablecoin"); for tokenized stocks, an EXACT CMC tag from
      TOKENIZED_TAGS (exact, because a substring like "stock" would also hit
@@ -30,7 +34,8 @@ kind uses the same two signals (checked by CONTRACT + CHAIN):
      fetches - no extra call.
   The broad "Real World Assets" / "Tokenized Assets" / RWA-protocol labels
   are NOT used: they also cover real crypto projects (Maple, Synthetix,
-  Axelar, Brickken...).
+  Axelar, Brickken, Propy, Parcl...). Only the fund / stock TOKENS
+  themselves are dropped, never the protocols that issue them.
 
 Unknown / no data never drops a coin (same "only drop on a positive signal"
 policy used by the revenue and security checks).
@@ -77,6 +82,9 @@ CG_TOKENIZED_CATEGORIES = [
     "tokenized-commodity-exchange-traded-products-etps",
     "tokenized-gold", "tokenized-silver", "tokenized-uranium",
     "xstocks-ecosystem", "bstocks-ecosystem",
+    # Fixed-yield real-world funds (each category lists only the fund tokens).
+    "tokenized-treasuries", "tokenized-t-bills", "tokenized-treasury-bonds-t-bonds",
+    "tokenized-money-market-fund-mmfs", "tokenized-credit",
 ]
 # CMC tag slugs for the same thing (matched EXACTLY, not as substrings).
 TOKENIZED_TAGS = {
@@ -173,7 +181,8 @@ def fetch_cg_stablecoin_keys(id_platforms=None, min_mcap=MIN_MCAP, max_pages=8):
 
 
 def fetch_cg_tokenized_keys(id_platforms=None, min_mcap=MIN_MCAP, max_pages=8):
-    """BULK set of CoinGecko tokenized-stock/ETF/commodity (chain, contract) keys."""
+    """BULK set of CoinGecko tokenized stock / ETF / commodity / treasury-fund
+    (chain, contract) keys."""
     return _fetch_cg_category_keys(CG_TOKENIZED_CATEGORIES, id_platforms,
                                    min_mcap, max_pages)
 
@@ -209,7 +218,7 @@ def is_tokenized(contract, chain, cg_tokenized_keys, cmc_tags=None):
     Returns {"is_tokenized", "matched"}."""
     signals = []
     if ((chain or "").lower(), (contract or "").lower()) in (cg_tokenized_keys or set()):
-        signals.append("CoinGecko tokenized-stock category")
+        signals.append("CoinGecko tokenized stock/fund category")
     hits = sorted(set(cmc_tags or []) & TOKENIZED_TAGS)
     if hits:
         signals.append("CMC tag '%s'" % hits[0])

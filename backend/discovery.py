@@ -372,7 +372,7 @@ def discover_candidates(verbose=True):
         print(f"  AFTER dedup (unique) ..... {unique_count:>5}")
         print(f"  MEME dropped ............. {meme_dropped:>5}")
         print(f"  STABLECOIN dropped ....... {stable_dropped:>5}")
-        print(f"  TOKENIZED STOCK dropped .. {tokenized_dropped:>5}")
+        print(f"  TOKENIZED stock/fund drop  {tokenized_dropped:>5}")
         print(f"  AFTER meme+stable filter . {after_excl:>5}")
         failed = DISCOVERY_ISSUES.get("coingecko_failed_pages") or []
         print(f"  CoinGecko pages skipped (failed after retries): "
