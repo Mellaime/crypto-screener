@@ -113,8 +113,11 @@ def upcoming(session, limit=QUEUE_DISPLAY_LIMIT, now=None):
     if not rows:
         return []
     # Only coins discovered in the latest run (the queue picks from those).
-    latest_run = max(r.last_seen for r in rows).date()
-    rows = [r for r in rows if r.last_seen.date() == latest_run]
+    # Every row of one run gets the same last_seen stamp, so match it exactly
+    # - a coin seen in an earlier run the same day (and filtered out since)
+    # doesn't linger.
+    latest_run = max(r.last_seen for r in rows)
+    rows = [r for r in rows if r.last_seen == latest_run]
 
     fresh = sorted((r for r in rows if r.last_checked is None),
                    key=lambda r: (r.first_seen, r.id))
