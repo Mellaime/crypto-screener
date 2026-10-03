@@ -334,17 +334,21 @@ def discover_candidates(verbose=True):
     # categories (set lookups) plus the CMC tags we already fetched. Drops
     # memes and stablecoins so they never reach DexScreener enrichment or the
     # age/revenue/... chain.
-    from meme_filter import fetch_cg_meme_keys, fetch_cg_stablecoin_keys, classify_excluded
+    from meme_filter import (fetch_cg_meme_keys, fetch_cg_stablecoin_keys,
+                             fetch_cg_tokenized_keys, classify_excluded)
     meme_keys, _ = fetch_cg_meme_keys()          # reuse the cached id->platforms map
     stable_keys, _ = fetch_cg_stablecoin_keys()
-    kept, meme_dropped, stable_dropped = [], 0, 0
+    tokenized_keys, _ = fetch_cg_tokenized_keys()
+    kept, meme_dropped, stable_dropped, tokenized_dropped = [], 0, 0, 0
     for c in merged:
         kind = classify_excluded(c["contract"], c["chain"], meme_keys, stable_keys,
-                                 cmc_tags=c.get("tags"))
+                                 cmc_tags=c.get("tags"), tokenized_keys=tokenized_keys)
         if kind == "meme":
             meme_dropped += 1
         elif kind == "stablecoin":
             stable_dropped += 1
+        elif kind == "tokenized":
+            tokenized_dropped += 1
         else:
             kept.append(c)
     merged = kept
@@ -354,7 +358,8 @@ def discover_candidates(verbose=True):
     # show the full chain starting at discovery.
     LAST_COUNTS.clear()
     LAST_COUNTS.update({"discovery": unique_count, "meme_dropped": meme_dropped,
-                        "stable_dropped": stable_dropped, "after_excl": after_excl})
+                        "stable_dropped": stable_dropped,
+                        "tokenized_dropped": tokenized_dropped, "after_excl": after_excl})
 
     if verbose:
         print("=" * 52)
@@ -367,6 +372,7 @@ def discover_candidates(verbose=True):
         print(f"  AFTER dedup (unique) ..... {unique_count:>5}")
         print(f"  MEME dropped ............. {meme_dropped:>5}")
         print(f"  STABLECOIN dropped ....... {stable_dropped:>5}")
+        print(f"  TOKENIZED STOCK dropped .. {tokenized_dropped:>5}")
         print(f"  AFTER meme+stable filter . {after_excl:>5}")
         failed = DISCOVERY_ISSUES.get("coingecko_failed_pages") or []
         print(f"  CoinGecko pages skipped (failed after retries): "

@@ -382,9 +382,10 @@ def print_summary(stats):
     print("  FILTER FUNNEL (7 steps)")
     print(line)
     print(f"  1. Discovery (CG+CMC, $5M-$350M) - unique .. {dc.get('discovery', '?'):>6}")
-    print(f"  2. Meme + stablecoin filter - passed ....... {dc.get('after_excl', '?'):>6}")
+    print(f"  2. Meme/stable/tokenized filter - passed ... {dc.get('after_excl', '?'):>6}")
     print(f"       - dropped as meme ..................... {dc.get('meme_dropped', '?'):>6}")
     print(f"       - dropped as stablecoin ............... {dc.get('stable_dropped', '?'):>6}")
+    print(f"       - dropped as tokenized stock/ETF ...... {dc.get('tokenized_dropped', '?'):>6}")
     print(f"       (not a filter: with DexScreener data -> {dc.get('enriched', '?')}, "
           f"without -> {dc.get('no_dexscreener', '?')}; both go on to age)")
     print(f"       (already analyzed on an earlier run -> skipped: "

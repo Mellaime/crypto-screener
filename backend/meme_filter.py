@@ -1,15 +1,19 @@
 """
 meme_filter.py
 --------------
-Early MEME + STABLECOIN filter for the DISCOVERY step (filter step 2). These
+Early MEME + STABLECOIN + TOKENIZED-STOCK filter for the DISCOVERY step
+(filter step 2). These
 coins are removed right after discovery, BEFORE the age / revenue / honeypot /
 volume / liquidity chain, so we never spend per-coin API calls on coins we
 don't want:
   * memes       - not screening targets
   * stablecoins - they don't move (USDC, USDT, DAI, ...), so not targets either
+  * tokenized stocks / ETFs / commodities - they track real-world stocks,
+    funds or gold (xStocks, Ondo / Robinhood stock tokens, tokenized gold...),
+    not crypto growth
 
-A coin is DROPPED if it is a meme OR a stablecoin. Each kind uses the same two
-signals (checked by CONTRACT + CHAIN):
+A coin is DROPPED if it is a meme OR a stablecoin OR a tokenized stock. Each
+kind uses the same two signals (checked by CONTRACT + CHAIN):
   1. CATEGORY - the coin is in a CoinGecko category for that kind. Each
      category is fetched ONCE per run in BULK and turned into a set of
      {(chain, contract)}, so the check is a free set lookup, not a per-coin
@@ -17,9 +21,16 @@ signals (checked by CONTRACT + CHAIN):
        memes       -> "meme-token"
        stablecoins -> "stablecoins" + "bridged-stablecoins" (bridged copies
                       like USDC.e live on other chains with their own contract)
+       tokenized   -> CG_TOKENIZED_CATEGORIES (stocks, ETFs/ETPs, pre-IPO,
+                      gold / silver / uranium)
   2. TAG - a CoinMarketCap tag contains the kind's keyword ("meme",
-     "stablecoin"). CMC tags come from the listings data discovery already
+     "stablecoin"); for tokenized stocks, an EXACT CMC tag from
+     TOKENIZED_TAGS (exact, because a substring like "stock" would also hit
+     "rootstock"). CMC tags come from the listings data discovery already
      fetches - no extra call.
+  The broad "Real World Assets" / "Tokenized Assets" / RWA-protocol labels
+  are NOT used: they also cover real crypto projects (Maple, Synthetix,
+  Axelar, Brickken...).
 
 Unknown / no data never drops a coin (same "only drop on a positive signal"
 policy used by the revenue and security checks).
@@ -27,10 +38,12 @@ policy used by the revenue and security checks).
 Public API:
   fetch_cg_meme_keys()       -> (set of (chain, contract_lower), id_count)
   fetch_cg_stablecoin_keys() -> (set of (chain, contract_lower), id_count)
+  fetch_cg_tokenized_keys()  -> (set of (chain, contract_lower), id_count)
   is_meme(contract, chain, cg_meme_keys, cmc_tags=None)          -> dict
   is_stablecoin(contract, chain, cg_stable_keys, cmc_tags=None)  -> dict
-  classify_excluded(contract, chain, meme_keys, stable_keys, cmc_tags=None)
-      -> "meme" | "stablecoin" | None
+  classify_excluded(contract, chain, meme_keys, stable_keys, cmc_tags=None,
+                    tokenized_keys=None)
+      -> "meme" | "stablecoin" | "tokenized" | None
 Never raises.
 """
 
@@ -54,6 +67,23 @@ MIN_MCAP = 5_000_000        # match discovery's window: coins below this can't b
 # CoinGecko category slugs (their /coins/markets `category` filter).
 CG_MEME_CATEGORIES = ["meme-token"]
 CG_STABLECOIN_CATEGORIES = ["stablecoins", "bridged-stablecoins"]
+# Tokenized real-world stocks / funds / commodities. The generic
+# "tokenized-commodities" category is left out on purpose: it also lists
+# Brickken (BKN), a real tokenization-platform project; gold / silver /
+# uranium have their own categories.
+CG_TOKENIZED_CATEGORIES = [
+    "tokenized-stock", "tokenized-pre-ipo-stocks",
+    "tokenized-exchange-traded-funds-etfs", "tokenized-exchange-traded-product-etps",
+    "tokenized-commodity-exchange-traded-products-etps",
+    "tokenized-gold", "tokenized-silver", "tokenized-uranium",
+    "xstocks-ecosystem", "bstocks-ecosystem",
+]
+# CMC tag slugs for the same thing (matched EXACTLY, not as substrings).
+TOKENIZED_TAGS = {
+    "tokenized-stock", "tokenized-etfs", "bstocks", "xstocks-ecosystem",
+    "ondo-stocks-ecosystem", "robinhood-stock", "prestocks-ecosystem",
+    "tokenized-gold", "tokenized-commodities",
+}
 
 # Keywords - plain, easy to extend. Matched case-insensitively as substrings,
 # so "meme" covers "Memes"/"animal-memes" and "stablecoin" covers
@@ -142,6 +172,12 @@ def fetch_cg_stablecoin_keys(id_platforms=None, min_mcap=MIN_MCAP, max_pages=8):
                                    min_mcap, max_pages)
 
 
+def fetch_cg_tokenized_keys(id_platforms=None, min_mcap=MIN_MCAP, max_pages=8):
+    """BULK set of CoinGecko tokenized-stock/ETF/commodity (chain, contract) keys."""
+    return _fetch_cg_category_keys(CG_TOKENIZED_CATEGORIES, id_platforms,
+                                   min_mcap, max_pages)
+
+
 def _check(kind_label, keywords, contract, chain, cg_keys, cmc_tags):
     """Shared category + tag check. Pure (no network I/O)."""
     signals = {}
@@ -168,12 +204,28 @@ def is_stablecoin(contract, chain, cg_stable_keys, cmc_tags=None):
     return {"is_stablecoin": r["hit"], "signals": r["signals"], "matched": r["matched"]}
 
 
-def classify_excluded(contract, chain, meme_keys, stable_keys, cmc_tags=None):
-    """'meme', 'stablecoin', or None (keep). Memes are checked first."""
+def is_tokenized(contract, chain, cg_tokenized_keys, cmc_tags=None):
+    """Tokenized stock / ETF / commodity check (category, or an EXACT CMC tag).
+    Returns {"is_tokenized", "matched"}."""
+    signals = []
+    if ((chain or "").lower(), (contract or "").lower()) in (cg_tokenized_keys or set()):
+        signals.append("CoinGecko tokenized-stock category")
+    hits = sorted(set(cmc_tags or []) & TOKENIZED_TAGS)
+    if hits:
+        signals.append("CMC tag '%s'" % hits[0])
+    return {"is_tokenized": bool(signals),
+            "matched": "; ".join(signals) if signals else None}
+
+
+def classify_excluded(contract, chain, meme_keys, stable_keys, cmc_tags=None,
+                      tokenized_keys=None):
+    """'meme', 'stablecoin', 'tokenized', or None (keep). Memes first."""
     if is_meme(contract, chain, meme_keys, cmc_tags)["is_meme"]:
         return "meme"
     if is_stablecoin(contract, chain, stable_keys, cmc_tags)["is_stablecoin"]:
         return "stablecoin"
+    if is_tokenized(contract, chain, tokenized_keys, cmc_tags)["is_tokenized"]:
+        return "tokenized"
     return None
 
 
@@ -215,3 +267,5 @@ if __name__ == "__main__":
     sk, sn = fetch_cg_stablecoin_keys()
     print(f"meme category:       {mn} ids -> {len(mk)} (chain,contract) keys")
     print(f"stablecoin category: {sn} ids -> {len(sk)} (chain,contract) keys")
+    tk, tn = fetch_cg_tokenized_keys()
+    print(f"tokenized categories: {tn} ids -> {len(tk)} (chain,contract) keys")
