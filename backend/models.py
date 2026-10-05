@@ -206,8 +206,8 @@ class AgeLookup(Base):
 
 class TxBarsCache(Base):
     """
-    Dashboard detail page: a coin's daily transaction bars from Codex
-    getBars (tx_bars.py), cached for one UTC day - so opening a coin costs at
+    Dashboard detail page: a coin's daily Codex getBars data (15-day bars,
+    7d + total volume; tx_bars.py), cached for one UTC day - so opening a coin costs at
     most 1 Codex request per coin per day. Display only.
     """
     __tablename__ = "tx_bars_cache"
@@ -219,3 +219,19 @@ class TxBarsCache(Base):
     day = Column(Date, nullable=False)                       # UTC day it was fetched
     bars = Column(String, nullable=False)                    # JSON list of daily bars
     fetched_at = Column(DateTime)
+
+
+class VolStatsCache(Base):
+    """
+    Dashboard detail page: a coin's live 4h / 24h volume from Codex
+    getDetailedTokenStats (tx_bars.py), cached for an hour - display only.
+    """
+    __tablename__ = "vol_stats_cache"
+    __table_args__ = (UniqueConstraint("chain", "contract"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chain = Column(String, nullable=False)
+    contract = Column(String, nullable=False, index=True)   # stored lowercased
+    vol_4h = Column(Float)
+    vol_24h = Column(Float)
+    fetched_at = Column(DateTime, nullable=False)

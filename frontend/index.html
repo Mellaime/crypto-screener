@@ -128,7 +128,7 @@
   .bar .s.only, .bar .b.only { border-radius: 4px 4px 0 0; }
   .bar:hover .stack, .bar.on .stack, .bar:focus-visible .stack { filter: brightness(1.2); }
   .xlabels { display: flex; gap: 2px; margin-left: 44px; margin-top: 4px; }
-  .xlabels span { flex: 1 1 0; min-width: 0; text-align: center; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+  .xlabels span { flex: 1 1 0; min-width: 0; text-align: center; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: visible; }
   .tip { position: absolute; z-index: 5; pointer-events: none; background: #0d1117; border: 1px solid var(--border);
          border-radius: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.55; box-shadow: 0 6px 18px rgba(0,0,0,0.45);
          white-space: nowrap; display: none; }
@@ -136,6 +136,18 @@
   .tip .row { display: flex; justify-content: space-between; gap: 14px; }
   .tip .row span:last-child { font-variant-numeric: tabular-nums; }
   .tip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+  /* Ratio sections (Volume / MCap, Volume / Liquidity) */
+  .ratiocard { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+               padding: 14px; margin-top: 12px; }
+  .ratiocard h3 { margin: 0; font-size: 15px; }
+  .ratiocard .note { color: var(--muted); font-size: 12px; margin: 3px 0 10px; }
+  .ratios { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .ratio { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+  .ratio .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+  .ratio .v { margin-top: 3px; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums;
+              overflow-wrap: anywhere; }
+  .ratio .sub { margin-top: 2px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  @media (max-width: 560px) { .ratios { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   details.tbl { margin-top: 10px; font-size: 13px; }
   details.tbl summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
   details.tbl table { font-size: 12px; }
@@ -476,7 +488,11 @@
         <div class="fact wide"><div class="k">Contract</div>
           <div class="v mono" data-addr="${esc(c.contract)}" title="Click to copy">${esc(c.contract)}</div></div>
       </div>
-      ${txChart(c)}`;
+      ${txChart(c)}
+      ${ratioCard(c, "Volume / Market cap", "vol_mcap_pct", fmtPct,
+          "Traded volume as a % of the coin's market cap (CoinGecko/CMC): " + fmtMoney(c.mcap) + ".")}
+      ${ratioCard(c, "Volume / Liquidity", "vol_liq_x", fmtMult,
+          "Traded volume as a multiple of the coin's current liquidity (Codex): " + fmtMoney(c.liquidity) + ".")}`;
     wireChart(c.tx_bars || []);
   }
 
@@ -511,7 +527,9 @@
       return `<div class="bar" tabindex="0" data-i="${i}" aria-label="${esc(b.date)}: ${b.buys} buys, ${b.sells} sells">
                 <div class="stack" style="height:${h}%">${segs.join("")}</div></div>`;
     }).join("");
-    const every = bars.length > 10 ? 2 : 1;
+    // Label every bar only when there's room for "Sep 20"-style text.
+    const room = (Math.min(document.querySelector(".wrap").clientWidth, 1100) - 72) / bars.length;
+    const every = Math.max(1, Math.ceil(46 / room));
     const xl = bars.map((b, i) => `<span>${i % every === 0 || i === bars.length - 1 ? shortDate(b.date) : ""}</span>`).join("");
     const rows = bars.map(b => `<tr><td>${esc(b.date)}</td><td class="num">${fmtInt(b.buys)}</td><td class="num">${fmtInt(b.sells)}</td>
       <td class="num">${fmtUsd(b.buy_volume)}</td><td class="num">${fmtUsd(b.sell_volume)}</td>
@@ -571,6 +589,32 @@
   }
   let pinned = null, unpinTip = () => {};
   document.addEventListener("click", () => unpinTip());   // tap elsewhere closes the tooltip
+
+  // Volume ratio section: 4h · 24h · 7d · Total side by side.
+  const WINDOWS = [["4h", "4h"], ["24h", "24h"], ["7d", "7d"], ["total", "Total"]];
+  function ratioCard(c, title, key, fmt, note) {
+    const r = c[key] || {}, vols = c.volumes || {};
+    const tiles = WINDOWS.map(([k, label]) => {
+      const sub = k === "total" && c.volume_since ? `since ${shortDate(c.volume_since)} ${c.volume_since.slice(0, 4)}`
+                : (vols[k] == null ? "" : fmtMoney(vols[k]) + " vol");
+      return `<div class="ratio"><div class="k">${label}</div>
+        <div class="v">${r[k] == null ? "—" : fmt(r[k])}</div><div class="sub">${esc(sub)}</div></div>`;
+    }).join("");
+    return `<div class="ratiocard"><h3>${title}</h3><div class="note">${esc(note)}
+      7d = last 7 full days; Total = every day since trading started.</div>
+      <div class="ratios">${tiles}</div>
+      ${c.volume_error ? `<div class="note" style="margin:8px 0 0">Some figures unavailable - ${esc(c.volume_error)}</div>` : ""}</div>`;
+  }
+  function fmtMult(v) {
+    if (v === 0) return "0x";
+    if (v < 0.01) return "<0.01x";
+    return (v >= 100 ? Math.round(v).toLocaleString() : v.toFixed(2)) + "x";
+  }
+  function fmtPct(v) {
+    if (v === 0) return "0%";
+    if (v < 0.01) return "<0.01%";
+    return (v >= 100 ? Math.round(v).toLocaleString() : v.toFixed(2)) + "%";
+  }
 
   function niceStep(max) {
     const raw = max / 4, mag = Math.pow(10, Math.floor(Math.log10(raw)));

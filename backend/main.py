@@ -8,7 +8,8 @@ Endpoints:
     GET /api/coins    -> ACTIVE coins, ranked by score (highest first)
     GET /api/dropped  -> dropped coins with date + reason
     GET /api/queue    -> the next 600 coins waiting in the entry queue
-    GET /api/coin/<contract> -> one coin: header info + 15-day transaction bars
+    GET /api/coin/<contract> -> one coin: header info, 15-day transaction bars,
+                                Volume/MCap + Volume/Liquidity (4h, 24h, 7d, total)
     GET /             -> the dashboard web page (from the frontend/ folder)
 
 Run it (from the backend/ folder, with the venv active):
@@ -170,7 +171,7 @@ def get_coin(contract: str):
     """One coin's detail page: its header info (all stored data) plus its
     daily transaction bars (Codex getBars, cached per coin per day)."""
     from models import CoinQueue
-    from tx_bars import get_tx_bars, WINDOW_DAYS
+    from tx_bars import get_tx_bars, get_live_volume, WINDOW_DAYS
 
     session = SessionLocal()
     try:
@@ -184,6 +185,18 @@ def get_coin(contract: str):
              .filter_by(chain=(coin.chain or "").lower(), contract=coin.contract.lower())
              .first())
         tx = get_tx_bars(session, coin.contract, coin.chain)
+        live = get_live_volume(session, coin.contract, coin.chain)
+
+        # Volume / Market cap (%) and Volume / Liquidity (x) over 4 windows.
+        # Market cap = the stored CoinGecko/CMC (global) one; liquidity = the
+        # latest Codex reading tracking stored (DexScreener's if none).
+        mcap = snap.mcap if snap else None
+        liq = (snap.codex_liquidity or snap.liquidity) if snap else None
+        volumes = {"4h": live["vol_4h"], "24h": live["vol_24h"],
+                   "7d": tx["vol_7d"], "total": tx["vol_total"]}
+
+        def ratio(v, base, scale):
+            return round(v / base * scale, 4) if v is not None and base else None
         return {
             "name": coin.name,
             "symbol": q[0] if q else None,
@@ -201,6 +214,12 @@ def get_coin(contract: str):
             "tx_window_days": WINDOW_DAYS,
             "tx_bars": tx["bars"],
             "tx_error": tx["error"],
+            "liquidity": liq,
+            "volumes": volumes,
+            "volume_since": tx["since"],
+            "vol_mcap_pct": {k: ratio(v, mcap, 100) for k, v in volumes.items()},
+            "vol_liq_x": {k: ratio(v, liq, 1) for k, v in volumes.items()},
+            "volume_error": live["error"] or tx["error"],
         }
     finally:
         session.close()
