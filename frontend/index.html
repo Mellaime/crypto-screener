@@ -85,11 +85,61 @@
   .tab[aria-selected="true"] { background: rgba(88,166,255,0.15); color: var(--accent);
          border-color: var(--accent); }
   .tab .count { font-weight: 400; opacity: 0.8; }
-  .view[hidden] { display: none; }
+  .view[hidden], .tabs[hidden] { display: none; }
   .card { overflow-x: auto; }       /* wide tables scroll sideways on phones */
   @media (max-width: 560px) {
     .tab { flex-basis: 100%; }      /* stack the buttons full-width on phones */
   }
+
+  /* Clickable rows -> coin detail page */
+  #coins-body tr { cursor: pointer; }
+  #coins-body tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  /* Coin detail page */
+  :root { --buy: #238f5c; --sell: #e65d8a; }   /* validated pair (CVD-safe on the dark card) */
+  .back { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 14px;
+          background: var(--card); color: var(--text); border: 1px solid var(--border);
+          border-radius: 10px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .back:hover { border-color: #484f58; }
+  .coinhead { margin: 16px 0 6px; }
+  .coinhead h2 { margin: 0; font-size: 22px; text-transform: none; letter-spacing: -0.3px; color: var(--text); }
+  .coinhead .sym { color: var(--muted); font-weight: 400; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 14px 0 6px; }
+  .fact { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+  .fact .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+  .fact .v { margin-top: 4px; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .fact.wide { grid-column: 1 / -1; }
+  .fact .v.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; font-weight: 400; cursor: copy; }
+
+  .chartcard { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 14px 10px; }
+  .chartcard h3 { margin: 0; font-size: 15px; }
+  .chartcard .note { color: var(--muted); font-size: 12px; margin: 3px 0 10px; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .plot { position: relative; height: 220px; margin-left: 44px; border-bottom: 1px solid var(--border); }
+  .grid { position: absolute; left: 0; right: 0; border-top: 1px dashed #262c34; }
+  .grid span { position: absolute; right: calc(100% + 6px); top: -7px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .bars { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 2px; }
+  .bar { flex: 1 1 0; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end;
+         cursor: pointer; outline: none; }            /* the whole column is the hit target */
+  .bar .stack { display: flex; flex-direction: column; gap: 2px; max-width: 28px; width: 100%; margin: 0 auto; }
+  .bar .s { background: var(--sell); border-radius: 4px 4px 0 0; }   /* top segment: rounded data-end */
+  .bar .b { background: var(--buy); }
+  .bar .s.only, .bar .b.only { border-radius: 4px 4px 0 0; }
+  .bar:hover .stack, .bar.on .stack, .bar:focus-visible .stack { filter: brightness(1.2); }
+  .xlabels { display: flex; gap: 2px; margin-left: 44px; margin-top: 4px; }
+  .xlabels span { flex: 1 1 0; min-width: 0; text-align: center; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+  .tip { position: absolute; z-index: 5; pointer-events: none; background: #0d1117; border: 1px solid var(--border);
+         border-radius: 8px; padding: 8px 10px; font-size: 12px; line-height: 1.55; box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+         white-space: nowrap; display: none; }
+  .tip b { display: block; margin-bottom: 2px; }
+  .tip .row { display: flex; justify-content: space-between; gap: 14px; }
+  .tip .row span:last-child { font-variant-numeric: tabular-nums; }
+  .tip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+  details.tbl { margin-top: 10px; font-size: 13px; }
+  details.tbl summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
+  details.tbl table { font-size: 12px; }
+  details.tbl td, details.tbl th { padding: 6px 8px; }
 </style>
 </head>
 <body>
@@ -102,7 +152,7 @@
 
   <div class="err" id="err"></div>
 
-  <nav class="tabs" role="tablist" aria-label="Choose a table">
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Choose a table">
     <button class="tab" role="tab" id="tab-active" aria-controls="view-active" data-view="active">
       Active Coins <span class="count" id="count-active"></span></button>
     <button class="tab" role="tab" id="tab-dropped" aria-controls="view-dropped" data-view="dropped">
@@ -181,6 +231,11 @@
       <tbody id="queue-body"></tbody>
     </table>
   </div>
+  </section>
+
+  <section class="view" id="view-coin" hidden>
+    <button class="back" id="back">← Back to Active coins</button>
+    <div id="coin-detail"></div>
   </section>
 </div>
 
@@ -263,7 +318,7 @@
       return;
     }
     body.innerHTML = data.coins.map(c => `
-      <tr>
+      <tr tabindex="0" data-contract="${esc(c.contract)}" title="Open ${esc(c.name)}">
         <td class="rank">${c.rank}</td>
         <td>
           <div class="name">${esc(c.name)} ${secBadge(c)}</div>
@@ -347,7 +402,20 @@
   // and always current.
   const VIEWS = ["active", "dropped", "queue"];
   function showView(name) {
+    // "#coin/<contract>" -> that coin's detail page
+    if (name.startsWith("coin/")) {
+      for (const v of VIEWS) document.getElementById("view-" + v).hidden = true;
+      document.getElementById("tabs").hidden = true;
+      document.getElementById("view-coin").hidden = false;
+      const hash = "#" + name;
+      if (location.hash !== hash) history.pushState(null, "", location.pathname + location.search + hash);
+      loadCoin(decodeURIComponent(name.slice(5)));
+      window.scrollTo(0, 0);
+      return;
+    }
     if (!VIEWS.includes(name)) name = "active";
+    document.getElementById("view-coin").hidden = true;
+    document.getElementById("tabs").hidden = false;
     for (const v of VIEWS) {
       document.getElementById("view-" + v).hidden = (v !== name);
       document.getElementById("tab-" + v).setAttribute("aria-selected", v === name ? "true" : "false");
@@ -357,6 +425,168 @@
   }
   document.querySelectorAll(".tab").forEach(b =>
     b.addEventListener("click", () => showView(b.dataset.view)));
+  // Click (or Enter) on an active-coin row opens its detail page.
+  function openRow(e) {
+    const tr = e.target.closest("#coins-body tr[data-contract]");
+    if (tr) showView("coin/" + encodeURIComponent(tr.dataset.contract));
+  }
+  document.getElementById("coins-body").addEventListener("click", openRow);
+  document.getElementById("coins-body").addEventListener("keydown", e => { if (e.key === "Enter") openRow(e); });
+  // "Back to Active coins" always lands on the Active table (the browser's
+  // own back button still steps through history).
+  document.getElementById("back").addEventListener("click", () => {
+    history.pushState(null, "", location.pathname + location.search);
+    showView("active");
+  });
+  window.addEventListener("popstate", () => showView(location.hash.slice(1)));
+
+  // ---- coin detail page ---------------------------------------------------
+  let coinReq = 0;
+  async function loadCoin(contract) {
+    const box = document.getElementById("coin-detail");
+    const req = ++coinReq;
+    box.innerHTML = '<div class="empty">Loading…</div>';
+    try {
+      const res = await fetch("/api/coin/" + encodeURIComponent(contract));
+      if (req !== coinReq) return;                    // user already moved on
+      if (res.status === 404) { box.innerHTML = '<div class="empty">This coin is not in our list (any more).</div>'; return; }
+      if (!res.ok) throw new Error("API returned " + res.status);
+      renderCoin(await res.json());
+    } catch (e) {
+      if (req === coinReq) box.innerHTML = `<div class="empty">Could not load this coin (${esc(e.message)}).</div>`;
+    }
+  }
+
+  function fact(k, v, cls = "") { return `<div class="fact ${cls}"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
+  function fmtInt(v) { return v == null ? "—" : Math.round(v).toLocaleString(); }
+  function fmtUsd(v) { return v == null ? "—" : "$" + Math.round(v).toLocaleString(); }
+
+  function renderCoin(c) {
+    const status = c.status === "active" ? "" : ` <span class="sec unknown">${esc(c.status)}</span>`;
+    document.getElementById("coin-detail").innerHTML = `
+      <div class="coinhead">
+        <h2>${esc(c.name)} ${c.symbol ? `<span class="sym">${esc(c.symbol)}</span>` : ""}${status}</h2>
+        <span class="chain">${esc(c.chain)}</span>
+      </div>
+      <div class="facts">
+        ${fact("Price", fmtPrice(c.price))}
+        ${fact("Market cap", fmtMoney(c.mcap))}
+        ${fact("Score", c.score == null ? "—" : `<span class="badge ${scoreClass(c.score)}">${c.score}</span>`)}
+        ${fact("Narrative", c.category ? `<span class="tag">${esc(c.category)}</span>` : esc(c.narrative))}
+        <div class="fact wide"><div class="k">Contract</div>
+          <div class="v mono" data-addr="${esc(c.contract)}" title="Click to copy">${esc(c.contract)}</div></div>
+      </div>
+      ${txChart(c)}`;
+    wireChart(c.tx_bars || []);
+  }
+
+  // Transactions chart: one bar per COMPLETE day. Height = total
+  // transactions; split green (buys, bottom) / red (sells, top) by the
+  // day's buy:sell count ratio. Hover or tap a bar for all 6 values.
+  function txChart(c) {
+    const bars = c.tx_bars || [];
+    const head = `<h3>Transactions</h3>
+      <div class="note">Last ${bars.length} complete day${bars.length === 1 ? "" : "s"}
+        ${bars.length < c.tx_window_days ? "(since the coin started trading)" : ""} ·
+        bar height = total transactions · hover or tap a bar for details</div>`;
+    if (!bars.length) {
+      return `<div class="chartcard">${head}<div class="empty">${esc(c.tx_error || "No transaction data for this coin.")}</div></div>`;
+    }
+    const max = Math.max(1, ...bars.map(b => b.transactions || (b.buys + b.sells)));
+    const step = niceStep(max);
+    const top = Math.ceil(max / step) * step;
+    let grid = "";
+    for (let v = 0; v <= top; v += step) {
+      grid += `<div class="grid" style="bottom:${(v / top) * 100}%"><span>${fmtCompact(v)}</span></div>`;
+    }
+    const cols = bars.map((b, i) => {
+      const total = b.transactions || (b.buys + b.sells);
+      const counted = b.buys + b.sells;
+      const h = (total / top) * 100;
+      const buyPart = counted ? b.buys / counted : 0;
+      const sell = counted ? 1 - buyPart : 0;
+      const segs = [];
+      if (sell > 0) segs.push(`<div class="s${buyPart === 0 ? " only" : ""}" style="flex:${sell} 1 0"></div>`);
+      if (buyPart > 0) segs.push(`<div class="b${sell === 0 ? " only" : ""}" style="flex:${buyPart} 1 0"></div>`);
+      return `<div class="bar" tabindex="0" data-i="${i}" aria-label="${esc(b.date)}: ${b.buys} buys, ${b.sells} sells">
+                <div class="stack" style="height:${h}%">${segs.join("")}</div></div>`;
+    }).join("");
+    const every = bars.length > 10 ? 2 : 1;
+    const xl = bars.map((b, i) => `<span>${i % every === 0 || i === bars.length - 1 ? shortDate(b.date) : ""}</span>`).join("");
+    const rows = bars.map(b => `<tr><td>${esc(b.date)}</td><td class="num">${fmtInt(b.buys)}</td><td class="num">${fmtInt(b.sells)}</td>
+      <td class="num">${fmtUsd(b.buy_volume)}</td><td class="num">${fmtUsd(b.sell_volume)}</td>
+      <td class="num">${fmtUsd(b.volume)}</td><td class="num">${fmtInt(b.transactions)}</td></tr>`).join("");
+    return `<div class="chartcard">${head}
+      <div class="legend"><span><i style="background:var(--buy)"></i>Buys</span><span><i style="background:var(--sell)"></i>Sells</span></div>
+      <div class="plot" id="txplot">${grid}<div class="bars">${cols}</div><div class="tip" id="txtip"></div></div>
+      <div class="xlabels">${xl}</div>
+      <details class="tbl"><summary>Show as table</summary><div class="card"><table>
+        <thead><tr><th>Day</th><th class="num">Buys</th><th class="num">Sells</th><th class="num">Buy vol</th>
+        <th class="num">Sell vol</th><th class="num">Total vol</th><th class="num">Txns</th></tr></thead>
+        <tbody>${rows}</tbody></table></div></details>
+      ${c.tx_error ? `<div class="note">Showing the last saved bars - ${esc(c.tx_error)}</div>` : ""}
+    </div>`;
+  }
+
+  function wireChart(bars) {
+    const plot = document.getElementById("txplot");
+    if (!plot) return;
+    const tip = document.getElementById("txtip");
+    pinned = null;
+    function show(el) {
+      const b = bars[+el.dataset.i];
+      plot.querySelectorAll(".bar.on").forEach(x => x.classList.remove("on"));
+      el.classList.add("on");
+      tip.innerHTML = `<b>${esc(longDate(b.date))}</b>
+        <div class="row"><span><i style="background:var(--buy)"></i>Buys</span><span>${fmtInt(b.buys)}</span></div>
+        <div class="row"><span><i style="background:var(--sell)"></i>Sells</span><span>${fmtInt(b.sells)}</span></div>
+        <div class="row"><span>Buy volume</span><span>${fmtUsd(b.buy_volume)}</span></div>
+        <div class="row"><span>Sell volume</span><span>${fmtUsd(b.sell_volume)}</span></div>
+        <div class="row"><span>Total volume</span><span>${fmtUsd(b.volume)}</span></div>
+        <div class="row"><span>Total transactions</span><span>${fmtInt(b.transactions)}</span></div>`;
+      tip.style.display = "block";
+      // Beside the bar (right of it, or left near the right edge), so the
+      // tooltip never covers the bar being read.
+      const pr = plot.getBoundingClientRect(), br = el.getBoundingClientRect();
+      const gap = 8, w = tip.offsetWidth;
+      let x = br.right - pr.left + gap;
+      if (x + w > pr.width) x = br.left - pr.left - gap - w;
+      x = Math.max(-40, x);
+      tip.style.left = x + "px";
+      tip.style.top = "4px";
+    }
+    function hide() { if (pinned) return; tip.style.display = "none";
+      plot.querySelectorAll(".bar.on").forEach(x => x.classList.remove("on")); }
+    plot.querySelectorAll(".bar").forEach(el => {
+      el.addEventListener("mouseenter", () => { if (!pinned) show(el); });
+      el.addEventListener("mouseleave", hide);
+      el.addEventListener("focus", () => show(el));
+      el.addEventListener("blur", () => { pinned = null; hide(); });
+      el.addEventListener("click", e => {          // tap on phones: pin / unpin
+        e.stopPropagation();
+        if (pinned === el) { pinned = null; hide(); } else { pinned = el; show(el); }
+      });
+    });
+    unpinTip = () => { if (pinned) { pinned = null; hide(); } };
+  }
+  let pinned = null, unpinTip = () => {};
+  document.addEventListener("click", () => unpinTip());   // tap elsewhere closes the tooltip
+
+  function niceStep(max) {
+    const raw = max / 4, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const n = raw / mag;
+    return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * mag;
+  }
+  function fmtCompact(v) { return v >= 1e6 ? (v / 1e6) + "M" : v >= 1e3 ? (v / 1e3) + "K" : String(v); }
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function shortDate(d) { const [, m, day] = d.split("-"); return MONTHS[+m - 1] + " " + (+day); }
+  function longDate(d) { return shortDate(d) + ", " + d.slice(0, 4); }
+
+  document.addEventListener("click", e => {          // copy the contract on the detail page
+    const v = e.target.closest(".fact .v.mono");
+    if (v && navigator.clipboard) navigator.clipboard.writeText(v.dataset.addr).catch(() => {});
+  });
+
   showView(location.hash.slice(1));
 
   // ---- data loading -------------------------------------------------------

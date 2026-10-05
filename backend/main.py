@@ -8,6 +8,7 @@ Endpoints:
     GET /api/coins    -> ACTIVE coins, ranked by score (highest first)
     GET /api/dropped  -> dropped coins with date + reason
     GET /api/queue    -> the next 600 coins waiting in the entry queue
+    GET /api/coin/<contract> -> one coin: header info + 15-day transaction bars
     GET /             -> the dashboard web page (from the frontend/ folder)
 
 Run it (from the backend/ folder, with the venv active):
@@ -21,6 +22,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func
 
 from database import SessionLocal
 from models import Coin, DailySnapshot, DroppedCoin
@@ -159,6 +161,47 @@ def get_dropped():
         } for dropped, coin in results]
 
         return {"count": len(rows), "dropped": rows}
+    finally:
+        session.close()
+
+
+@app.get("/api/coin/{contract}")
+def get_coin(contract: str):
+    """One coin's detail page: its header info (all stored data) plus its
+    daily transaction bars (Codex getBars, cached per coin per day)."""
+    from models import CoinQueue
+    from tx_bars import get_tx_bars, WINDOW_DAYS
+
+    session = SessionLocal()
+    try:
+        coin = (session.query(Coin)
+                .filter(func.lower(Coin.contract) == contract.lower()).first())
+        if coin is None:
+            raise HTTPException(status_code=404, detail="coin not found")
+        snap = latest_snapshot(session, coin.id)
+        b = score_snapshot(snap, coin) if snap else None
+        q = (session.query(CoinQueue.symbol)
+             .filter_by(chain=(coin.chain or "").lower(), contract=coin.contract.lower())
+             .first())
+        tx = get_tx_bars(session, coin.contract, coin.chain)
+        return {
+            "name": coin.name,
+            "symbol": q[0] if q else None,
+            "chain": coin.chain,
+            "contract": coin.contract,
+            "status": coin.status,
+            "price": coin.price_usd,
+            "price_updated": _iso(coin.price_updated_at),
+            "mcap": snap.mcap if snap else None,
+            "score": b["total"] if b else None,
+            "category": coin.category,
+            "narrative": make_narrative(coin.chain, snap.mcap if snap else None,
+                                        b["vol_liq_ratio"] if b else None),
+            "security": coin.security_verdict,
+            "tx_window_days": WINDOW_DAYS,
+            "tx_bars": tx["bars"],
+            "tx_error": tx["error"],
+        }
     finally:
         session.close()
 
