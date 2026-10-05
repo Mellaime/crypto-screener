@@ -12,8 +12,17 @@ where tracked coins get their fresh daily numbers - with NO CoinGecko calls:
      for 500+ coins. Stored per day on the coin's snapshot (codex_liquidity,
      codex_volume24); drop_logic computes the volume and liquidity TRENDS from
      this stored history.
-  2. DexScreener - what the dashboard shows: price, market cap, 24h volume,
-     liquidity (main pool; the fast batched fetch).
+  2. DexScreener - what the dashboard shows: price, 24h volume, liquidity
+     (main pool; the fast batched fetch).
+  3. Market cap - the coin's GLOBAL market cap from CoinGecko / CMC, taken
+     from this run's discovery (discovery.LAST_MCAPS, no extra calls). Not
+     from DexScreener: one pool's market cap is tiny for a bridged copy. A
+     coin discovery didn't see today (e.g. fell below $5M) gets yesterday's
+     market cap moved by today's price change.
+  4. Category catch-up - tracked coins that have no CoinGecko category yet
+     (the save step only looks up CATEGORY_BUDGET new coins per run), or
+     still show a launch / backer label, get one lookup each, at most
+     CATEGORY_BUDGET per run.
 
 Every tracked coin gets a snapshot for TODAY (created if missing). Anything a
 source didn't return today is carried forward from the coin's previous
@@ -105,9 +114,30 @@ def codex_bulk_readings(coins, stats):
     return out
 
 
+def _catch_up_categories(coins):
+    """Look up a CoinGecko category for tracked coins that still have none
+    (or a launch / backer label). At most CATEGORY_BUDGET live calls."""
+    from narrative_check import lookup_category, is_skipped_label, CATEGORY_BUDGET
+
+    calls = 0
+    for coin in coins:
+        if calls >= CATEGORY_BUDGET:
+            break
+        if coin.category == "" or (coin.category and not is_skipped_label(coin.category)):
+            continue                     # final answer already
+        cat, definitive, called = lookup_category(coin.contract, coin.chain)
+        calls += int(called)
+        if cat:
+            coin.category = cat
+        elif definitive:
+            coin.category = ""           # CoinGecko has no usable category
+    return calls
+
+
 def run_daily_tracking():
     """Record today's Codex readings + dashboard numbers for active + dropped."""
     from fetch_dexscreener import fetch_pairs_for_candidates, build_token_records
+    from discovery import LAST_MCAPS
 
     now = utcnow()
     today = date.today()
@@ -119,6 +149,7 @@ def run_daily_tracking():
         coins = (session.query(Coin)
                  .filter(Coin.status.in_(["active", "dropped"])).all())
         stats["coins"] = len(coins)
+        stats["mcap_discovery"] = stats["mcap_scaled"] = 0
         if not coins:
             print("No active or dropped coins - nothing to track.")
             return stats
@@ -165,12 +196,24 @@ def run_daily_tracking():
                 price = _to_float(rec.get("price_usd"))
                 snap.volume = _to_float(rec.get("volume_24h"))
                 snap.liquidity = _to_float(rec.get("liquidity_usd"))
-                snap.mcap = _to_float(rec.get("market_cap"))
                 if price is not None:
                     snap.price_usd = price
                     coin.price_usd = price
                     coin.price_updated_at = now
                     stats["price_updated"] += 1
+
+            # Market cap: CoinGecko / CMC (global), never a DexScreener pool.
+            prev = (session.query(DailySnapshot)
+                    .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date < today)
+                    .order_by(DailySnapshot.date.desc()).first())
+            if LAST_MCAPS.get(key):
+                snap.mcap = LAST_MCAPS[key]
+                stats["mcap_discovery"] += 1
+            elif prev and prev.mcap and prev.price_usd and snap.price_usd:
+                snap.mcap = prev.mcap * snap.price_usd / prev.price_usd
+                stats["mcap_scaled"] += 1
+
+        stats["category_lookups"] = _catch_up_categories(coins)
         session.commit()
     except Exception:
         session.rollback()
@@ -188,7 +231,10 @@ def run_daily_tracking():
           f"{stats['codex_ids']} coins on Codex chains)")
     print(f"  DexScreener data (price etc.) ... {stats['dex_data']:>5}")
     print(f"  price refreshed ................. {stats['price_updated']:>5}")
+    print(f"  market cap from CoinGecko/CMC ... {stats.get('mcap_discovery', 0):>5}"
+          f"   (moved with price: {stats.get('mcap_scaled', 0)})")
     print(f"  today's snapshots created ....... {stats['snapshots_created']:>5}")
+    print(f"  category catch-up (CG calls) .... {stats.get('category_lookups', 0):>5}")
     if stats["codex_failed_batches"]:
         print(f"  Codex batches FAILED ............ {stats['codex_failed_batches']:>5}")
     print(line)

@@ -48,7 +48,7 @@ Run it standalone (after tracking.py has recorded today's readings):
 from datetime import date, timedelta
 
 from database import SessionLocal, init_db, utcnow
-from models import Coin, DailySnapshot, DroppedCoin
+from models import Coin, DailySnapshot, DroppedCoin, RankHistory
 
 GRACE_DAYS = 5               # calendar days untouched after entering active
 RECOVERY_DAYS = 7            # daily recovery re-checks before permanent delete
@@ -62,17 +62,17 @@ LIQ_WINDOW_DAYS = 30         # liquidity: vs up to 30 days back
 
 
 def _delete_coin(session, coin):
-    """Remove a coin completely: its snapshots, any dropped_coins rows, itself.
-    The entry queue records the deletion, so the coin can come back through
-    the entry filter ONCE, 15 days from now (rotation.py)."""
+    """Remove a coin completely: its snapshots, dropped_coins rows, weekly
+    rank history, itself (every table that points at the coin - otherwise
+    the database refuses the delete). The entry queue records the deletion,
+    so the coin can come back through the entry filter ONCE, 15 days from now
+    (rotation.py)."""
     from rotation import mark_deleted
     mark_deleted(session, coin.chain, coin.contract)
-    session.query(DailySnapshot).filter_by(coin_id=coin.id).delete(
-        synchronize_session=False
-    )
-    session.query(DroppedCoin).filter_by(coin_id=coin.id).delete(
-        synchronize_session=False
-    )
+    for table in (DailySnapshot, DroppedCoin, RankHistory):
+        session.query(table).filter_by(coin_id=coin.id).delete(
+            synchronize_session=False
+        )
     session.delete(coin)
 
 

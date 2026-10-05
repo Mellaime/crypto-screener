@@ -226,6 +226,37 @@ def is_tokenized(contract, chain, cg_tokenized_keys, cmc_tags=None):
             "matched": "; ".join(signals) if signals else None}
 
 
+# Price safety net for stablecoins the category / tag lists miss (e.g.
+# WrappedM by M0). Conservative: price within $0.98-$1.02 AND every movement
+# figure we have is tiny, and at least one movement figure must exist.
+PEG_LOW, PEG_HIGH = 0.98, 1.02
+PEG_MAX_CHG_24H = 1.0     # % - |24h change| at most this
+PEG_MAX_CHG_7D = 2.0      # % - |7d change| at most this (CMC)
+
+
+def looks_like_stablecoin(c):
+    """True if a discovery candidate trades like a $1 stablecoin. Uses only
+    the price data discovery already has (no calls)."""
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    price = num(c.get("price"))
+    if price is None or not (PEG_LOW <= price <= PEG_HIGH):
+        return False
+    chg24, chg7, hi, lo = (num(c.get(k)) for k in ("chg_24h", "chg_7d", "high_24h", "low_24h"))
+    if chg24 is None and chg7 is None and (hi is None or lo is None):
+        return False                       # no movement data -> don't guess
+    if chg24 is not None and abs(chg24) > PEG_MAX_CHG_24H:
+        return False
+    if chg7 is not None and abs(chg7) > PEG_MAX_CHG_7D:
+        return False
+    if hi is not None and lo is not None and not (PEG_LOW <= lo and hi <= PEG_HIGH):
+        return False                       # left the band during the day
+    return True
+
+
 def classify_excluded(contract, chain, meme_keys, stable_keys, cmc_tags=None,
                       tokenized_keys=None):
     """'meme', 'stablecoin', 'tokenized', or None (keep). Memes first."""

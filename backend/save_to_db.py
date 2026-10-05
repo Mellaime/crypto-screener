@@ -108,6 +108,38 @@ def is_volume_rising(coin, days=5):
     return never_drops and net_increase
 
 
+def dedupe_by_coin(session, tokens):
+    """
+    One token per COIN: the same coin discovered on several chains (bridged
+    copies - Aethir on Ethereum + Arbitrum, ...) shares a coin_key. Keep:
+      1. the copy we already track (a coins row), else
+      2. the copy already analyzed in the entry queue, else
+      3. the copy with the most DexScreener liquidity (ties: discovery order).
+    1 and 2 keep the choice stable from day to day, so a coin never enters
+    active twice. Returns (kept_tokens, dropped_count).
+    """
+    from models import CoinQueue
+
+    tracked = {(c.contract or "").lower() for c in session.query(Coin.contract)}
+    analyzed = {r.contract for r in session.query(CoinQueue.contract)
+                .filter(CoinQueue.last_checked.isnot(None))}
+
+    def rank(t):
+        low = (t["contract"] or "").lower()
+        return (low in tracked, low in analyzed, to_float(t.get("liquidity_usd")) or 0)
+
+    groups = {}
+    for i, t in enumerate(tokens):
+        key = t.get("coin_key") or ("addr:" + (t["contract"] or "").lower())
+        groups.setdefault(key, []).append((i, t))
+    kept = []
+    for members in groups.values():
+        best = max(members, key=lambda m: (rank(m[1]), -m[0]))
+        kept.append(best)
+    kept.sort(key=lambda m: m[0])
+    return [t for _, t in kept], len(tokens) - len(kept)
+
+
 def save_tokens(tokens):
     """
     Save filtered tokens to the database. Returns a dict of counts for the
@@ -123,6 +155,7 @@ def save_tokens(tokens):
         "skipped_no_age": 0,
         "age_via_fallback": 0,   # CG/CMC fallback was used for the age decision
         "age_deferred": 0,       # fallback lookup budget used up -> next run
+        "dup_chains_dropped": 0, # same coin on another chain -> one kept
         "queue_rechecks": 0,     # 15-day second chances picked this run
         "passed_volume": 0,          # volume rising (CoinGecko 5-day)
         "skipped_vol_falling": 0,
@@ -151,6 +184,9 @@ def save_tokens(tokens):
 
     session = SessionLocal()
     try:
+        # --- One token per coin (bridged copies on other chains dropped) ----
+        tokens, stats["dup_chains_dropped"] = dedupe_by_coin(session, tokens)
+
         # --- Step 3: AGE (two-step, by contract + chain) --------------------
         # Run over every token first, so we know exactly who reaches step 4.
         # DexScreener pairCreatedAt, else CoinMarketCap listing date
@@ -258,7 +294,9 @@ def save_tokens(tokens):
             # None of these keep or drop a coin any more.
             volume_24h = to_float(t.get("volume_24h")) or 0   # DexScreener 24h
             liquidity = to_float(t.get("liquidity_usd")) or 0  # DexScreener now
-            mcap = to_float(t.get("market_cap"))
+            # The coin's real market cap from CoinGecko / CMC (discovery) - NOT
+            # the DexScreener pool's, which is tiny for bridged copies.
+            mcap = to_float(t.get("discovery_mcap")) or to_float(t.get("market_cap"))
             holders_result = get_holder_count(t["contract"], t["chain"])
             holder_num = holders_result if isinstance(holders_result, int) else None
             price = to_float(t.get("price_usd"))             # DexScreener, main pool
@@ -388,6 +426,8 @@ def print_summary(stats):
     print(f"       - dropped as tokenized stock/fund ..... {dc.get('tokenized_dropped', '?'):>6}")
     print(f"       (not a filter: with DexScreener data -> {dc.get('enriched', '?')}, "
           f"without -> {dc.get('no_dexscreener', '?')}; both go on to age)")
+    print(f"       (same coin on another chain -> one kept, dropped: "
+          f"{stats['dup_chains_dropped']})")
     print(f"       (already analyzed on an earlier run -> skipped: "
           f"{stats['already_analyzed']})")
     print(sub)

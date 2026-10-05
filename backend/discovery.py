@@ -100,6 +100,13 @@ LAST_COUNTS = {}
 # rank_check reads ranks from here instead of one CoinGecko call per coin.
 LAST_CG_RANKS = {}
 
+# The coin's real (global) market cap from CoinGecko / CMC, keyed by
+# lowercased contract on EVERY chain the coin lives on. Covers every coin on
+# the CoinGecko pages walked (all coins above MIN_MCAP, also those above
+# MAX_MCAP), so tracking.py can refresh tracked coins' market caps without
+# trusting a single DexScreener pool (tiny for bridged copies).
+LAST_MCAPS = {}
+
 
 # Retry a failed discovery request with back-off before giving up on it.
 RETRY_WAITS = [5, 15, 30]
@@ -190,6 +197,8 @@ def from_coingecko(max_pages=30):
             mc = coin.get("market_cap")
             if mc is None:
                 continue
+            for addr in id_platforms.get(coin["id"], {}).values():
+                LAST_MCAPS[addr.lower()] = mc
             if mc > MAX_MCAP:
                 continue                    # still in the too-big top pages
             if mc < MIN_MCAP:
@@ -203,6 +212,10 @@ def from_coingecko(max_pages=30):
                     "name": coin.get("name"),
                     "symbol": (coin.get("symbol") or "").upper() or None,
                     "price": coin.get("current_price"),
+                    "coin_key": "cg:" + coin["id"],   # same coin on every chain
+                    "chg_24h": coin.get("price_change_percentage_24h"),
+                    "high_24h": coin.get("high_24h"),
+                    "low_24h": coin.get("low_24h"),
                     "source": "coingecko",
                 })
         if below or len(rows) < 250:
@@ -254,6 +267,9 @@ def from_coinmarketcap(limit=5000):
             "name": x.get("name"),
             "symbol": x.get("symbol"),
             "price": usd.get("price"),
+            "coin_key": f"cmc:{x.get('id')}",   # re-keyed to CoinGecko's id when matched
+            "chg_24h": usd.get("percent_change_24h"),
+            "chg_7d": usd.get("percent_change_7d"),
             "tags": x.get("tags") or [],     # CMC tag slugs (incl. "memes") - free here
             # When CMC listed it - the age fallback, free here (age_check.py).
             "listed_at": _parse_date(x.get("date_added")),
@@ -309,6 +325,7 @@ def discover_candidates(verbose=True):
     """
     DISCOVERY_ISSUES.clear()
     LAST_CG_RANKS.clear()
+    LAST_MCAPS.clear()
     cg = from_coingecko()
     cmc = from_coinmarketcap()
 
@@ -321,13 +338,26 @@ def discover_candidates(verbose=True):
         key = (c.get("chain"), contract.lower())
         if key in seen:
             first = seen[key]
-            for field in ("listed_at", "tags", "name", "symbol", "price"):
+            for field in ("listed_at", "tags", "name", "symbol", "price",
+                          "chg_24h", "chg_7d", "high_24h", "low_24h"):
                 if not first.get(field) and c.get(field):
                     first[field] = c[field]
             continue
         seen[key] = c
         merged.append(c)
     unique_count = len(merged)
+
+    # One identity per COIN (not per chain): a CMC entry whose contract is
+    # one of a CoinGecko coin's addresses is the same coin -> same key.
+    cg_key_by_addr = {}
+    for cg_id, plats in _cg_id_to_platforms().items():
+        for addr in plats.values():
+            cg_key_by_addr.setdefault(addr.lower(), "cg:" + cg_id)
+    for c in merged:
+        c["coin_key"] = cg_key_by_addr.get(c["contract"].lower(), c.get("coin_key"))
+    for c in cmc:                            # CMC global mcap, by contract
+        if c.get("mcap"):
+            LAST_MCAPS.setdefault(c["contract"].lower(), c["mcap"])
 
     # --- MEME + STABLECOIN FILTER (step 2, before everything else) ----------
     # Free per coin: one BULK pull each of CoinGecko's meme and stablecoin
@@ -339,7 +369,9 @@ def discover_candidates(verbose=True):
     meme_keys, _ = fetch_cg_meme_keys()          # reuse the cached id->platforms map
     stable_keys, _ = fetch_cg_stablecoin_keys()
     tokenized_keys, _ = fetch_cg_tokenized_keys()
+    from meme_filter import looks_like_stablecoin
     kept, meme_dropped, stable_dropped, tokenized_dropped = [], 0, 0, 0
+    price_stable_dropped = 0
     for c in merged:
         kind = classify_excluded(c["contract"], c["chain"], meme_keys, stable_keys,
                                  cmc_tags=c.get("tags"), tokenized_keys=tokenized_keys)
@@ -349,6 +381,9 @@ def discover_candidates(verbose=True):
             stable_dropped += 1
         elif kind == "tokenized":
             tokenized_dropped += 1
+        elif looks_like_stablecoin(c):
+            stable_dropped += 1              # $1 peg that doesn't move
+            price_stable_dropped += 1
         else:
             kept.append(c)
     merged = kept
@@ -359,7 +394,9 @@ def discover_candidates(verbose=True):
     LAST_COUNTS.clear()
     LAST_COUNTS.update({"discovery": unique_count, "meme_dropped": meme_dropped,
                         "stable_dropped": stable_dropped,
-                        "tokenized_dropped": tokenized_dropped, "after_excl": after_excl})
+                        "tokenized_dropped": tokenized_dropped,
+                        "price_stable_dropped": price_stable_dropped,
+                        "after_excl": after_excl})
 
     if verbose:
         print("=" * 52)
@@ -371,7 +408,8 @@ def discover_candidates(verbose=True):
         print(f"  TOTAL before dedup ....... {len(cg)+len(cmc):>5}")
         print(f"  AFTER dedup (unique) ..... {unique_count:>5}")
         print(f"  MEME dropped ............. {meme_dropped:>5}")
-        print(f"  STABLECOIN dropped ....... {stable_dropped:>5}")
+        print(f"  STABLECOIN dropped ....... {stable_dropped:>5}"
+              f"   (of which by $1 price peg: {price_stable_dropped})")
         print(f"  TOKENIZED stock/fund drop  {tokenized_dropped:>5}")
         print(f"  AFTER meme+stable filter . {after_excl:>5}")
         failed = DISCOVERY_ISSUES.get("coingecko_failed_pages") or []
@@ -416,6 +454,7 @@ def discover_tokens():
         # CoinGecko/CMC market cap (display only - the dashboard queue table).
         t["discovery_mcap"] = c.get("mcap") if c else None
         t["cmc_tags"] = (c.get("tags") or []) if c else []   # queue narrative
+        t["coin_key"] = c.get("coin_key") if c else None      # dedup across chains
     have = {t["contract"].lower() for t in tokens}
     for low, c in by_contract.items():
         if low in have:
@@ -435,6 +474,7 @@ def discover_tokens():
             "listed_at": c.get("listed_at"),
             "discovery_mcap": c.get("mcap"),
             "cmc_tags": c.get("tags") or [],
+            "coin_key": c.get("coin_key"),
             "no_dexscreener": True,
         })
     tokens.sort(key=lambda t: t["liquidity_usd"] or 0, reverse=True)

@@ -61,7 +61,6 @@ CHAIN_TO_PLATFORM = {
 # When a coin has several categories, prefer a real "narrative" over generic
 # ones. First match (case-insensitive substring) wins.
 PREFERRED = [
-    "Launchpad",
     "Real World Assets (RWA)",
     "DePIN",
     "Artificial Intelligence (AI)",
@@ -108,10 +107,23 @@ def _save_cache():
         pass  # caching is best-effort; never break over it
 
 
+# Labels that say where a coin LAUNCHED or who backs / lists it, not what it
+# does ("Binance Launchpad", "Impossible Finance Launchpad", "... Portfolio",
+# "Solana Ecosystem", "Binance HODLer Airdrops"...) - never shown.
+SKIP_LABELS = ["ecosystem", "launchpad", "launchpool", "launch platform", "ieo",
+               "ido platform", "portfolio", "airdrop", "binance alpha", "hodler",
+               "made in", "listing"]
+
+
+def is_skipped_label(label):
+    low = (label or "").lower()
+    return any(s in low for s in SKIP_LABELS)
+
+
 def _pick_category(categories):
     """Choose the most relevant category from CoinGecko's list, or None."""
-    # Drop blanks and chain/ecosystem tags ("Solana Ecosystem", etc.).
-    cats = [c for c in categories if c and "ecosystem" not in c.lower()]
+    # Drop blanks and launch / backer / ecosystem labels.
+    cats = [c for c in categories if c and not is_skipped_label(c)]
     if not cats:
         return None
     for pref in PREFERRED:
@@ -146,8 +158,9 @@ def lookup_category(contract, chain):
         return None, True, False  # chain not supported by CoinGecko -> final
 
     key = f"{platform}:{contract.lower()}"
-    if key in _CACHE:
+    if key in _CACHE and not is_skipped_label(_CACHE[key]):
         return _CACHE[key], True, False  # cached definitive result (may be None)
+    # (a cached launch/backer label from before is looked up again)
 
     if not API_KEY:
         print("[WARN] No COINGECKO_API_KEY found in .env - skipping narrative.")
