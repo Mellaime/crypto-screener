@@ -134,6 +134,10 @@ _NEW_COLUMNS = [
     ("coin_queue", "mcap", "FLOAT", None),
     ("coin_queue", "narrative", "VARCHAR", None),
     ("coin_queue", "last_seen", "TIMESTAMP", None),
+    # Detail page: 4h / 24h liquidity change (display-only cache; rows cached
+    # before these existed are emptied so they're fetched again).
+    ("vol_stats_cache", "liq_chg_4h", "FLOAT", "DELETE FROM vol_stats_cache"),
+    ("vol_stats_cache", "liq_chg_24h", "FLOAT", None),
 ]
 
 

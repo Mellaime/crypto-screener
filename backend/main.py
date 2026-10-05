@@ -18,6 +18,7 @@ Then visit:  http://localhost:8000
 """
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
@@ -197,6 +198,21 @@ def get_coin(contract: str):
 
         def ratio(v, base, scale):
             return round(v / base * scale, 4) if v is not None and base else None
+
+        # Liquidity section. Total + 7d growth + weekly Liq/MCap all from the
+        # same Codex getBars series (same level as the tracked liquidity); the
+        # 4h / 24h growth is getDetailedTokenStats' own now-vs-then change.
+        liq_now, liq_7d = tx["liq_now"], tx["liq_7d_ago"]
+        snap_7d = None
+        if snap is not None and tx["liq_7d_ago_date"]:
+            snap_7d = (session.query(DailySnapshot)
+                       .filter(DailySnapshot.coin_id == coin.id,
+                               DailySnapshot.date <= snap.date - timedelta(days=7),
+                               DailySnapshot.mcap.isnot(None))
+                       .order_by(DailySnapshot.date.desc()).first())
+        mcap_7d = snap_7d.mcap if snap_7d else mcap       # fallback: today's
+        growth_7d = ((liq_now - liq_7d) / liq_7d * 100) if liq_now is not None and liq_7d else None
+        this_week, last_week = ratio(liq_now, mcap, 100), ratio(liq_7d, mcap_7d, 100)
         return {
             "name": coin.name,
             "symbol": q[0] if q else None,
@@ -220,6 +236,13 @@ def get_coin(contract: str):
             "vol_mcap_pct": {k: ratio(v, mcap, 100) for k, v in volumes.items()},
             "vol_liq_x": {k: ratio(v, liq, 1) for k, v in volumes.items()},
             "volume_error": live["error"] or tx["error"],
+            "liquidity_now": liq_now if liq_now is not None else liq,
+            "liq_growth_pct": {"4h": live["liq_chg_4h"], "24h": live["liq_chg_24h"],
+                               "7d": growth_7d},
+            "liq_mcap_pct": {"this_week": this_week, "last_week": last_week,
+                             "change": (round(this_week - last_week, 4)
+                                        if this_week is not None and last_week is not None else None),
+                             "last_week_mcap_approx": snap_7d is None},
         }
     finally:
         session.close()

@@ -234,4 +234,6 @@ class VolStatsCache(Base):
     contract = Column(String, nullable=False, index=True)   # stored lowercased
     vol_4h = Column(Float)
     vol_24h = Column(Float)
+    liq_chg_4h = Column(Float)        # liquidity change over 4h, %
+    liq_chg_24h = Column(Float)       # liquidity change over 24h, %
     fetched_at = Column(DateTime, nullable=False)

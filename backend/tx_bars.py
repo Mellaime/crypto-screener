@@ -17,11 +17,18 @@ drops a coin).
      * Total volume since the coin's first trading day on Codex (capped at
        the last 1,500 days for coins older than ~4 years - `since` says
        from when)
+     * liquidity now (latest bar) and 7 days ago - the Liquidity section's
+       total, 7d growth and weekly Liquidity / Market cap. Same level as the
+       liquidity tracking.py stores (both Codex), unlike
+       getDetailedTokenStats' liquidity, which counts other pools - so the
+       two are never mixed in one comparison.
    Cached per coin per UTC day (tx_bars_cache) - it only changes once a day.
 
-2. Live 4h / 24h volume - Codex getDetailedTokenStats (durations hour4,
-   day1; it has no 7-day duration). These roll every minute, so they're
-   cached per coin for LIVE_TTL_MINUTES (vol_stats_cache).
+2. Live 4h / 24h volume and 4h / 24h liquidity CHANGE - Codex
+   getDetailedTokenStats (durations hour4, day1; it has no 7-day duration).
+   The liquidity change is its own now-vs-then (never compared with the
+   getBars level). These roll every minute, so they're cached per coin for
+   LIVE_TTL_MINUTES (vol_stats_cache).
 
 Cost: only when someone opens a coin's page - at most 1 getBars request per
 coin per day plus 1 getDetailedTokenStats request per coin per hour.
@@ -47,7 +54,7 @@ BARS_QUERY = """
 query ($symbol: String!, $from: Int!, $to: Int!) {
   getBars(symbol: $symbol, from: $from, to: $to, resolution: "1D",
           removeLeadingNullValues: true) {
-    t buys sells buyers sellers buyVolume sellVolume volume transactions
+    t buys sells buyers sellers buyVolume sellVolume volume transactions liquidity
   }
 }"""
 
@@ -55,8 +62,8 @@ STATS_QUERY = """
 query ($addr: String!, $net: Int!) {
   getDetailedTokenStats(tokenAddress: $addr, networkId: $net,
                         durations: [hour4, day1], bucketCount: 1) {
-    stats_hour4 { statsUsd { volume { currentValue } } }
-    stats_day1  { statsUsd { volume { currentValue } } }
+    stats_hour4 { statsUsd { volume { currentValue } liquidity { currentValue previousValue } } }
+    stats_day1  { statsUsd { volume { currentValue } liquidity { currentValue previousValue } } }
   }
 }"""
 
@@ -111,15 +118,17 @@ def fetch_from_codex(contract, chain):
         return None, error
     b = data.get("getBars") or {}
 
-    days = []
+    days, liq_by_day = [], {}
     for i, t in enumerate(b.get("t") or []):
         day = datetime.fromtimestamp(t, tz=timezone.utc).date()
-        if day >= today:
-            continue                       # today's partial day - left out
 
         def at(field):
             vals = b.get(field) or []
             return vals[i] if i < len(vals) else None
+        if at("liquidity") is not None:
+            liq_by_day[day] = _num(at("liquidity"))
+        if day >= today:
+            continue                       # today's partial day - left out
         days.append({
             "date": day.isoformat(),
             "buys": int(_num(at("buys"))),
@@ -131,7 +140,15 @@ def fetch_from_codex(contract, chain):
             "volume": _num(at("volume")),
             "transactions": int(_num(at("transactions"))),
         })
+    # Liquidity now = the latest bar (today's, so far); 7 days ago = the bar
+    # dated a week before today (or the nearest earlier one).
+    liq_now = liq_by_day[max(liq_by_day)] if liq_by_day else None
+    week_ago = [d for d in liq_by_day if d <= today - timedelta(days=7)]
+    liq_7d_ago = liq_by_day[max(week_ago)] if week_ago else None
     return {
+        "liq_now": liq_now,
+        "liq_7d_ago": liq_7d_ago,
+        "liq_7d_ago_date": max(week_ago).isoformat() if week_ago else None,
         "bars": days[-WINDOW_DAYS:],
         "vol_7d": sum(d["volume"] for d in days[-7:]) if days else None,
         "vol_total": sum(d["volume"] for d in days) if days else None,
@@ -149,18 +166,19 @@ def get_tx_bars(session, contract, chain):
     row = (session.query(TxBarsCache)
            .filter_by(chain=key_chain, contract=key_contract).first())
     cached = json.loads(row.bars) if row is not None else None
+    stale_format = cached is not None and not (isinstance(cached, dict) and "liq_now" in cached)
     if isinstance(cached, list):           # stored before 7d / total existed
-        cached = {"bars": cached, "vol_7d": None, "vol_total": None, "since": None}
-        stale_format = True
-    else:
-        stale_format = False
+        cached = {"bars": cached}
+    empty = {"bars": [], "vol_7d": None, "vol_total": None, "since": None,
+             "liq_now": None, "liq_7d_ago": None, "liq_7d_ago_date": None}
+    if cached is not None:
+        cached = {**empty, **cached}
     if row is not None and row.day == today and not stale_format:
         return {**cached, "error": None}
 
     daily, error = fetch_from_codex(contract, chain)
     if error:
         # Keep showing the last saved data rather than nothing if Codex failed.
-        empty = {"bars": [], "vol_7d": None, "vol_total": None, "since": None}
         return {**(cached or empty), "error": error}
 
     if row is None:
@@ -174,16 +192,21 @@ def get_tx_bars(session, contract, chain):
 
 
 def get_live_volume(session, contract, chain):
-    """4h / 24h volume (getDetailedTokenStats), cached LIVE_TTL_MINUTES per
-    coin. Returns {"vol_4h", "vol_24h", "error"}."""
+    """4h / 24h volume + 4h / 24h liquidity change in % (getDetailedTokenStats),
+    cached LIVE_TTL_MINUTES per coin. Returns
+    {"vol_4h", "vol_24h", "liq_chg_4h", "liq_chg_24h", "error"}."""
     from models import VolStatsCache
 
     key_chain, key_contract = (chain or "").lower(), (contract or "").lower()
     row = (session.query(VolStatsCache)
            .filter_by(chain=key_chain, contract=key_contract).first())
     fresh_after = _now_naive() - timedelta(minutes=LIVE_TTL_MINUTES)
+    def out(r, error=None):
+        return {"vol_4h": r.vol_4h, "vol_24h": r.vol_24h, "liq_chg_4h": r.liq_chg_4h,
+                "liq_chg_24h": r.liq_chg_24h, "error": error}
+
     if row is not None and row.fetched_at >= fresh_after:
-        return {"vol_4h": row.vol_4h, "vol_24h": row.vol_24h, "error": None}
+        return out(row)
 
     network = _network(chain)
     error = None if network else f"Codex doesn't cover the {chain} chain"
@@ -192,8 +215,9 @@ def get_live_volume(session, contract, chain):
         data, error = _codex(STATS_QUERY, {"addr": contract, "net": network})
     if error:
         if row is not None:
-            return {"vol_4h": row.vol_4h, "vol_24h": row.vol_24h, "error": error}
-        return {"vol_4h": None, "vol_24h": None, "error": error}
+            return out(row, error)
+        return {"vol_4h": None, "vol_24h": None, "liq_chg_4h": None,
+                "liq_chg_24h": None, "error": error}
 
     s = data.get("getDetailedTokenStats") or {}
 
@@ -201,10 +225,18 @@ def get_live_volume(session, contract, chain):
         v = (((s.get(key) or {}).get("statsUsd") or {}).get("volume") or {}).get("currentValue")
         return None if v is None else _num(v)
 
+    def liq_change(key):
+        lq = ((s.get(key) or {}).get("statsUsd") or {}).get("liquidity") or {}
+        cur, prev = lq.get("currentValue"), lq.get("previousValue")
+        if cur is None or not _num(prev):
+            return None
+        return (_num(cur) - _num(prev)) / _num(prev) * 100
+
     if row is None:
         row = VolStatsCache(chain=key_chain, contract=key_contract)
         session.add(row)
     row.vol_4h, row.vol_24h = vol("stats_hour4"), vol("stats_day1")
+    row.liq_chg_4h, row.liq_chg_24h = liq_change("stats_hour4"), liq_change("stats_day1")
     row.fetched_at = _now_naive()
     session.commit()
-    return {"vol_4h": row.vol_4h, "vol_24h": row.vol_24h, "error": None}
+    return out(row)

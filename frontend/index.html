@@ -148,6 +148,14 @@
               overflow-wrap: anywhere; }
   .ratio .sub { margin-top: 2px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
   @media (max-width: 560px) { .ratios { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  /* Liquidity section */
+  .liqtotal { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0 12px; }
+  .subhead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 12px 0 6px; }
+  .ratios.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dir { font-size: 12px; font-weight: 600; margin-top: 3px; }
+  .dir.up { color: var(--good); } .dir.down { color: var(--low); } .dir.flat { color: var(--muted); }
+  @media (max-width: 560px) { .ratios.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .ratios.three .ratio { padding: 8px; } .ratios.three .ratio .v { font-size: 16px; } }
   details.tbl { margin-top: 10px; font-size: 13px; }
   details.tbl summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
   details.tbl table { font-size: 12px; }
@@ -492,7 +500,8 @@
       ${ratioCard(c, "Volume / Market cap", "vol_mcap_pct", fmtPct,
           "Traded volume as a % of the coin's market cap (CoinGecko/CMC): " + fmtMoney(c.mcap) + ".")}
       ${ratioCard(c, "Volume / Liquidity", "vol_liq_x", fmtMult,
-          "Traded volume as a multiple of the coin's current liquidity (Codex): " + fmtMoney(c.liquidity) + ".")}`;
+          "Traded volume as a multiple of the coin's current liquidity (Codex): " + fmtMoney(c.liquidity) + ".")}
+      ${liquidityCard(c)}`;
     wireChart(c.tx_bars || []);
   }
 
@@ -604,6 +613,41 @@
       7d = last 7 full days; Total = every day since trading started.</div>
       <div class="ratios">${tiles}</div>
       ${c.volume_error ? `<div class="note" style="margin:8px 0 0">Some figures unavailable - ${esc(c.volume_error)}</div>` : ""}</div>`;
+  }
+  // Liquidity: total now, growth over 4h / 24h / 7d (within +-1% = stable),
+  // and Liquidity / Market cap this week vs last week.
+  function growthTile(label, p) {
+    let cls = "flat", word = "→ stable";
+    if (p != null && p > 1) { cls = "up"; word = "↗ rose"; }
+    else if (p != null && p < -1) { cls = "down"; word = "↘ fell"; }
+    const v = p == null ? "—" : (p > 0 ? "+" : "") + p.toFixed(2) + "%";
+    return `<div class="ratio"><div class="k">${label}</div><div class="v">${v}</div>
+      <div class="dir ${p == null ? "flat" : cls}">${p == null ? "no data" : word}</div></div>`;
+  }
+  function liquidityCard(c) {
+    const g = c.liq_growth_pct || {}, w = c.liq_mcap_pct || {};
+    const pct = v => v == null ? "—" : (v < 0.01 && v > 0 ? "<0.01%" : v.toFixed(2) + "%");
+    const chg = w.change == null ? "—" : (w.change > 0 ? "+" : "") + w.change.toFixed(2) + " pts";
+    const chgCls = w.change == null ? "flat" : w.change > 0 ? "up" : w.change < 0 ? "down" : "flat";
+    return `<div class="ratiocard"><h3>Liquidity</h3>
+      <div class="note">Codex liquidity across the coin's pools on ${esc(c.chain)}.</div>
+      <div class="liqtotal">${fmtMoney(c.liquidity_now)}</div>
+      <div class="subhead">Liquidity growth</div>
+      <div class="ratios three">
+        ${growthTile("4h", g["4h"])}${growthTile("24h", g["24h"])}${growthTile("7d", g["7d"])}
+      </div>
+      <div class="note" style="margin:6px 0 0">A change within ±1% counts as stable.</div>
+      <div class="subhead">Liquidity / Market cap (weekly)</div>
+      <div class="ratios three">
+        <div class="ratio"><div class="k">This week</div><div class="v">${pct(w.this_week)}</div></div>
+        <div class="ratio"><div class="k">Last week</div><div class="v">${pct(w.last_week)}</div>
+          ${w.last_week_mcap_approx && w.last_week != null ? '<div class="sub">≈ uses today\'s market cap</div>' : ""}</div>
+        <div class="ratio"><div class="k">Change</div><div class="v">${chg}</div>
+          <div class="dir ${chgCls}">${chgCls === "up" ? "↗ deeper" : chgCls === "down" ? "↘ thinner" : "→ same"}</div></div>
+      </div>
+      ${w.last_week_mcap_approx && w.last_week != null ? `<div class="note" style="margin:6px 0 0">Last week's figure is approximate:
+        we don't have this coin's market cap from 7 days ago yet, so today's is used.</div>` : ""}
+    </div>`;
   }
   function fmtMult(v) {
     if (v === 0) return "0x";
