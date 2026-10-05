@@ -72,6 +72,24 @@
   .empty { padding: 18px 14px; color: var(--muted); font-size: 14px; }
   .err { background: rgba(248,81,73,0.12); border: 1px solid var(--low); color: #ffb4ac; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; display: none; }
   footer { margin-top: 28px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+  /* View switcher: one table at a time */
+  .tabs { display: flex; gap: 8px; margin: 4px 0 6px; flex-wrap: wrap; }
+  .tab { flex: 1 1 0; min-width: 0; min-height: 44px; padding: 10px 14px;
+         background: var(--card); color: var(--muted); border: 1px solid var(--border);
+         border-radius: 10px; font: inherit; font-size: 14px; font-weight: 600;
+         cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+         -webkit-tap-highlight-color: transparent; }
+  .tab:hover { color: var(--text); border-color: #484f58; }
+  .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tab[aria-selected="true"] { background: rgba(88,166,255,0.15); color: var(--accent);
+         border-color: var(--accent); }
+  .tab .count { font-weight: 400; opacity: 0.8; }
+  .view[hidden] { display: none; }
+  .card { overflow-x: auto; }       /* wide tables scroll sideways on phones */
+  @media (max-width: 560px) {
+    .tab { flex-basis: 100%; }      /* stack the buttons full-width on phones */
+  }
 </style>
 </head>
 <body>
@@ -84,6 +102,16 @@
 
   <div class="err" id="err"></div>
 
+  <nav class="tabs" role="tablist" aria-label="Choose a table">
+    <button class="tab" role="tab" id="tab-active" aria-controls="view-active" data-view="active">
+      Active Coins <span class="count" id="count-active"></span></button>
+    <button class="tab" role="tab" id="tab-dropped" aria-controls="view-dropped" data-view="dropped">
+      Dropped Coins <span class="count" id="count-dropped"></span></button>
+    <button class="tab" role="tab" id="tab-queue" aria-controls="view-queue" data-view="queue">
+      Coming Up · <bdi>طابور</bdi> <span class="count" id="count-queue"></span></button>
+  </nav>
+
+  <section class="view" id="view-active" role="tabpanel" aria-labelledby="tab-active">
   <h2 id="active-title">Active coins</h2>
   <div class="card">
     <table>
@@ -105,6 +133,19 @@
     </table>
   </div>
 
+  <footer>
+    Score is 0–100. Vol/Liq (25) + Vol/MCap (20) + Rank change (5) + Holders (15)
+    are active, so the current maximum is 65; revenue &amp; liquidity-growth are
+    coming. Holders = CMC DEX holder count (“—” on unsupported chains). Rank
+    shows the avg market rank (CoinGecko + CoinMarketCap) and its move vs last
+    week (↑ = climbed). Rank change needs a prior week before it appears.
+    Revenue is DefiLlama daily fees/revenue (“—” when the coin isn't listed).
+    The SAFE / ? badge is the GoPlus honeypot check — hover it for verified /
+    renounced / mint details. Holders show “—” until a holders source is added.
+  </footer>
+  </section>
+
+  <section class="view" id="view-dropped" role="tabpanel" aria-labelledby="tab-dropped" hidden>
   <h2 id="dropped-title">Dropped coins</h2>
   <div class="card">
     <table>
@@ -119,7 +160,9 @@
       <tbody id="dropped-body"></tbody>
     </table>
   </div>
+  </section>
 
+  <section class="view" id="view-queue" role="tabpanel" aria-labelledby="tab-queue" hidden>
   <h2 id="queue-title">Coming up · <bdi>طابور</bdi></h2>
   <div class="sub">Coins that passed discovery, meme/stablecoin removal and age, waiting their
     turn for revenue → volume → honeypot → liquidity. 300 are analyzed per daily run, in this order.
@@ -138,17 +181,7 @@
       <tbody id="queue-body"></tbody>
     </table>
   </div>
-
-  <footer>
-    Score is 0–100. Vol/Liq (25) + Vol/MCap (20) + Rank change (5) + Holders (15)
-    are active, so the current maximum is 65; revenue &amp; liquidity-growth are
-    coming. Holders = CMC DEX holder count (“—” on unsupported chains). Rank
-    shows the avg market rank (CoinGecko + CoinMarketCap) and its move vs last
-    week (↑ = climbed). Rank change needs a prior week before it appears.
-    Revenue is DefiLlama daily fees/revenue (“—” when the coin isn't listed).
-    The SAFE / ? badge is the GoPlus honeypot check — hover it for verified /
-    renounced / mint details. Holders show “—” until a holders source is added.
-  </footer>
+  </section>
 </div>
 
 <script>
@@ -224,6 +257,7 @@
     const body = document.getElementById("coins-body");
     document.getElementById("active-title").textContent =
       "Active coins (" + data.count + ")";
+    document.getElementById("count-active").textContent = "(" + data.count + ")";
     if (!data.coins.length) {
       body.innerHTML = '<tr><td colspan="10" class="empty">No active coins right now.</td></tr>';
       return;
@@ -251,6 +285,7 @@
     const body = document.getElementById("dropped-body");
     document.getElementById("dropped-title").textContent =
       "Dropped coins (" + data.count + ")";
+    document.getElementById("count-dropped").textContent = "(" + data.count + ")";
     if (!data.dropped.length) {
       body.innerHTML = '<tr><td colspan="4" class="empty">Nothing dropped yet.</td></tr>';
       return;
@@ -275,6 +310,7 @@
     const body = document.getElementById("queue-body");
     document.getElementById("queue-title").innerHTML =
       "Coming up · <bdi>طابور</bdi> (" + data.count + ")";
+    document.getElementById("count-queue").textContent = "(" + data.count + ")";
     if (!data.queue.length) {
       body.innerHTML = '<tr><td colspan="5" class="empty">Nothing waiting in the queue.</td></tr>';
       return;
@@ -303,6 +339,25 @@
     const td = e.target.closest("td.contract");
     if (td && navigator.clipboard) navigator.clipboard.writeText(td.dataset.addr).catch(() => {});
   });
+
+  // ---- view switching -----------------------------------------------------
+  // One table at a time. Active is the default; the choice is kept in the
+  // URL (#dropped / #queue) so a reload or a shared link opens the same view.
+  // The 30-second refresh keeps updating all three, so switching is instant
+  // and always current.
+  const VIEWS = ["active", "dropped", "queue"];
+  function showView(name) {
+    if (!VIEWS.includes(name)) name = "active";
+    for (const v of VIEWS) {
+      document.getElementById("view-" + v).hidden = (v !== name);
+      document.getElementById("tab-" + v).setAttribute("aria-selected", v === name ? "true" : "false");
+    }
+    const hash = name === "active" ? "" : "#" + name;
+    if (location.hash !== hash) history.replaceState(null, "", location.pathname + location.search + hash);
+  }
+  document.querySelectorAll(".tab").forEach(b =>
+    b.addEventListener("click", () => showView(b.dataset.view)));
+  showView(location.hash.slice(1));
 
   // ---- data loading -------------------------------------------------------
   async function loadData() {
