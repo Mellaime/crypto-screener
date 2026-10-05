@@ -148,6 +148,25 @@
               overflow-wrap: anywhere; }
   .ratio .sub { margin-top: 2px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
   @media (max-width: 560px) { .ratios { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  /* Security Check block */
+  .verdict { display: flex; align-items: center; gap: 10px; border-radius: 10px; padding: 10px 14px;
+             margin: 4px 0 12px; font-weight: 700; font-size: 16px; border: 1px solid; }
+  .verdict small { font-weight: 400; font-size: 12px; color: var(--muted); }
+  .verdict.safe    { background: rgba(63,185,80,0.12); border-color: rgba(63,185,80,0.45); color: var(--good); }
+  .verdict.caution { background: rgba(210,153,34,0.12); border-color: rgba(210,153,34,0.5); color: var(--mid); }
+  .verdict.unknown { background: #21262d; border-color: var(--border); color: var(--muted); }
+  .checks { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .checks li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border);
+               background: var(--bg); font-size: 14px; }
+  .checks li:last-child { border-bottom: none; }
+  .checks .mark { width: 22px; text-align: center; font-weight: 700; flex: none; }
+  .checks .mark.good { color: var(--good); } .checks .mark.bad { color: var(--low); } .checks .mark.unk { color: var(--muted); }
+  .checks .label { flex: 1; min-width: 0; }
+  .checks .val { color: var(--muted); font-size: 13px; text-align: right; }
+  .flags { list-style: none; margin: 10px 0 0; padding: 0; font-size: 14px; }
+  .flags li { padding: 4px 0; }
+  .flags li.minor { color: var(--muted); }
+
   /* Liquidity section */
   .liqtotal { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0 12px; }
   .subhead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 12px 0 6px; }
@@ -501,7 +520,8 @@
           "Traded volume as a % of the coin's market cap (CoinGecko/CMC): " + fmtMoney(c.mcap) + ".")}
       ${ratioCard(c, "Volume / Liquidity", "vol_liq_x", fmtMult,
           "Traded volume as a multiple of the coin's current liquidity (Codex): " + fmtMoney(c.liquidity) + ".")}
-      ${liquidityCard(c)}`;
+      ${liquidityCard(c)}
+      ${securityCard(c)}`;
     wireChart(c.tx_bars || []);
   }
 
@@ -648,6 +668,37 @@
       ${w.last_week_mcap_approx && w.last_week != null ? `<div class="note" style="margin:6px 0 0">Last week's figure is approximate:
         we don't have this coin's market cap from 7 days ago yet, so today's is used.</div>` : ""}
     </div>`;
+  }
+  // Security Check (GoPlus): overall verdict, the 5 checks, exact flags.
+  function securityCard(c) {
+    const sc = c.security_check || {verdict: "unknown", checks: null, flags: [], error: "No security data"};
+    const head = `<h3>Security check</h3><div class="note">GoPlus, by contract on ${esc(c.chain)}. Refreshed once a day.</div>`;
+    const V = {safe: ["✓ Safe", "Honeypot safe, minting disabled, no risky permissions found."],
+               caution: ["⚠ Caution", "See the flags below for exactly what failed."],
+               unknown: ["? Unknown", ""]};
+    const [vt, vs] = V[sc.verdict] || V.unknown;
+    const verdict = `<div class="verdict ${esc(sc.verdict)}"><span style="white-space:nowrap">${vt}</span><small>${esc(sc.verdict === "unknown" ? (sc.error || "") : vs)}</small></div>`;
+    if (!sc.checks) return `<div class="ratiocard">${head}${verdict}</div>`;
+    const k = sc.checks, sol = c.chain === "solana";
+    const row = (ok, label, val = "") => {
+      const [cls, mk, word] = ok === true ? ["good", "✓", "yes"] : ok === false ? ["bad", "✗", "no"] : ["unk", "—", "unknown"];
+      return `<li><span class="mark ${cls}" aria-hidden="true">${mk}</span><span class="label">${label}</span>
+        <span class="val">${esc(val || word)}</span></li>`;
+    };
+    const lock = k.liquidity_locked_pct;
+    const lockOk = lock == null ? null : lock >= 50;
+    const checks = `<ul class="checks">
+      ${row(k.verified, "Contract verified", sol && k.verified == null ? "n/a on Solana" : "")}
+      ${row(k.renounced, "Ownership renounced")}
+      ${row(k.mint_disabled, "Mint disabled", k.mint_disabled === false ? "no - can mint" : "")}
+      ${row(k.honeypot_safe, "Honeypot safe", k.honeypot_safe === true ? (sol ? "yes - transferable" : "yes - sellable")
+                                                : k.honeypot_safe === false ? "no - can't sell" : "")}
+      ${row(lockOk, "Liquidity locked", lock == null ? "unknown" : lock.toFixed(lock % 1 ? 1 : 0) + "% locked")}
+    </ul>`;
+    const flags = (sc.flags || []).length
+      ? `<ul class="flags">${sc.flags.map(f => `<li class="${f.severity === "note" ? "minor" : "risk"}">⚠️ ${esc(f.text)}${f.severity === "note" ? " <small>(worth knowing)</small>" : ""}</li>`).join("")}</ul>`
+      : `<ul class="flags"><li>✓ Nothing flagged.</li></ul>`;
+    return `<div class="ratiocard">${head}${verdict}${checks}${flags}</div>`;
   }
   function fmtMult(v) {
     if (v === 0) return "0x";

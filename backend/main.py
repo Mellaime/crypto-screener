@@ -9,7 +9,8 @@ Endpoints:
     GET /api/dropped  -> dropped coins with date + reason
     GET /api/queue    -> the next 600 coins waiting in the entry queue
     GET /api/coin/<contract> -> one coin: header info, 15-day transaction bars,
-                                Volume/MCap + Volume/Liquidity (4h, 24h, 7d, total)
+                                Volume/MCap + Volume/Liquidity (4h, 24h, 7d, total),
+                                Liquidity, GoPlus Security Check
     GET /             -> the dashboard web page (from the frontend/ folder)
 
 Run it (from the backend/ folder, with the venv active):
@@ -187,6 +188,8 @@ def get_coin(contract: str):
              .first())
         tx = get_tx_bars(session, coin.contract, coin.chain)
         live = get_live_volume(session, coin.contract, coin.chain)
+        from security_detail import get_security
+        security_check = get_security(session, coin.contract, coin.chain)
 
         # Volume / Market cap (%) and Volume / Liquidity (x) over 4 windows.
         # Market cap = the stored CoinGecko/CMC (global) one; liquidity = the
@@ -236,6 +239,7 @@ def get_coin(contract: str):
             "vol_mcap_pct": {k: ratio(v, mcap, 100) for k, v in volumes.items()},
             "vol_liq_x": {k: ratio(v, liq, 1) for k, v in volumes.items()},
             "volume_error": live["error"] or tx["error"],
+            "security_check": security_check,
             "liquidity_now": liq_now if liq_now is not None else liq,
             "liq_growth_pct": {"4h": live["liq_chg_4h"], "24h": live["liq_chg_24h"],
                                "7d": growth_7d},
