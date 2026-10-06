@@ -9,7 +9,8 @@ Endpoints:
     GET /api/dropped  -> dropped coins with date + reason
     GET /api/queue    -> the next 600 coins waiting in the entry queue
     GET /api/coin/<contract> -> one coin: header info, 15-day transaction bars,
-                                Volume/MCap + Volume/Liquidity (4h, 24h, 7d, total)
+                                Volume/MCap + Volume/Liquidity (4h, 24h, 7d, total),
+                                Liquidity, CoinGecko + CMC rank vs last week
     GET /             -> the dashboard web page (from the frontend/ folder)
 
 Run it (from the backend/ folder, with the venv active):
@@ -199,6 +200,22 @@ def get_coin(contract: str):
         def ratio(v, base, scale):
             return round(v / base * scale, 4) if v is not None and base else None
 
+        # Rank: current (stored on the coin by rank_check) vs the latest rank
+        # stored for an EARLIER ISO week in rank_history (weekly, same rule
+        # as the Active table's rank change). change = was - now, so a
+        # positive number = moved up (a smaller rank number is better).
+        from models import RankHistory
+        from rank_check import _iso_week
+
+        def rank_box(source, current):
+            prev = (session.query(RankHistory.rank)
+                    .filter(RankHistory.coin_id == coin.id, RankHistory.source == source,
+                            RankHistory.week < _iso_week(), RankHistory.rank.isnot(None))
+                    .order_by(RankHistory.week.desc()).first())
+            was = prev[0] if prev else None
+            change = (was - current) if was is not None and current is not None else None
+            return {"rank": current, "was": was, "change": change}
+
         # Liquidity section. Total + 7d growth + weekly Liq/MCap all from the
         # same Codex getBars series (same level as the tracked liquidity); the
         # 4h / 24h growth is getDetailedTokenStats' own now-vs-then change.
@@ -236,6 +253,8 @@ def get_coin(contract: str):
             "vol_mcap_pct": {k: ratio(v, mcap, 100) for k, v in volumes.items()},
             "vol_liq_x": {k: ratio(v, liq, 1) for k, v in volumes.items()},
             "volume_error": live["error"] or tx["error"],
+            "ranks": {"coingecko": rank_box("coingecko", coin.cg_rank),
+                      "cmc": rank_box("cmc", coin.cmc_rank)},
             "liquidity_now": liq_now if liq_now is not None else liq,
             "liq_growth_pct": {"4h": live["liq_chg_4h"], "24h": live["liq_chg_24h"],
                                "7d": growth_7d},

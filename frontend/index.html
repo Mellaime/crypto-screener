@@ -148,6 +148,16 @@
               overflow-wrap: anywhere; }
   .ratio .sub { margin-top: 2px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
   @media (max-width: 560px) { .ratios { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  /* Rank section: two boxes side by side */
+  .rankboxes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .rankbox { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-width: 0; }
+  .rankbox .k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); }
+  .rankbox .now { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .rankbox .chg { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .rankbox .chg.up { color: var(--good); } .rankbox .chg.down { color: var(--low); } .rankbox .chg.flat { color: var(--muted); }
+  .rankbox .was { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  @media (max-width: 560px) { .rankboxes { grid-template-columns: 1fr; } }
+
   /* Liquidity section */
   .liqtotal { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0 12px; }
   .subhead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 12px 0 6px; }
@@ -501,7 +511,8 @@
           "Traded volume as a % of the coin's market cap (CoinGecko/CMC): " + fmtMoney(c.mcap) + ".")}
       ${ratioCard(c, "Volume / Liquidity", "vol_liq_x", fmtMult,
           "Traded volume as a multiple of the coin's current liquidity (Codex): " + fmtMoney(c.liquidity) + ".")}
-      ${liquidityCard(c)}`;
+      ${liquidityCard(c)}
+      ${rankCard(c)}`;
     wireChart(c.tx_bars || []);
   }
 
@@ -647,6 +658,31 @@
       </div>
       ${w.last_week_mcap_approx && w.last_week != null ? `<div class="note" style="margin:6px 0 0">Last week's figure is approximate:
         we don't have this coin's market cap from 7 days ago yet, so today's is used.</div>` : ""}
+    </div>`;
+  }
+  // Rank: CoinGecko and CoinMarketCap side by side. A SMALLER rank number is
+  // better, so change = last week - now: positive = moved up (green ↗),
+  // negative = moved down (red ↘).
+  function rankBox(label, r) {
+    r = r || {};
+    let chg = `<div class="chg flat">—</div>`;
+    if (r.change != null) {
+      const [cls, arrow, word] = r.change > 0 ? ["up", "↗", "up"] : r.change < 0 ? ["down", "↘", "down"] : ["flat", "→", "same"];
+      chg = `<div class="chg ${cls}">${arrow} ${r.change > 0 ? "+" : ""}${r.change.toLocaleString()}
+        <span style="font-size:12px;font-weight:600">${word}</span></div>`;
+    }
+    return `<div class="rankbox"><div class="k">${label}</div>
+      <div class="now">${r.rank == null ? "—" : "#" + r.rank.toLocaleString()}</div>
+      ${chg}
+      <div class="was">was: ${r.was == null ? "—" : "#" + r.was.toLocaleString()}</div></div>`;
+  }
+  function rankCard(c) {
+    const rk = c.ranks || {};
+    const noHistory = !(rk.coingecko && rk.coingecko.was != null) && !(rk.cmc && rk.cmc.was != null);
+    return `<div class="ratiocard"><h3>Rank</h3>
+      <div class="note">Market-cap rank this week vs last week (each from its own source). A smaller number is better.</div>
+      <div class="rankboxes">${rankBox("CoinGecko rank", rk.coingecko)}${rankBox("CoinMarketCap rank", rk.cmc)}</div>
+      ${noHistory ? `<div class="note" style="margin:8px 0 0">Last week's rank appears once we have a full previous week stored.</div>` : ""}
     </div>`;
   }
   function fmtMult(v) {
