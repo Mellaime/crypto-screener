@@ -42,6 +42,7 @@ CHAIN_TO_PLATFORM = {
 }
 
 REQUEST_DELAY = 1.5  # seconds before each live call
+RETRY_WAITS = [5, 15, 30]  # back-off before each retry of a 429 / 5xx / network error
 
 # Per-process memo so we fetch each coin at most once per run.
 _memo = {}
@@ -57,20 +58,34 @@ def get_holder_count(contract, chain):
     if memo_key in _memo:
         return _memo[memo_key]
 
-    time.sleep(REQUEST_DELAY)
-    try:
-        r = requests.get(
-            HOLDERS_URL,
-            params={"platform": platform, "tokenAddress": contract},
-            headers={"Accept": "application/json"},
-            timeout=20,
-        )
-    except requests.exceptions.RequestException as e:
-        print(f"[WARN] CMC holders request failed: {e}")
-        return "unknown"  # transient error -> unknown (don't cache)
+    # A rate limit (429), server error (5xx) or network error is TEMPORARY:
+    # wait and try again, and never remember it - otherwise one refused call
+    # (e.g. from drop_logic earlier in the run) would leave the coin
+    # "unknown" for the rest of the run, including the daily holders update.
+    r = None
+    for wait in [0] + RETRY_WAITS:
+        if wait:
+            time.sleep(wait)
+        time.sleep(REQUEST_DELAY)
+        try:
+            r = requests.get(
+                HOLDERS_URL,
+                params={"platform": platform, "tokenAddress": contract},
+                headers={"Accept": "application/json"},
+                timeout=20,
+            )
+        except requests.exceptions.RequestException as e:
+            print(f"[WARN] CMC holders request failed: {e}")
+            r = None
+            continue
+        if r.status_code == 429 or r.status_code >= 500:
+            continue
+        break
+    if r is None or r.status_code == 429 or r.status_code >= 500:
+        return "unknown"  # still failing after retries -> unknown (not cached)
 
     if r.status_code != 200:
-        # 400 (bad platform / not found), 429 (rate limit), etc. -> unknown
+        # 400 (bad platform / token not found) -> a real answer: unknown
         _memo[memo_key] = "unknown"
         return "unknown"
     try:

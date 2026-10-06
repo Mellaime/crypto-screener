@@ -223,6 +223,14 @@ def get_coin(contract: str):
                                 "change_pct": None if pct is None else round(pct, 3)})
             prev_h = h
         holders_now = hist[-1][1] if hist else None
+        from holders_check import CHAIN_TO_PLATFORM as HOLDER_CHAINS
+        holders_missing_reason = None
+        if holders_now is None:
+            holders_missing_reason = (
+                f"CoinMarketCap doesn't track holder counts on {coin.chain}."
+                if (coin.chain or "").lower() not in HOLDER_CHAINS else
+                "No holder count stored yet - CoinMarketCap hasn't returned one for "
+                "this coin. The daily run tries again each day.")
         week_ago = [(d, h) for d, h in hist if hist and d <= hist[-1][0] - timedelta(days=7)]
         holders_7d = week_ago[-1][1] if week_ago else None
         holders_week_pct = (round((holders_now - holders_7d) / holders_7d * 100, 2)
@@ -275,7 +283,8 @@ def get_coin(contract: str):
             "vol_liq_x": {k: ratio(v, liq, 1) for k, v in volumes.items()},
             "volume_error": live["error"] or tx["error"],
             "holders": {"now": holders_now, "week_ago": holders_7d,
-                        "week_change_pct": holders_week_pct, "bars": holder_bars},
+                        "week_change_pct": holders_week_pct, "bars": holder_bars,
+                        "missing_reason": holders_missing_reason},
             "ranks": {"coingecko": rank_box("coingecko", coin.cg_rank),
                       "cmc": rank_box("cmc", coin.cmc_rank)},
             "liquidity_now": liq_now if liq_now is not None else liq,
@@ -321,6 +330,18 @@ def cron_daily(request: Request):
     from scheduler import run_pipeline
     run_pipeline()
     return {"status": "ok", "ran": "daily pipeline"}
+
+
+# --- Never serve a stale dashboard -----------------------------------------
+# Browsers may otherwise keep showing an old copy of the page after an
+# update. "no-cache" = always check with the server first (it still answers
+# "not modified" when nothing changed, so it costs almost nothing).
+@app.middleware("http")
+async def no_stale_pages(request: Request, call_next):
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 # --- Serve the frontend page ----------------------------------------------

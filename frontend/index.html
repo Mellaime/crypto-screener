@@ -719,7 +719,7 @@
       chg = `<span class="chg ${cls}">${ar} ${p > 0 ? "+" : ""}${p.toFixed(2)}%</span>`;
     }
     const sub = h.week_ago != null ? `vs ${fmtInt(h.week_ago)} a week ago` : "weekly change appears once we have a week of history";
-    let plot = `<div class="empty" style="padding:8px 0">No holder counts stored for this coin yet.</div>`;
+    let plot = "";
     if (bars.length) {
       const max = Math.max(...bars.map(b => b.holders)) || 1;
       const cols = bars.map((b, i) => {
@@ -737,7 +737,9 @@
     }
     return `<div class="ratiocard"><h3>Holders</h3>
       <div class="note">Holder count (CoinMarketCap DEX), one reading per day from our daily run.</div>
-      <div class="holdtop"><span class="big">${h.now == null ? "—" : fmtInt(h.now)}</span>${chg}<span class="sub">${esc(sub)}</span></div>
+      <div class="subhead" style="margin-top:4px">Total holders</div>
+      <div class="holdtop"><span class="big">${h.now == null ? "—" : fmtInt(h.now)}</span>${h.now == null ? "" : chg + `<span class="sub">${esc(sub)}</span>`}</div>
+      ${h.now == null && h.missing_reason ? `<div class="note" style="margin:-4px 0 10px">${esc(h.missing_reason)}</div>` : ""}
       ${plot}
       ${bars.length && bars.length < 7 ? `<div class="note" style="margin:8px 0 0">${bars.length} day${bars.length === 1 ? "" : "s"} so far - one bar is added each day.</div>` : ""}
     </div>`;
