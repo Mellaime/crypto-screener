@@ -10,7 +10,8 @@ Endpoints:
     GET /api/queue    -> the next 600 coins waiting in the entry queue
     GET /api/coin/<contract> -> one coin: header info, 15-day transaction bars,
                                 Volume/MCap + Volume/Liquidity (4h, 24h, 7d, total),
-                                Liquidity, CoinGecko + CMC rank vs last week
+                                Liquidity, CoinGecko + CMC rank vs last week,
+                                Holders (total, weekly change, daily bars)
     GET /             -> the dashboard web page (from the frontend/ folder)
 
 Run it (from the backend/ folder, with the venv active):
@@ -168,6 +169,9 @@ def get_dropped():
         session.close()
 
 
+HOLDER_BAR_DAYS = 30        # holders bars: up to the last 30 stored days
+
+
 @app.get("/api/coin/{contract}")
 def get_coin(contract: str):
     """One coin's detail page: its header info (all stored data) plus its
@@ -206,6 +210,23 @@ def get_coin(contract: str):
         # positive number = moved up (a smaller rank number is better).
         from models import RankHistory
         from rank_check import _iso_week
+
+        # Holders: entirely from OUR daily snapshots (holder count = CMC DEX,
+        # stored by the daily holders update) - no API call here.
+        hist = (session.query(DailySnapshot.date, DailySnapshot.holders)
+                .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.holders.isnot(None))
+                .order_by(DailySnapshot.date).all())
+        holder_bars, prev_h = [], None
+        for d, h in hist[-HOLDER_BAR_DAYS:]:
+            pct = (h - prev_h) / prev_h * 100 if prev_h else None
+            holder_bars.append({"date": d.isoformat(), "holders": h,
+                                "change_pct": None if pct is None else round(pct, 3)})
+            prev_h = h
+        holders_now = hist[-1][1] if hist else None
+        week_ago = [(d, h) for d, h in hist if hist and d <= hist[-1][0] - timedelta(days=7)]
+        holders_7d = week_ago[-1][1] if week_ago else None
+        holders_week_pct = (round((holders_now - holders_7d) / holders_7d * 100, 2)
+                            if holders_now is not None and holders_7d else None)
 
         def rank_box(source, current):
             prev = (session.query(RankHistory.rank)
@@ -253,6 +274,8 @@ def get_coin(contract: str):
             "vol_mcap_pct": {k: ratio(v, mcap, 100) for k, v in volumes.items()},
             "vol_liq_x": {k: ratio(v, liq, 1) for k, v in volumes.items()},
             "volume_error": live["error"] or tx["error"],
+            "holders": {"now": holders_now, "week_ago": holders_7d,
+                        "week_change_pct": holders_week_pct, "bars": holder_bars},
             "ranks": {"coingecko": rank_box("coingecko", coin.cg_rank),
                       "cmc": rank_box("cmc", coin.cmc_rank)},
             "liquidity_now": liq_now if liq_now is not None else liq,

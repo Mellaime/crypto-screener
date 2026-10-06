@@ -114,7 +114,8 @@
   .chartcard { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 14px 10px; }
   .chartcard h3 { margin: 0; font-size: 15px; }
   .chartcard .note { color: var(--muted); font-size: 12px; margin: 3px 0 10px; }
-  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .legend span { white-space: nowrap; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
   .plot { position: relative; height: 220px; margin-left: 44px; border-bottom: 1px solid var(--border); }
   .grid { position: absolute; left: 0; right: 0; border-top: 1px dashed #262c34; }
@@ -157,6 +158,27 @@
   .rankbox .chg.up { color: var(--good); } .rankbox .chg.down { color: var(--low); } .rankbox .chg.flat { color: var(--muted); }
   .rankbox .was { font-size: 12px; color: var(--muted); margin-top: 4px; }
   @media (max-width: 560px) { .rankboxes { grid-template-columns: 1fr; } }
+
+  /* Holders section */
+  :root { --hold-up: #238f5c; --hold-same: #5b8def; --hold-down: #e65d8a; }   /* validated trio */
+  .holdtop { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 2px 0 10px; }
+  .holdtop .big { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .holdtop .chg { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .holdtop .chg.up { color: var(--good); } .holdtop .chg.down { color: var(--low); } .holdtop .chg.flat { color: var(--muted); }
+  .holdtop .sub { font-size: 12px; color: var(--muted); }
+  .hplot { position: relative; height: 140px; border-bottom: 1px solid var(--border); }
+  .hbars { position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 2px; }
+  .hbar { flex: 1 1 0; min-width: 0; max-width: 36px; height: 100%; display: flex; align-items: flex-end;
+          cursor: pointer; outline: none; }
+  .hbar i { display: block; width: 100%; border-radius: 4px 4px 0 0; }
+  .hbar.up i { background: var(--hold-up); } .hbar.same i { background: var(--hold-same); }
+  .hbar.down i { background: var(--hold-down); } .hbar.first i { background: #484f58; }
+  .hbar:hover i, .hbar.on i, .hbar:focus-visible i { filter: brightness(1.25); }
+  .hlabels { display: flex; gap: 2px; margin-top: 4px; }
+  .hlabels span { flex: 1 1 0; min-width: 0; max-width: 36px; text-align: center; font-size: 10px;
+                  color: var(--muted); white-space: nowrap; overflow: visible; }
+  .htip { position: absolute; z-index: 5; pointer-events: none; background: #0d1117; border: 1px solid var(--border);
+          border-radius: 8px; padding: 6px 10px; font-size: 12px; white-space: nowrap; display: none; }
 
   /* Liquidity section */
   .liqtotal { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0 12px; }
@@ -512,7 +534,9 @@
       ${ratioCard(c, "Volume / Liquidity", "vol_liq_x", fmtMult,
           "Traded volume as a multiple of the coin's current liquidity (Codex): " + fmtMoney(c.liquidity) + ".")}
       ${liquidityCard(c)}
-      ${rankCard(c)}`;
+      ${rankCard(c)}
+      ${holdersCard(c)}`;
+    wireHolders((c.holders || {}).bars || []);
     wireChart(c.tx_bars || []);
   }
 
@@ -684,6 +708,65 @@
       <div class="rankboxes">${rankBox("CoinGecko rank", rk.coingecko)}${rankBox("CoinMarketCap rank", rk.cmc)}</div>
       ${noHistory ? `<div class="note" style="margin:8px 0 0">Last week's rank appears once we have a full previous week stored.</div>` : ""}
     </div>`;
+  }
+  // Holders: total + weekly change, and one bar per stored day coloured by
+  // the day-over-day change (rose > +0.5% green, within ±0.5% blue, fell red).
+  function holdersCard(c) {
+    const h = c.holders || {}, bars = h.bars || [];
+    let chg = `<span class="chg flat">—</span>`;
+    if (h.week_change_pct != null) {
+      const p = h.week_change_pct, [cls, ar] = p > 0 ? ["up", "↗"] : p < 0 ? ["down", "↘"] : ["flat", "→"];
+      chg = `<span class="chg ${cls}">${ar} ${p > 0 ? "+" : ""}${p.toFixed(2)}%</span>`;
+    }
+    const sub = h.week_ago != null ? `vs ${fmtInt(h.week_ago)} a week ago` : "weekly change appears once we have a week of history";
+    let plot = `<div class="empty" style="padding:8px 0">No holder counts stored for this coin yet.</div>`;
+    if (bars.length) {
+      const max = Math.max(...bars.map(b => b.holders)) || 1;
+      const cols = bars.map((b, i) => {
+        const p = b.change_pct;
+        const cls = p == null ? "first" : p > 0.5 ? "up" : p < -0.5 ? "down" : "same";
+        const word = p == null ? "first day" : cls === "up" ? "rose" : cls === "down" ? "fell" : "about the same";
+        return `<div class="hbar ${cls}" tabindex="0" data-i="${i}" aria-label="${esc(b.date)}: ${b.holders} holders, ${word}">
+          <i style="height:${Math.max(2, b.holders / max * 100)}%"></i></div>`;
+      }).join("");
+      plot = `<div class="hplot" id="hplot"><div class="hbars">${cols}</div><div class="htip" id="htip"></div></div>
+        <div class="hlabels">${bars.map((b, i) => `<span>${i === 0 || i === bars.length - 1 ? shortDate(b.date) : ""}</span>`).join("")}</div>
+        <div class="legend" style="margin:8px 0 0">
+          <span><i style="background:var(--hold-up)"></i>Rose</span><span><i style="background:var(--hold-same)"></i>About the same (±0.5%)</span>
+          <span><i style="background:var(--hold-down)"></i>Fell</span><span><i style="background:#484f58"></i>First day</span></div>`;
+    }
+    return `<div class="ratiocard"><h3>Holders</h3>
+      <div class="note">Holder count (CoinMarketCap DEX), one reading per day from our daily run.</div>
+      <div class="holdtop"><span class="big">${h.now == null ? "—" : fmtInt(h.now)}</span>${chg}<span class="sub">${esc(sub)}</span></div>
+      ${plot}
+      ${bars.length && bars.length < 7 ? `<div class="note" style="margin:8px 0 0">${bars.length} day${bars.length === 1 ? "" : "s"} so far - one bar is added each day.</div>` : ""}
+    </div>`;
+  }
+  function wireHolders(bars) {
+    const plot = document.getElementById("hplot");
+    if (!plot) return;
+    const tip = document.getElementById("htip");
+    function show(el) {
+      const b = bars[+el.dataset.i], p = b.change_pct;
+      plot.querySelectorAll(".hbar.on").forEach(x => x.classList.remove("on"));
+      el.classList.add("on");
+      tip.innerHTML = `<b>${esc(longDate(b.date))}</b><br>${fmtInt(b.holders)} holders` +
+        (p == null ? "" : ` · ${p > 0 ? "+" : ""}${p.toFixed(2)}% vs day before`);
+      tip.style.display = "block";
+      const pr = plot.getBoundingClientRect(), br = el.getBoundingClientRect();
+      let x = br.right - pr.left + 8;
+      if (x + tip.offsetWidth > pr.width) x = br.left - pr.left - 8 - tip.offsetWidth;
+      tip.style.left = Math.max(0, x) + "px"; tip.style.top = "4px";
+    }
+    function hide() { tip.style.display = "none"; plot.querySelectorAll(".hbar.on").forEach(x => x.classList.remove("on")); }
+    plot.querySelectorAll(".hbar").forEach(el => {
+      el.addEventListener("mouseenter", () => show(el));
+      el.addEventListener("mouseleave", hide);
+      el.addEventListener("focus", () => show(el));
+      el.addEventListener("blur", hide);
+      el.addEventListener("click", e => { e.stopPropagation(); el.classList.contains("on") ? hide() : show(el); });
+    });
+    document.addEventListener("click", hide, { once: true });
   }
   function fmtMult(v) {
     if (v === 0) return "0x";
