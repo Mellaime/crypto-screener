@@ -180,6 +180,11 @@
   .htip { position: absolute; z-index: 5; pointer-events: none; background: #0d1117; border: 1px solid var(--border);
           border-radius: 8px; padding: 6px 10px; font-size: 12px; white-space: nowrap; display: none; }
 
+  /* Revenue section */
+  .hbar.rev i { background: var(--hold-same); }
+  .revrow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+  @media (max-width: 560px) { .revrow { grid-template-columns: 1fr; } }
+
   /* Liquidity section */
   .liqtotal { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0 12px; }
   .subhead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 12px 0 6px; }
@@ -535,8 +540,11 @@
           "Traded volume as a multiple of the coin's current liquidity (Codex): " + fmtMoney(c.liquidity) + ".")}
       ${liquidityCard(c)}
       ${rankCard(c)}
-      ${holdersCard(c)}`;
+      ${holdersCard(c)}
+      ${revenueCard(c)}`;
     wireHolders((c.holders || {}).bars || []);
+    wireBars("rplot", "rtip", ((c.revenue || {}).bars) || [],
+             b => `<b>${esc(longDate(b.date))}</b><br>Revenue ${fmtUsd(b.revenue)}`);
     wireChart(c.tx_bars || []);
   }
 
@@ -769,6 +777,77 @@
       el.addEventListener("click", e => { e.stopPropagation(); el.classList.contains("on") ? hide() : show(el); });
     });
     document.addEventListener("click", hide, { once: true });
+  }
+  // Revenue (DefiLlama): daily revenue bars (last 15 complete days), MCap /
+  // annualized revenue, and TVL now vs a week ago. "unknown" for coins
+  // DefiLlama doesn't track (most small coins) - then no bars.
+  function revenueCard(c) {
+    const r = c.revenue || {status: "unknown", reason: "no revenue data"};
+    const head = `<h3>Revenue</h3><div class="note">DefiLlama, matched by contract. Refreshed once a day.</div>`;
+    if (r.status !== "ok") {
+      return `<div class="ratiocard">${head}
+        <div class="holdtop"><span class="big" style="font-size:20px">Revenue: unknown</span></div>
+        <div class="note" style="margin:-4px 0 0">${esc(r.reason || "")}</div></div>`;
+    }
+    const bars = r.bars || [];
+    let plot = `<div class="empty" style="padding:8px 0">No daily revenue reported yet.</div>`;
+    if (bars.length) {
+      const max = Math.max(...bars.map(b => b.revenue)) || 1;
+      const cols = bars.map((b, i) => `<div class="hbar rev" tabindex="0" data-i="${i}"
+          aria-label="${esc(b.date)}: revenue ${fmtUsd(b.revenue)}">
+          <i style="height:${b.revenue > 0 ? Math.max(2, b.revenue / max * 100) : 0}%"></i></div>`).join("");
+      plot = `<div class="subhead">Daily revenue - last ${bars.length} complete day${bars.length === 1 ? "" : "s"}
+          ${bars.length < 15 ? "(since DefiLlama started tracking it)" : ""} · peak ${fmtMoney(max)}</div>
+        <div class="hplot" id="rplot"><div class="hbars">${cols}</div><div class="htip" id="rtip"></div></div>
+        <div class="hlabels">${bars.map((b, i) => `<span>${i === 0 || i === bars.length - 1 ? shortDate(b.date) : ""}</span>`).join("")}</div>`;
+    }
+    const t = r.tvl || {};
+    let tvl = `<div class="v" style="font-size:16px;color:var(--muted)">not applicable</div>
+      <div class="sub">This protocol doesn't hold deposits.</div>`;
+    if (t.status === "ok") {
+      const p = t.change_pct;
+      const [cls, ar] = p == null ? ["flat", ""] : p > 0 ? ["up", "↗"] : p < 0 ? ["down", "↘"] : ["flat", "→"];
+      tvl = `<div class="v">${fmtMoney(t.now)}</div>
+        <div class="dir ${cls}">${p == null ? "—" : `${ar} ${p > 0 ? "+" : ""}${p.toFixed(1)}%`}</div>
+        <div class="sub">${t.week_ago == null ? "no reading from a week ago" : "vs " + fmtMoney(t.week_ago) + " a week ago"}</div>`;
+    } else if (t.status === "unknown") {
+      tvl = `<div class="v" style="font-size:16px;color:var(--muted)">—</div><div class="sub">DefiLlama didn't answer.</div>`;
+    }
+    const mr = r.mcap_to_revenue;
+    return `<div class="ratiocard">${head}
+      <div class="note" style="margin-top:-6px">Protocol: ${esc(r.protocol || "")}</div>
+      ${plot}
+      <div class="revrow">
+        <div class="ratio"><div class="k">MCap / Revenue</div>
+          <div class="v">${mr == null ? "—" : mr.toFixed(1) + "x"}</div>
+          <div class="sub">${r.annual_revenue ? "market cap ÷ " + fmtMoney(r.annual_revenue) + "/yr (last 30 days × 365/30). Lower = cheaper vs its revenue."
+                                             : "no revenue in the last 30 days"}</div></div>
+        <div class="ratio"><div class="k">TVL (this week vs last)</div>${tvl}</div>
+      </div></div>`;
+  }
+  // Generic hover / tap tooltip for a simple bar plot (.hbar columns).
+  function wireBars(plotId, tipId, bars, html) {
+    const plot = document.getElementById(plotId);
+    if (!plot) return;
+    const tip = document.getElementById(tipId);
+    function show(el) {
+      plot.querySelectorAll(".hbar.on").forEach(x => x.classList.remove("on"));
+      el.classList.add("on");
+      tip.innerHTML = html(bars[+el.dataset.i]);
+      tip.style.display = "block";
+      const pr = plot.getBoundingClientRect(), br = el.getBoundingClientRect();
+      let x = br.right - pr.left + 8;
+      if (x + tip.offsetWidth > pr.width) x = br.left - pr.left - 8 - tip.offsetWidth;
+      tip.style.left = Math.max(0, x) + "px"; tip.style.top = "4px";
+    }
+    function hide() { tip.style.display = "none"; plot.querySelectorAll(".hbar.on").forEach(x => x.classList.remove("on")); }
+    plot.querySelectorAll(".hbar").forEach(el => {
+      el.addEventListener("mouseenter", () => show(el));
+      el.addEventListener("mouseleave", hide);
+      el.addEventListener("focus", () => show(el));
+      el.addEventListener("blur", hide);
+      el.addEventListener("click", e => { e.stopPropagation(); el.classList.contains("on") ? hide() : show(el); });
+    });
   }
   function fmtMult(v) {
     if (v === 0) return "0x";

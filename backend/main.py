@@ -11,7 +11,8 @@ Endpoints:
     GET /api/coin/<contract> -> one coin: header info, 15-day transaction bars,
                                 Volume/MCap + Volume/Liquidity (4h, 24h, 7d, total),
                                 Liquidity, CoinGecko + CMC rank vs last week,
-                                Holders (total, weekly change, daily bars)
+                                Holders (total, weekly change, daily bars),
+                                Revenue (DefiLlama: daily bars, MCap/Revenue, TVL)
     GET /             -> the dashboard web page (from the frontend/ folder)
 
 Run it (from the backend/ folder, with the venv active):
@@ -224,6 +225,7 @@ def get_coin(contract: str):
             prev_h = h
         holders_now = hist[-1][1] if hist else None
         from holders_check import CHAIN_TO_PLATFORM as HOLDER_CHAINS
+        from revenue_detail import get_revenue
         holders_missing_reason = None
         if holders_now is None:
             holders_missing_reason = (
@@ -282,6 +284,7 @@ def get_coin(contract: str):
             "vol_mcap_pct": {k: ratio(v, mcap, 100) for k, v in volumes.items()},
             "vol_liq_x": {k: ratio(v, liq, 1) for k, v in volumes.items()},
             "volume_error": live["error"] or tx["error"],
+            "revenue": get_revenue(session, coin.contract, coin.chain, mcap),
             "holders": {"now": holders_now, "week_ago": holders_7d,
                         "week_change_pct": holders_week_pct, "bars": holder_bars,
                         "missing_reason": holders_missing_reason},

@@ -237,3 +237,19 @@ class VolStatsCache(Base):
     liq_chg_4h = Column(Float)        # liquidity change over 4h, %
     liq_chg_24h = Column(Float)       # liquidity change over 24h, %
     fetched_at = Column(DateTime, nullable=False)
+
+
+class RevenueCache(Base):
+    """
+    Dashboard detail page: a coin's DefiLlama Revenue section data (daily
+    revenue bars, annualized revenue, TVL now vs a week ago; revenue_detail.py)
+    as JSON, cached for one UTC day. Display only.
+    """
+    __tablename__ = "revenue_cache"
+    __table_args__ = (UniqueConstraint("chain", "contract"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chain = Column(String, nullable=False)
+    contract = Column(String, nullable=False, index=True)   # stored lowercased
+    day = Column(Date, nullable=False)                       # UTC day it was fetched
+    data = Column(String, nullable=False)                    # JSON
