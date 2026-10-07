@@ -22,7 +22,6 @@ Run it (from the backend/ folder, with the venv active):
 Then visit:  http://localhost:8000
 """
 
-import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -193,8 +192,25 @@ def get_coin(contract: str):
         q = (session.query(CoinQueue.symbol)
              .filter_by(chain=(coin.chain or "").lower(), contract=coin.contract.lower())
              .first())
-        tx = get_tx_bars(session, coin.contract, coin.chain)
-        live = get_live_volume(session, coin.contract, coin.chain)
+        # The three outside lookups (Codex daily bars, Codex live stats,
+        # DefiLlama revenue) run AT THE SAME TIME - each in its own DB session
+        # (a session can't be shared between threads) - so a first open waits
+        # for the slowest one, not the sum of all three.
+        from revenue_detail import get_revenue
+        from concurrent.futures import ThreadPoolExecutor
+
+        def own_session(fn, *args):
+            s2 = SessionLocal()
+            try:
+                return fn(s2, *args)
+            finally:
+                s2.close()
+        snap_mcap = snap.mcap if snap else None
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_tx = pool.submit(own_session, get_tx_bars, coin.contract, coin.chain)
+            f_live = pool.submit(own_session, get_live_volume, coin.contract, coin.chain)
+            f_rev = pool.submit(own_session, get_revenue, coin.contract, coin.chain, snap_mcap)
+            tx, live, revenue = f_tx.result(), f_live.result(), f_rev.result()
 
         # Volume / Market cap (%) and Volume / Liquidity (x) over 4 windows.
         # Market cap = the stored CoinGecko/CMC (global) one; liquidity = the
@@ -227,7 +243,6 @@ def get_coin(contract: str):
             prev_h = h
         holders_now = hist[-1][1] if hist else None
         from holders_check import CHAIN_TO_PLATFORM as HOLDER_CHAINS
-        from revenue_detail import get_revenue
         holders_missing_reason = None
         if holders_now is None:
             holders_missing_reason = (
@@ -286,7 +301,7 @@ def get_coin(contract: str):
             "vol_mcap_pct": {k: ratio(v, mcap, 100) for k, v in volumes.items()},
             "vol_liq_x": {k: ratio(v, liq, 1) for k, v in volumes.items()},
             "volume_error": live["error"] or tx["error"],
-            "revenue": get_revenue(session, coin.contract, coin.chain, mcap),
+            "revenue": revenue,
             "supply": {
                 "total": coin.total_supply,
                 "circulating": coin.circulating_supply,
@@ -342,26 +357,6 @@ def get_queue():
                 "last_run": last_run(session)}
     finally:
         session.close()
-
-
-# --- Daily pipeline trigger (for Vercel Cron) ------------------------------
-# Vercel Cron can't keep a process running 24/7 like our local scheduler, so
-# instead it CALLS this URL once a day. This endpoint runs the same pipeline
-# (discover -> filter -> save -> drop -> rank -> holders -> score).
-#
-# Security: if a CRON_SECRET env var is set, we require Vercel's matching
-# "Authorization: Bearer <secret>" header, so randoms can't trigger it.
-@app.get("/api/cron/daily")
-def cron_daily(request: Request):
-    secret = os.getenv("CRON_SECRET")
-    if secret:
-        if request.headers.get("authorization", "") != f"Bearer {secret}":
-            raise HTTPException(status_code=401, detail="unauthorized")
-
-    # Imported lazily so a normal dashboard request doesn't load the pipeline.
-    from scheduler import run_pipeline
-    run_pipeline()
-    return {"status": "ok", "ran": "daily pipeline"}
 
 
 # --- Never serve a stale dashboard -----------------------------------------

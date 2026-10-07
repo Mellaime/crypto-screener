@@ -179,8 +179,13 @@ def run_check(contract):
     from tx_bars import fetch_from_codex
     from revenue_detail import fetch as fetch_revenue
 
-    cg = _coingecko(contract, chain) or {}
-    cmc_info, cmc_q = _cmc(contract)
+    # Outside lookups run in PARALLEL (a check used to take 16-27 s one after
+    # another): first CoinGecko + CMC together (name, market cap, tags)...
+    from concurrent.futures import ThreadPoolExecutor
+    pool = ThreadPoolExecutor(max_workers=7)
+    f_cg, f_cmc = pool.submit(_coingecko, contract, chain), pool.submit(_cmc, contract)
+    cg = f_cg.result() or {}
+    cmc_info, cmc_q = f_cmc.result()
     cmc_info, cmc_q = cmc_info or {}, cmc_q or {}
     md = cg.get("market_data") or {}
     usd = (cmc_q.get("quote") or {}).get("USD") or {}
@@ -195,6 +200,22 @@ def run_check(contract):
     cmc_tags = cmc_info.get("tags") or []
     narrative = (narrative_from_tags(cmc_tags) or _pick_category(cg.get("categories") or [])
                  or "unknown")
+
+    # ...then every filter step / data source at once. The two DefiLlama
+    # lookups share one thread so its protocol lists download only once.
+    listed = cmc_info.get("date_added")
+    token = {"contract": contract, "chain": chain, "age_days": dex_rec.get("age_days"),
+             "listed_at": datetime.fromisoformat(listed.replace("Z", "+00:00")) if listed else None}
+
+    def revenue_both():
+        return check_revenue(name, symbol, contract, chain), fetch_revenue(contract, mcap)
+    f_age = pool.submit(decide_age, token)                   # no DB session: nothing stored
+    f_vol = pool.submit(check_volume_rising, contract, chain)
+    f_sec = pool.submit(check_token_security, contract, chain)
+    f_liq = pool.submit(check_liquidity_trend, contract, chain)
+    f_tx = pool.submit(fetch_from_codex, contract, chain)
+    f_rev = pool.submit(revenue_both)
+    pool.shutdown(wait=False)
 
     steps = []
 
@@ -241,10 +262,7 @@ def run_check(contract):
         step("type", "Not a meme / stablecoin / tokenized / wrapped", "pass", "none of these")
 
     # 3. Age
-    listed = cmc_info.get("date_added")
-    token = {"contract": contract, "chain": chain, "age_days": dex_rec.get("age_days"),
-             "listed_at": datetime.fromisoformat(listed.replace("Z", "+00:00")) if listed else None}
-    keep_age, age_days, age_src = decide_age(token)          # no DB session: nothing stored
+    keep_age, age_days, age_src = f_age.result()
     if age_days is None:
         step("age", "Age ≥ 10 days", "fail", "unknown",
              "Age unknown (no DexScreener pool date and no listing date)")
@@ -255,7 +273,7 @@ def run_check(contract):
         step("age", "Age ≥ 10 days", "pass", f"{age_days} days ({age_src})")
 
     # 4. Revenue
-    rev = check_revenue(name, symbol, contract, chain)
+    rev, revd = f_rev.result()
     if rev["verdict"] == "NO_REVENUE":
         step("revenue", "Revenue (not 'no fees')", "fail", rev["reason"], "No revenue / fees found (DefiLlama tracks it with no fees)")
     else:
@@ -263,7 +281,7 @@ def run_check(contract):
              "has revenue" if rev["verdict"] == "HAS_REVENUE" else "not tracked by DefiLlama (passes)")
 
     # 5. Volume (5 complete days, day 5 >= day 1 x 1.35)
-    vol = check_volume_rising(contract, chain)
+    vol = f_vol.result()
     vol_pct = (vol["day5"] / vol["day1"] - 1) * 100 if vol.get("day1") else None
     need = (VOLUME_MIN_RISE - 1) * 100
     if vol.get("transient"):
@@ -279,7 +297,7 @@ def run_check(contract):
              "No CoinGecko volume history for this contract (the filter needs 5 days)")
 
     # 6. Honeypot
-    sec = check_token_security(contract, chain)
+    sec = f_sec.result()
     if sec["verdict"] == "unsafe":
         step("honeypot", "Not a honeypot", "fail", sec["reason"], "It's a honeypot / not sellable")
     else:
@@ -287,7 +305,7 @@ def run_check(contract):
              "sellable" if sec["verdict"] == "safe" else f"unknown ({sec['reason']}) - passes")
 
     # 7. Liquidity (not down more than 5% over min(30 days, age))
-    liq = check_liquidity_trend(contract, chain)
+    liq = f_liq.result()
     if liq["verdict"] == "drop":
         step("liquidity", "Liquidity not down > 5%", "fail", f"{liq['pct']:+.1f}%",
              f"Liquidity dropped more than {MAX_DROP_PCT}% ({liq['pct']:+.1f}% since {liq['base_date']})")
@@ -315,8 +333,7 @@ def run_check(contract):
     else:
         verdict = {"passes": True, "reason": None}
 
-    daily, tx_err = fetch_from_codex(contract, chain)
-    revd = fetch_revenue(contract, mcap)
+    daily, tx_err = f_tx.result()
     liq_trend = None
     if liq.get("pct") is not None:
         p = liq["pct"]

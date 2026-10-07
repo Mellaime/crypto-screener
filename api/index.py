@@ -6,7 +6,7 @@ exposes our existing FastAPI app (from backend/main.py) as `app`, which
 Vercel's Python runtime serves as an ASGI application.
 
 vercel.json routes every /api/* request here, so FastAPI handles the real
-paths (/api/coins, /api/dropped, /api/cron/daily).
+paths (/api/coins, /api/dropped, /api/queue, /api/coin/..., /api/check).
 """
 import os
 import sys
