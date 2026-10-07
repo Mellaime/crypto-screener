@@ -778,7 +778,8 @@
           ${tile("Market cap", fmtMoney(r.mcap), esc(r.mcap_source || ""))}
           ${tile("Age", age.days == null ? "—" : age.days.toLocaleString() + " days", age.source ? "via " + esc(age.source) : "")}
           ${tile("Volume trend (5 days)", vol.pct == null ? "—" : (vol.pct > 0 ? "+" : "") + vol.pct.toFixed(0) + "%", arrow(volTrend))}
-          ${tile("Liquidity", fmtMoney(lq.now), lq.pct == null ? "trend unknown" : arrow(lq.trend) + ` ${lq.pct > 0 ? "+" : ""}${lq.pct.toFixed(1)}% since ${esc(shortDate(lq.since))}`)}
+          ${tile("Liquidity", fmtMoney(lq.now), (lq.too_thin ? `<span class="dir down">below our ${fmtMoney(lq.minimum)} minimum — too thin to analyze</span><br>` : "")
+                 + (lq.pct == null ? "trend unknown" : arrow(lq.trend) + ` ${lq.pct > 0 ? "+" : ""}${lq.pct.toFixed(1)}% since ${esc(shortDate(lq.since))}`))}
           ${tile("Revenue", rv.status === "ok" ? fmtMoney(rv.d30) : "unknown",
                  rv.status === "ok" ? "last 30 days" + (rv.all_time != null ? " · " + fmtMoney(rv.all_time) + " total" : "") : esc(rv.reason || ""))}
           ${tile("Honeypot", r.honeypot === "safe" ? "✓ sellable" : r.honeypot === "unsafe" ? "✗ not sellable" : "unknown")}

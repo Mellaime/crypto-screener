@@ -10,6 +10,9 @@ It uses ONE set of 4 health criteria, both for dropping and for recovery:
                             below day1 (rising or flat = healthy)
     * liquidity down > 5% - today's Codex reading vs the one up to 30 days
                             ago (or since it entered active, if shorter)
+    * liquidity under $5K - today's reading is under $5,000 on BOTH Codex and
+                            DexScreener (the higher one counts; no reading
+                            from either = unknown = healthy)
     * holders down > 10%  - vs the count when it entered active
                             (coins.holders_at_entry; no baseline -> skipped)
     * honeypot unsafe     - GoPlus
@@ -143,6 +146,15 @@ def unhealthy_reason(coin, session, today):
     liq, pct, base_date = codex_liquidity_trend(session, coin, today)
     if liq == "drop":
         return f"Liquidity down {abs(pct):.1f}% since {base_date}"
+
+    from liquidity_check import too_thin, MIN_LIQUIDITY_USD
+    snap = (session.query(DailySnapshot)
+            .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date <= today)
+            .order_by(DailySnapshot.date.desc()).first())
+    if snap is not None:
+        thin, best = too_thin(snap.codex_liquidity, snap.liquidity)
+        if thin:
+            return f"Liquidity under ${MIN_LIQUIDITY_USD:,} (${best:,.0f} on Codex and DexScreener)"
 
     base = coin.holders_at_entry
     now_h = get_holder_count(coin.contract, coin.chain)

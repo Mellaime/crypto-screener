@@ -173,7 +173,7 @@ def run_check(contract):
     from revenue_check import check_revenue
     from volume_check import check_volume_rising, VOLUME_MIN_RISE
     from security_check import check_token_security
-    from liquidity_check import check_liquidity_trend, MAX_DROP_PCT
+    from liquidity_check import check_liquidity_trend, MAX_DROP_PCT, too_thin, MIN_LIQUIDITY_USD
     from narrative_check import _pick_category
     from queue_view import narrative_from_tags
     from tx_bars import fetch_from_codex
@@ -296,6 +296,16 @@ def run_check(contract):
     else:
         step("liquidity", "Liquidity not down > 5%", "pass", f"unknown ({liq.get('reason')}) - passes")
 
+    # Minimum liquidity (part of step 7): under $5K on BOTH sources = too thin.
+    thin, best_liq = too_thin(liq.get("today_liq"), dex_rec.get("liquidity_usd"))
+    if thin:
+        step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,}", "fail",
+             f"${best_liq:,.0f} (Codex + DexScreener)",
+             f"Liquidity is below our ${MIN_LIQUIDITY_USD:,} minimum (${best_liq:,.0f}) — too thin to analyze")
+    else:
+        step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,}", "pass",
+             "unknown - passes" if best_liq is None else f"${best_liq:,.0f} (higher of Codex / DexScreener)")
+
     first_fail = next((s for s in steps if s["status"] == "fail"), None)
     pending = any(s["status"] == "unknown" for s in steps)
     if first_fail:
@@ -323,7 +333,8 @@ def run_check(contract):
                    "day1": vol.get("day1"), "day5": vol.get("day5"), "daily": vol.get("volumes")},
         # Current liquidity: the filter's Codex reading, else today's from the
         # transaction-bars request (display only - the filter verdict is unchanged).
-        "liquidity": {"now": liq.get("today_liq") or (daily or {}).get("liq_now"), "pct": liq.get("pct"),
+        "liquidity": {"now": best_liq or liq.get("today_liq") or (daily or {}).get("liq_now"), "pct": liq.get("pct"),
+                      "too_thin": thin, "minimum": MIN_LIQUIDITY_USD,
                       "since": str(liq.get("base_date")) if liq.get("base_date") else None,
                       "trend": liq_trend},
         "revenue": {"status": revd.get("status"), "reason": revd.get("reason"),
