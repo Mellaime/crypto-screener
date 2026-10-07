@@ -522,11 +522,15 @@
   // The 30-second refresh keeps updating all three, so switching is instant
   // and always current.
   const VIEWS = ["active", "dropped", "queue", "check"];
+  // A hand-edited / truncated link can hold a broken %-escape; decodeURIComponent
+  // would throw and stop the whole page script (nothing would load), so fall
+  // back to the raw text.
+  function safeDecode(s) { try { return decodeURIComponent(s); } catch (e) { return s; } }
   function showView(name) {
     // "#check/<contract>" -> the Check page, running that contract
     if (name.startsWith("check/")) {
       showView("check");
-      const addr = decodeURIComponent(name.slice(6));
+      const addr = safeDecode(name.slice(6));
       history.replaceState(null, "", location.pathname + location.search + "#" + name);   // keep the shareable link
       document.getElementById("checkinput").value = addr;
       runCheck(addr);
@@ -539,7 +543,7 @@
       document.getElementById("view-coin").hidden = false;
       const hash = "#" + name;
       if (location.hash !== hash) history.pushState(null, "", location.pathname + location.search + hash);
-      loadCoin(decodeURIComponent(name.slice(5)));
+      loadCoin(safeDecode(name.slice(5)));
       window.scrollTo(0, 0);
       return;
     }
