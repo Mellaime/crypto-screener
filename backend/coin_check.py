@@ -420,6 +420,16 @@ def summarize(r):
     return " ".join(parts), opinion + " This describes the on-chain data only - it isn't financial advice."
 
 
+def rules_signature():
+    """The filter settings a check result depends on. A cached result made
+    under different settings (e.g. before a range change) is recomputed."""
+    from discovery import MIN_MCAP, MAX_MCAP
+    from age_check import MIN_AGE_DAYS
+    from volume_check import VOLUME_MIN_RISE
+    from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
+    return f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
+
+
 def get_check(session, contract):
     """run_check, cached per contract per UTC day (coin_check_cache). Results
     with a step that couldn't be checked (API hiccup), and "not found", aren't
@@ -431,9 +441,11 @@ def get_check(session, contract):
     row = session.query(CoinCheckCache).filter_by(contract=key).first() if key else None
     if row is not None and row.day == today:
         res = json.loads(row.data)
-        res["cached"] = True
-        return res
+        if res.get("rules") == rules_signature():          # same filter settings
+            res["cached"] = True
+            return res
     res = run_check(contract)
+    res["rules"] = rules_signature()
     transient = res.pop("_transient", False)
     # "Not found" isn't cached: a brief outage at DexScreener / CoinGecko / CMC
     # must not make a real coin look missing for the rest of the day.

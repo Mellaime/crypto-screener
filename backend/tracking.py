@@ -17,7 +17,7 @@ where tracked coins get their fresh daily numbers - with NO CoinGecko calls:
   3. Market cap - the coin's GLOBAL market cap from CoinGecko / CMC, taken
      from this run's discovery (discovery.LAST_MCAPS, no extra calls). Not
      from DexScreener: one pool's market cap is tiny for a bridged copy. A
-     coin discovery didn't see today (e.g. fell below $5M) gets yesterday's
+     coin discovery didn't see today (e.g. fell below $1M) gets yesterday's
      market cap moved by today's price change.
   4. Category catch-up - tracked coins that have no CoinGecko category yet
      (the save step only looks up CATEGORY_BUDGET new coins per run), or
