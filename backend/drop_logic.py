@@ -22,6 +22,13 @@ NO CoinGecko here - CoinGecko is only the one-time entry check.
 "Unknown" (not enough readings yet, no data) counts as healthy - never drop,
 or keep out, on missing data. Revenue is NOT part of this.
 
+0. CRASH OVERRIDE (checked first, on EVERY active coin - even in grace):
+   price OR liquidity down CRASH_PCT (70%) or more vs its highest reading in
+   the previous CRASH_WINDOW_DAYS (3) days -> dropped immediately (reason
+   "Crash - ..."), then the normal 7-day recovery window. Liquidity per day
+   = the higher of Codex and DexScreener, so one bad Codex reading can't
+   fake a crash. The grace period is for normal volatility, not a crash.
+
 1. GRACE: a coin is untouched for its first GRACE_DAYS (5) calendar days in
    active - during which it collects the 5 daily readings the volume trend
    needs. Entered on day D -> first re-check on day D+5. Counted from
@@ -62,6 +69,8 @@ VOLUME_FALL_PCT = 5          # "falling" = day5 more than 5% below day1;
                              # rising or flat (within 5%) stays healthy
 VOLUME_LOOKBACK_DAYS = 10    # ...taken from at most the last 10 days
 LIQ_WINDOW_DAYS = 30         # liquidity: vs up to 30 days back
+CRASH_PCT = 70               # price or liquidity down this much ...
+CRASH_WINDOW_DAYS = 3        # ... vs the peak of the last 3 days = crash
 
 
 def _delete_coin(session, coin):
@@ -82,6 +91,35 @@ def _delete_coin(session, coin):
 def days_since(when, today):
     """Whole calendar days from `when` (a datetime) to `today`."""
     return (today - when.date()).days
+
+
+def crash_reason(session, coin, today):
+    """The crash override: "Crash - ..." if today's price or liquidity is
+    down CRASH_PCT% or more from its highest reading in the previous
+    CRASH_WINDOW_DAYS days, else None. Uses stored daily snapshots only."""
+    snaps = (session.query(DailySnapshot)
+             .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date <= today,
+                     DailySnapshot.date >= today - timedelta(days=CRASH_WINDOW_DAYS))
+             .order_by(DailySnapshot.date).all())
+    if len(snaps) < 2:
+        return None
+    cur, earlier = snaps[-1], snaps[:-1]
+
+    def liquidity(sn):
+        vals = [v for v in (sn.codex_liquidity, sn.liquidity) if v is not None]
+        return max(vals) if vals else None
+
+    falls = []
+    for label, get in (("price", lambda sn: sn.price_usd), ("liquidity", liquidity)):
+        now_v = get(cur)
+        peak = max((v for v in (get(sn) for sn in earlier) if v), default=None)
+        if now_v is not None and peak:
+            pct = (now_v / peak - 1) * 100
+            if pct <= -CRASH_PCT:
+                falls.append(f"{label} down {abs(pct):.1f}%")
+    if not falls:
+        return None
+    return f"Crash - {' and '.join(falls)} in {CRASH_WINDOW_DAYS} days"
 
 
 def in_grace(coin, today):
@@ -176,7 +214,7 @@ def run_drop_logic():
 
     now = utcnow()
     today = now.date()
-    stats = {"active_remaining": 0, "in_grace": 0, "checked": 0, "newly_dropped": 0,
+    stats = {"active_remaining": 0, "in_grace": 0, "checked": 0, "newly_dropped": 0, "crashed": 0,
              "recovered": 0, "still_dropped": 0, "removed_7d": 0,
              "removed_never_qualified": 0}
     dropped_details, recovered_details, removed_details = [], [], []
@@ -189,11 +227,16 @@ def run_drop_logic():
     try:
         # --- ACTIVE: grace, then the 4 health criteria -----------------------
         for coin in session.query(Coin).filter_by(status="active").all():
-            if in_grace(coin, today):
+            # Crash override FIRST - applies even during the grace period.
+            reason = crash_reason(session, coin, snap_day)
+            if reason is not None:
+                stats["crashed"] += 1
+            elif in_grace(coin, today):
                 stats["in_grace"] += 1
                 continue
-            stats["checked"] += 1
-            reason = unhealthy_reason(coin, session, snap_day)
+            else:
+                stats["checked"] += 1
+                reason = unhealthy_reason(coin, session, snap_day)
             if reason is None:
                 continue                                   # healthy -> stays
             if not coin.ever_qualified:
@@ -254,6 +297,7 @@ def _print_summary(stats, dropped_details, recovered_details, removed_details):
     print(line)
     print(f"  Active - in {GRACE_DAYS}-day grace (untouched) .. {stats['in_grace']:>5}")
     print(f"  Active - re-checked ............... {stats['checked']:>5}")
+    print(f"  Crash override (>= {CRASH_PCT}% in {CRASH_WINDOW_DAYS}d) .... {stats['crashed']:>5}")
     print(f"  Newly dropped (unhealthy) ......... {stats['newly_dropped']:>5}")
     for name, reason in dropped_details:
         print(f"      - {(name or 'unknown')[:18]:<18}  ({reason})")
