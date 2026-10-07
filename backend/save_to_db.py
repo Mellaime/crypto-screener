@@ -34,6 +34,7 @@ Run it:
     python save_to_db.py
 """
 
+import re
 from datetime import date
 
 from database import SessionLocal, init_db, utcnow
@@ -108,25 +109,66 @@ def is_volume_rising(coin, days=5):
     return never_drops and net_increase
 
 
-def dedupe_by_coin(session, tokens):
+# Re-home threshold: a tracked coin moves to another chain only when that
+# chain's liquidity is at least REHOME_MIN_RATIO x AND REHOME_MIN_GAIN higher
+# - so a coin doesn't flip between two similar chains day to day.
+REHOME_MIN_RATIO = 2.0
+REHOME_MIN_GAIN = 10_000
+
+
+def rehome_coin(session, coin, tok, now=None):
+    """Move a tracked coin to another chain's copy of itself (its real home).
+    The old chain's numbers describe a different pool set, so its chain-
+    specific history is cleared (Codex readings, DexScreener volume /
+    liquidity, holder counts) and the coin gets a fresh grace period while
+    the new chain's history builds up. Its entry-queue row is added so the
+    new copy is never re-analyzed. Returns a one-line description."""
+    from models import CoinQueue
+    from holders_check import get_holder_count
+
+    now = now or utcnow()
+    old = f"{coin.chain} {coin.contract}"
+    coin.chain, coin.contract = tok["chain"], tok["contract"]
+    # Keep the coin's name (the new chain's listing may carry an old brand,
+    # e.g. SuperVerse's Ethereum token is still "SuperFarm"); only drop a
+    # bridged-copy suffix like " (PoS)".
+    coin.name = re.sub(r"\s*\((PoS|Bridged|Wormhole)\)\s*$", "", coin.name or "", flags=re.I) or coin.name
+    for snap in session.query(DailySnapshot).filter_by(coin_id=coin.id):
+        snap.codex_liquidity = snap.codex_volume24 = None
+        snap.volume = snap.liquidity = snap.holders = None
+    h = get_holder_count(coin.contract, coin.chain)
+    coin.holders_at_entry = h if isinstance(h, int) else None
+    coin.active_since = now                       # fresh grace on the new chain
+    key = (coin.chain.lower(), coin.contract.lower())
+    row = session.query(CoinQueue).filter_by(chain=key[0], contract=key[1]).first()
+    if row is None:
+        row = CoinQueue(chain=key[0], contract=key[1], first_seen=now)
+        session.add(row)
+    row.last_checked, row.outcome, row.attempts = now, "saved", max(row.attempts or 0, 1)
+    return f"{old} -> {coin.chain} {coin.contract}"
+
+
+def dedupe_by_coin(session, tokens, rehomed=None):
     """
     One token per COIN: the same coin discovered on several chains (bridged
-    copies - Aethir on Ethereum + Arbitrum, ...) shares a coin_key. Keep:
-      1. the copy we already track (a coins row), else
-      2. the copy already analyzed in the entry queue, else
-      3. the copy with the most DexScreener liquidity (ties: discovery order).
-    1 and 2 keep the choice stable from day to day, so a coin never enters
-    active twice. Returns (kept_tokens, dropped_count).
+    copies) shares a coin_key. The coin is tracked on its HIGHEST-liquidity
+    chain (DexScreener liquidity of its pools there) - its real home:
+      * not tracked yet -> the most liquid copy (ties: one already analyzed,
+        then discovery order)
+      * already tracked -> stays on its chain, unless another copy has at
+        least REHOME_MIN_RATIO x and REHOME_MIN_GAIN more liquidity: then the
+        coin is RE-HOMED there (rehome_coin) - never saved twice.
+    `rehomed` (a list) collects (name, from, from_liq, to, to_liq) for reports.
+    Returns (kept_tokens, dropped_count).
     """
     from models import CoinQueue
 
-    tracked = {(c.contract or "").lower() for c in session.query(Coin.contract)}
+    coins_by_addr = {(c.contract or "").lower(): c for c in session.query(Coin)}
     analyzed = {r.contract for r in session.query(CoinQueue.contract)
                 .filter(CoinQueue.last_checked.isnot(None))}
 
-    def rank(t):
-        low = (t["contract"] or "").lower()
-        return (low in tracked, low in analyzed, to_float(t.get("liquidity_usd")) or 0)
+    def liq(t):
+        return to_float(t.get("liquidity_usd")) or 0
 
     groups = {}
     for i, t in enumerate(tokens):
@@ -134,8 +176,23 @@ def dedupe_by_coin(session, tokens):
         groups.setdefault(key, []).append((i, t))
     kept = []
     for members in groups.values():
-        best = max(members, key=lambda m: (rank(m[1]), -m[0]))
-        kept.append(best)
+        best = max(members, key=lambda m: (liq(m[1]), (m[1]["contract"] or "").lower() in analyzed, -m[0]))
+        tracked = [m for m in members if (m[1]["contract"] or "").lower() in coins_by_addr]
+        if tracked:
+            cur = max(tracked, key=lambda m: liq(m[1]))
+            coin = coins_by_addr[(cur[1]["contract"] or "").lower()]
+            new_liq, old_liq = liq(best[1]), liq(cur[1])
+            if (best is not cur and (best[1]["contract"] or "").lower() not in coins_by_addr
+                    and new_liq >= REHOME_MIN_RATIO * old_liq and new_liq - old_liq >= REHOME_MIN_GAIN):
+                old_chain = coin.chain
+                rehome_coin(session, coin, best[1])
+                if rehomed is not None:
+                    rehomed.append((coin.name, old_chain, old_liq, coin.chain, new_liq))
+                kept.append(best)
+            else:
+                kept.append(cur)
+        else:
+            kept.append(best)
     kept.sort(key=lambda m: m[0])
     return [t for _, t in kept], len(tokens) - len(kept)
 
@@ -156,6 +213,7 @@ def save_tokens(tokens):
         "age_via_fallback": 0,   # CG/CMC fallback was used for the age decision
         "age_deferred": 0,       # fallback lookup budget used up -> next run
         "dup_chains_dropped": 0, # same coin on another chain -> one kept
+        "rehomed": 0,            # tracked coins moved to a much stronger chain
         "queue_rechecks": 0,     # 15-day second chances picked this run
         "passed_volume": 0,          # volume rising (CoinGecko 5-day)
         "skipped_vol_falling": 0,
@@ -185,7 +243,11 @@ def save_tokens(tokens):
     session = SessionLocal()
     try:
         # --- One token per coin (bridged copies on other chains dropped) ----
-        tokens, stats["dup_chains_dropped"] = dedupe_by_coin(session, tokens)
+        rehomed = []
+        tokens, stats["dup_chains_dropped"] = dedupe_by_coin(session, tokens, rehomed)
+        stats["rehomed"] = len(rehomed)
+        for name, a, al, b, bl in rehomed:
+            print(f"[INFO] re-homed {name}: {a} (${al:,.0f}) -> {b} (${bl:,.0f})")
 
         # --- Step 3: AGE (two-step, by contract + chain) --------------------
         # Run over every token first, so we know exactly who reaches step 4.
@@ -428,7 +490,7 @@ def print_summary(stats):
     print(f"       (not a filter: with DexScreener data -> {dc.get('enriched', '?')}, "
           f"without -> {dc.get('no_dexscreener', '?')}; both go on to age)")
     print(f"       (same coin on another chain -> one kept, dropped: "
-          f"{stats['dup_chains_dropped']})")
+          f"{stats['dup_chains_dropped']}; tracked coins re-homed: {stats['rehomed']})")
     print(f"       (already analyzed on an earlier run -> skipped: "
           f"{stats['already_analyzed']})")
     print(sub)
