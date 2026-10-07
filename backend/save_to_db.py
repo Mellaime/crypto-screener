@@ -5,7 +5,7 @@ Phase 2 - Step (b): run the filter chain on discovered tokens and save the
 survivors into the database.
 
 THE FILTER - exactly these 7 steps, in this order:
-    1. Discovery  - CoinGecko + CoinMarketCap, MCap $5M-$350M (discovery.py).
+    1. Discovery  - CoinGecko + CoinMarketCap, MCap $1M-$400M (discovery.py).
                     MCap is enforced HERE only - there is no later mcap step.
     2. Meme +     - memes AND stablecoins removed right after discovery
        Stablecoin   (meme_filter.py).
@@ -497,7 +497,7 @@ def print_summary(stats):
     print(line)
     print("  FILTER FUNNEL (7 steps)")
     print(line)
-    print(f"  1. Discovery (CG+CMC, $5M-$350M) - unique .. {dc.get('discovery', '?'):>6}")
+    print(f"  1. Discovery (CG+CMC, $1M-$400M) - unique .. {dc.get('discovery', '?'):>6}")
     print(f"  2. Meme/stable/tokenized/wrapped - passed .. {dc.get('after_excl', '?'):>6}")
     print(f"       - dropped as meme ..................... {dc.get('meme_dropped', '?'):>6}")
     print(f"       - dropped as stablecoin ............... {dc.get('stable_dropped', '?'):>6}")

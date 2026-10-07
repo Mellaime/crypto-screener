@@ -84,6 +84,9 @@ REQUEST_DELAY = 2.5
 # Max live CoinGecko category lookups per daily run (display-only info; a coin
 # not looked up yet shows the generic narrative and gets its turn later).
 CATEGORY_BUDGET = 20
+# Daily catch-up of tracked coins still missing a category (tracking.py) -
+# kept smaller than CATEGORY_BUDGET to leave CoinGecko headroom.
+CATCHUP_BUDGET = 10
 
 CACHE_FILE = Path(__file__).resolve().parent / "coingecko_cache.json"
 

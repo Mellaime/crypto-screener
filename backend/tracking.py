@@ -22,7 +22,7 @@ where tracked coins get their fresh daily numbers - with NO CoinGecko calls:
   4. Category catch-up - tracked coins that have no CoinGecko category yet
      (the save step only looks up CATEGORY_BUDGET new coins per run), or
      still show a launch / backer label, get one lookup each, at most
-     CATEGORY_BUDGET per run.
+     CATCHUP_BUDGET (10) per run.
 
 Every tracked coin gets a snapshot for TODAY (created if missing). Anything a
 source didn't return today is carried forward from the coin's previous
@@ -116,12 +116,12 @@ def codex_bulk_readings(coins, stats):
 
 def _catch_up_categories(coins):
     """Look up a CoinGecko category for tracked coins that still have none
-    (or a launch / backer label). At most CATEGORY_BUDGET live calls."""
-    from narrative_check import lookup_category, is_skipped_label, CATEGORY_BUDGET
+    (or a launch / backer label). At most CATCHUP_BUDGET live calls."""
+    from narrative_check import lookup_category, is_skipped_label, CATCHUP_BUDGET
 
     calls = 0
     for coin in coins:
-        if calls >= CATEGORY_BUDGET:
+        if calls >= CATCHUP_BUDGET:
             break
         if coin.category == "" or (coin.category and not is_skipped_label(coin.category)):
             continue                     # final answer already

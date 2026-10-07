@@ -4,7 +4,7 @@ discovery.py
 Candidate discovery. This REPLACES DexScreener as the SOURCE of the coin list.
 Candidates are pulled from:
   * CoinGecko     - /coins/markets (mcap, paginated) joined with /coins/list
-                    (contract + chain), filtered to MCap $5M-$350M.
+                    (contract + chain), filtered to MCap $1M-$400M.
   * CoinMarketCap - /cryptocurrency/listings/latest with market_cap_min/max
                     (contract + chain + mcap + tags, server-side filtered).
 
@@ -40,8 +40,8 @@ BQ_URL = "https://streaming.bitquery.io/graphql"
 
 # The market-cap window is enforced HERE ONLY (CoinGecko pages + the CMC
 # listing's server-side filter) - there is no separate mcap step later.
-MIN_MCAP = 5_000_000        # $5M
-MAX_MCAP = 350_000_000      # $350M
+MIN_MCAP = 1_000_000        # $1M
+MAX_MCAP = 400_000_000      # $400M
 
 CG_DELAY = 2.5              # CoinGecko demo rate limit friendliness
 

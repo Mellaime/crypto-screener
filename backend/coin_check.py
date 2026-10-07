@@ -10,7 +10,7 @@ The chain is AUTO-DETECTED: DexScreener (the chain of the token's pools,
 most liquid first), else CoinGecko's contract list, else CoinMarketCap.
 
 The filter steps reuse the pipeline's own functions, in the pipeline's order:
-  1. Market cap $5M-$350M        discovery.MIN_MCAP / MAX_MCAP, on the global
+  1. Market cap in range         discovery.MIN_MCAP / MAX_MCAP, on the global
                                  CoinGecko (else CMC) market cap
   2. Meme / stablecoin / tokenized   meme_filter.classify_excluded +
                                  looks_like_stablecoin. The daily run checks
@@ -224,17 +224,18 @@ def run_check(contract):
                       "fail_reason": fail_reason})
 
     # 1. Market cap range (discovery)
+    rng = f"${MIN_MCAP / 1e6:g}M–${MAX_MCAP / 1e6:g}M"
     if mcap is None:
-        step("mcap", "Market cap $5M–$350M", "fail", "no market cap on CoinGecko or CoinMarketCap",
+        step("mcap", f"Market cap {rng}", "fail", "no market cap on CoinGecko or CoinMarketCap",
              "Not listed with a market cap on CoinGecko or CoinMarketCap (the bot only finds coins listed there)")
     elif mcap < MIN_MCAP:
-        step("mcap", "Market cap $5M–$350M", "fail", f"${mcap:,.0f}",
-             f"Market cap out of range (${mcap:,.0f}, below $5M)")
+        step("mcap", f"Market cap {rng}", "fail", f"${mcap:,.0f}",
+             f"Market cap out of range (${mcap:,.0f}, below ${MIN_MCAP / 1e6:g}M)")
     elif mcap > MAX_MCAP:
-        step("mcap", "Market cap $5M–$350M", "fail", f"${mcap:,.0f}",
-             f"Market cap out of range (${mcap:,.0f}, above $350M)")
+        step("mcap", f"Market cap {rng}", "fail", f"${mcap:,.0f}",
+             f"Market cap out of range (${mcap:,.0f}, above ${MAX_MCAP / 1e6:g}M)")
     else:
-        step("mcap", "Market cap $5M–$350M", "pass", f"${mcap:,.0f} ({mcap_source})")
+        step("mcap", f"Market cap {rng}", "pass", f"${mcap:,.0f} ({mcap_source})")
 
     # 2. Meme / stablecoin / tokenized (same classifier as the filter)
     names = _category_names()
