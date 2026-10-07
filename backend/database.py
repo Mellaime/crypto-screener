@@ -138,6 +138,12 @@ _NEW_COLUMNS = [
     # before these existed are emptied so they're fetched again).
     ("vol_stats_cache", "liq_chg_4h", "FLOAT", "DELETE FROM vol_stats_cache"),
     ("vol_stats_cache", "liq_chg_24h", "FLOAT", None),
+    # Detail page Supply section (global supply from discovery).
+    ("coins", "total_supply", "FLOAT", None),
+    ("coins", "circulating_supply", "FLOAT", None),
+    ("coins", "max_supply", "FLOAT", None),
+    ("coins", "supply_uncapped", "BOOLEAN", None),
+    ("coins", "supply_updated_at", "TIMESTAMP", None),
 ]
 
 

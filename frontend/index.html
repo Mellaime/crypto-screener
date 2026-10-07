@@ -185,6 +185,17 @@
   .revrow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
   @media (max-width: 560px) { .revrow { grid-template-columns: 1fr; } }
 
+  /* Supply section */
+  .supply { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .supply li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 11px 12px;
+               border-bottom: 1px solid var(--border); background: var(--bg); }
+  .supply li:last-child { border-bottom: none; }
+  .supply .lbl { font-size: 14px; }
+  .supply .lbl small { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .supply .val { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .supply .val small { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 6px; }
+  .supply li.soon .val { color: var(--muted); font-weight: 600; }
+
   /* Liquidity section */
   .liqtotal { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0 12px; }
   .subhead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 12px 0 6px; }
@@ -541,7 +552,8 @@
       ${liquidityCard(c)}
       ${rankCard(c)}
       ${holdersCard(c)}
-      ${revenueCard(c)}`;
+      ${revenueCard(c)}
+      ${supplyCard(c)}`;
     wireHolders((c.holders || {}).bars || []);
     wireBars("rplot", "rtip", ((c.revenue || {}).bars) || [],
              b => `<b>${esc(longDate(b.date))}</b><br>Revenue ${fmtUsd(b.revenue)}`);
@@ -848,6 +860,42 @@
       el.addEventListener("blur", hide);
       el.addEventListener("click", e => { e.stopPropagation(); el.classList.contains("on") ? hide() : show(el); });
     });
+  }
+  // Supply: total, circulating (+ % of total), max (or "No cap"), and two
+  // placeholders (burned, upcoming unlock) that show "—" until we have a source.
+  function fmtSupply(v) {
+    if (v == null) return "—";
+    const a = Math.abs(v);
+    if (a >= 1e12) return (v / 1e12).toFixed(2) + "T";
+    if (a >= 1e9) return (v / 1e9).toFixed(2) + "B";
+    if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
+    if (a >= 1e4) return (v / 1e3).toFixed(1) + "K";
+    return Math.round(v).toLocaleString();
+  }
+  function supplyCard(c) {
+    const sp = c.supply || {};
+    const exact = v => v == null ? "" : ` title="${Math.round(v).toLocaleString()}"`;
+    let pct = "";
+    if (sp.circulating_pct != null) {
+      const p = sp.circulating_pct;
+      pct = `<small>${Math.abs(p - 100) < 0.05 ? "100%" : p.toFixed(1) + "%"} of total</small>`;
+    }
+    let max = `<span class="val"${exact(sp.max)}>${fmtSupply(sp.max)}</span>`;
+    if (sp.max == null && sp.uncapped) max = `<span class="val">∞ <small>No cap</small></span>`;
+    const minting = sp.max != null && sp.total != null && sp.max > sp.total * 1.0001;
+    const none = sp.total == null && sp.circulating == null && sp.max == null;
+    return `<div class="ratiocard"><h3>Supply</h3>
+      <div class="note">CoinGecko / CoinMarketCap (whole coin, all chains). Updated by the daily run.</div>
+      ${none ? `<div class="note" style="margin:0 0 10px">No supply data yet - it's filled in by the next daily run.</div>` : ""}
+      <ul class="supply">
+        <li><span class="lbl">Total supply<small>tokens that exist now</small></span>
+            <span class="val"${exact(sp.total)}>${fmtSupply(sp.total)}</span></li>
+        <li><span class="lbl">Circulating supply<small>tokens in circulation</small></span>
+            <span class="val"${exact(sp.circulating)}>${fmtSupply(sp.circulating)}${pct}</span></li>
+        <li><span class="lbl">Max supply<small>the absolute cap${minting ? " · " + fmtSupply(sp.max - sp.total) + " above total supply" : ""}</small></span>${max}</li>
+        <li class="soon"><span class="lbl">Burned<small>no free source yet</small></span><span class="val">—</span></li>
+        <li class="soon"><span class="lbl">Upcoming unlock<small>needs an unlock-schedule source</small></span><span class="val">—</span></li>
+      </ul></div>`;
   }
   function fmtMult(v) {
     if (v === 0) return "0x";

@@ -107,6 +107,13 @@ LAST_CG_RANKS = {}
 # trusting a single DexScreener pool (tiny for bridged copies).
 LAST_MCAPS = {}
 
+# The coin's global SUPPLY (total / circulating / max) from the same
+# CoinGecko pages + CMC listings, keyed like LAST_MCAPS. Display only (the
+# detail page's Supply section); tracking.py stores it on the coin. CoinGecko
+# first, CMC fills gaps. "uncapped": True / False from CMC's infinite_supply,
+# None when CMC didn't say.
+LAST_SUPPLY = {}
+
 
 # Retry a failed discovery request with back-off before giving up on it.
 RETRY_WAITS = [5, 15, 30]
@@ -199,6 +206,10 @@ def from_coingecko(max_pages=30):
                 continue
             for addr in id_platforms.get(coin["id"], {}).values():
                 LAST_MCAPS[addr.lower()] = mc
+                LAST_SUPPLY[addr.lower()] = {
+                    "total": coin.get("total_supply"),
+                    "circulating": coin.get("circulating_supply"),
+                    "max": coin.get("max_supply"), "uncapped": None, "source": "coingecko"}
             if mc > MAX_MCAP:
                 continue                    # still in the too-big top pages
             if mc < MIN_MCAP:
@@ -270,6 +281,8 @@ def from_coinmarketcap(limit=5000):
             "coin_key": f"cmc:{x.get('id')}",   # re-keyed to CoinGecko's id when matched
             "chg_24h": usd.get("percent_change_24h"),
             "chg_7d": usd.get("percent_change_7d"),
+            "supply": {"total": x.get("total_supply"), "circulating": x.get("circulating_supply"),
+                       "max": x.get("max_supply"), "uncapped": x.get("infinite_supply")},
             "tags": x.get("tags") or [],     # CMC tag slugs (incl. "memes") - free here
             # When CMC listed it - the age fallback, free here (age_check.py).
             "listed_at": _parse_date(x.get("date_added")),
@@ -326,6 +339,7 @@ def discover_candidates(verbose=True):
     DISCOVERY_ISSUES.clear()
     LAST_CG_RANKS.clear()
     LAST_MCAPS.clear()
+    LAST_SUPPLY.clear()
     cg = from_coingecko()
     cmc = from_coinmarketcap()
 
@@ -358,6 +372,15 @@ def discover_candidates(verbose=True):
     for c in cmc:                            # CMC global mcap, by contract
         if c.get("mcap"):
             LAST_MCAPS.setdefault(c["contract"].lower(), c["mcap"])
+        # Supply: CMC fills whatever CoinGecko didn't give (and says uncapped).
+        sup = LAST_SUPPLY.setdefault(c["contract"].lower(),
+                                     {"total": None, "circulating": None, "max": None,
+                                      "uncapped": None, "source": "cmc"})
+        for k, v in (c.get("supply") or {}).items():
+            if k == "uncapped":
+                sup["uncapped"] = v
+            elif sup.get(k) is None and v is not None:
+                sup[k] = v
 
     # --- MEME + STABLECOIN FILTER (step 2, before everything else) ----------
     # Free per coin: one BULK pull each of CoinGecko's meme and stablecoin

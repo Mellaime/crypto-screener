@@ -12,7 +12,8 @@ Endpoints:
                                 Volume/MCap + Volume/Liquidity (4h, 24h, 7d, total),
                                 Liquidity, CoinGecko + CMC rank vs last week,
                                 Holders (total, weekly change, daily bars),
-                                Revenue (DefiLlama: daily bars, MCap/Revenue, TVL)
+                                Revenue (DefiLlama: daily bars, MCap/Revenue, TVL),
+                                Supply (total, circulating %, max; burned + unlock placeholders)
     GET /             -> the dashboard web page (from the frontend/ folder)
 
 Run it (from the backend/ folder, with the venv active):
@@ -285,6 +286,19 @@ def get_coin(contract: str):
             "vol_liq_x": {k: ratio(v, liq, 1) for k, v in volumes.items()},
             "volume_error": live["error"] or tx["error"],
             "revenue": get_revenue(session, coin.contract, coin.chain, mcap),
+            "supply": {
+                "total": coin.total_supply,
+                "circulating": coin.circulating_supply,
+                "circulating_pct": (round(coin.circulating_supply / coin.total_supply * 100, 2)
+                                    if coin.circulating_supply is not None and coin.total_supply else None),
+                "max": coin.max_supply,
+                # No max: "no cap" unless CMC says the supply IS capped (then unknown).
+                "uncapped": coin.max_supply is None and coin.supply_uncapped is not False
+                            and (coin.total_supply is not None or coin.circulating_supply is not None),
+                "burned": None,             # placeholder - no free source yet
+                "upcoming_unlock": None,    # placeholder - needs a paid unlocks API
+                "updated": _iso(coin.supply_updated_at),
+            },
             "holders": {"now": holders_now, "week_ago": holders_7d,
                         "week_change_pct": holders_week_pct, "bars": holder_bars,
                         "missing_reason": holders_missing_reason},

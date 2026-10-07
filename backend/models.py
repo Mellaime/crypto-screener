@@ -56,6 +56,13 @@ class Coin(Base):
     # daily run for active + dropped coins (tracking.py) - this is the
     # price the dashboard shows, never more than ~24h old.
     price_usd = Column(Float)
+    # Global supply (CoinGecko / CMC, from discovery - tracking.py keeps it
+    # fresh). Display only: the detail page's Supply section.
+    total_supply = Column(Float)
+    circulating_supply = Column(Float)
+    max_supply = Column(Float)
+    supply_uncapped = Column(Boolean)       # CMC infinite_supply; None = not said
+    supply_updated_at = Column(DateTime)
     price_updated_at = Column(DateTime)
 
     # Security info (from GoPlus, filter #7) - stored so the dashboard shows it.

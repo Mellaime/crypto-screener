@@ -137,7 +137,7 @@ def _catch_up_categories(coins):
 def run_daily_tracking():
     """Record today's Codex readings + dashboard numbers for active + dropped."""
     from fetch_dexscreener import fetch_pairs_for_candidates, build_token_records
-    from discovery import LAST_MCAPS
+    from discovery import LAST_MCAPS, LAST_SUPPLY
 
     now = utcnow()
     today = date.today()
@@ -149,7 +149,7 @@ def run_daily_tracking():
         coins = (session.query(Coin)
                  .filter(Coin.status.in_(["active", "dropped"])).all())
         stats["coins"] = len(coins)
-        stats["mcap_discovery"] = stats["mcap_scaled"] = 0
+        stats["mcap_discovery"] = stats["mcap_scaled"] = stats["supply"] = 0
         if not coins:
             print("No active or dropped coins - nothing to track.")
             return stats
@@ -213,6 +213,16 @@ def run_daily_tracking():
                 snap.mcap = prev.mcap * snap.price_usd / prev.price_usd
                 stats["mcap_scaled"] += 1
 
+            # Supply (display only): from this run's discovery, when it saw it.
+            sup = LAST_SUPPLY.get(key)
+            if sup and any(sup.get(k) is not None for k in ("total", "circulating", "max")):
+                coin.total_supply = sup.get("total")
+                coin.circulating_supply = sup.get("circulating")
+                coin.max_supply = sup.get("max")
+                coin.supply_uncapped = sup.get("uncapped")
+                coin.supply_updated_at = now
+                stats["supply"] += 1
+
         stats["category_lookups"] = _catch_up_categories(coins)
         session.commit()
     except Exception:
@@ -235,6 +245,7 @@ def run_daily_tracking():
           f"   (moved with price: {stats.get('mcap_scaled', 0)})")
     print(f"  today's snapshots created ....... {stats['snapshots_created']:>5}")
     print(f"  category catch-up (CG calls) .... {stats.get('category_lookups', 0):>5}")
+    print(f"  supply refreshed (CG / CMC) ..... {stats.get('supply', 0):>5}")
     if stats["codex_failed_batches"]:
         print(f"  Codex batches FAILED ............ {stats['codex_failed_batches']:>5}")
     print(line)
