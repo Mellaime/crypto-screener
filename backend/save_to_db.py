@@ -468,6 +468,15 @@ def save_tokens(tokens):
         mark_checked(session, [t for t in picked
                                if id(t) not in skip and id(t) not in saved_ids], "rejected")
 
+        # This run's funnel, for the Coming Up page's "Last run" summary.
+        from models import RunLog
+        from discovery import LAST_COUNTS
+        session.add(RunLog(
+            run_at=utcnow(), discovered=LAST_COUNTS.get("discovery"),
+            passed_age=stats["passed_age"], analyzed=len(picked) - len(retry_next_run),
+            saved=len(saved), rejected=len(picked) - len(retry_next_run) - len(saved),
+            retry=len(retry_next_run), waiting=stats["queue_waiting"]))
+
         # Save everything at once. If anything above had failed, we'd roll back.
         session.commit()
     except Exception:

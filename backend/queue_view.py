@@ -103,6 +103,17 @@ def remember_queue_display(session, tokens, when=None):
         row.last_seen = when
 
 
+def last_run(session):
+    """The latest daily run's funnel (run_log), or None."""
+    from models import RunLog
+    r = session.query(RunLog).order_by(RunLog.run_at.desc()).first()
+    if r is None:
+        return None
+    return {"run_at": r.run_at.strftime("%Y-%m-%dT%H:%M:%SZ"), "discovered": r.discovered,
+            "passed_age": r.passed_age, "analyzed": r.analyzed, "saved": r.saved,
+            "rejected": r.rejected, "retry": r.retry, "waiting": r.waiting}
+
+
 def upcoming(session, limit=QUEUE_DISPLAY_LIMIT, now=None):
     """The next `limit` queued coins, in the order the daily runs pick them,
     as dicts with the 5 display fields (+ position / run)."""

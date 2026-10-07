@@ -334,11 +334,12 @@ def check_coin(contract: str = ""):
 def get_queue():
     """The next 600 coins in the entry queue (the next 2 daily runs), in the
     order they'll be analyzed. Reads stored data only - no API calls."""
-    from queue_view import upcoming, QUEUE_DISPLAY_LIMIT
+    from queue_view import upcoming, last_run, QUEUE_DISPLAY_LIMIT
     session = SessionLocal()
     try:
         rows = upcoming(session)
-        return {"count": len(rows), "limit": QUEUE_DISPLAY_LIMIT, "queue": rows}
+        return {"count": len(rows), "limit": QUEUE_DISPLAY_LIMIT, "queue": rows,
+                "last_run": last_run(session)}
     finally:
         session.close()
 

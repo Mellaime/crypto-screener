@@ -307,6 +307,7 @@
 
   <section class="view" id="view-queue" role="tabpanel" aria-labelledby="tab-queue" hidden>
   <h2 id="queue-title">Coming up · <bdi>طابور</bdi></h2>
+  <div id="lastrun" class="ratiocard" style="margin:6px 0 12px" hidden></div>
   <div class="sub">Coins that passed discovery, meme/stablecoin removal and age, waiting their
     turn for revenue → volume → honeypot → liquidity. 300 are analyzed per daily run, in this order.
     Click a contract to copy it.</div>
@@ -471,8 +472,23 @@
     document.getElementById("queue-title").innerHTML =
       "Coming up · <bdi>طابور</bdi> (" + data.count + ")";
     document.getElementById("count-queue").textContent = "(" + data.count + ")";
+    // "Last run" summary above the table (always, when we have one).
+    const lr = data.last_run, box = document.getElementById("lastrun");
+    if (lr) {
+      const when = new Date(lr.run_at);
+      const day = when.toLocaleDateString(undefined, {month: "short", day: "numeric", year: "numeric"});
+      box.hidden = false;
+      box.innerHTML = `<b>Last run (${esc(day)}):</b> ${fmtInt(lr.analyzed)} coins analyzed —
+        <span style="color:var(--good)">${fmtInt(lr.saved)} saved to active</span>,
+        ${fmtInt(lr.rejected)} rejected${lr.retry ? `, ${fmtInt(lr.retry)} retried next run` : ""}.
+        <div class="note" style="margin:4px 0 0">${fmtInt(lr.discovered)} coins discovered · ${fmtInt(lr.passed_age)} passed the
+        meme / age checks and entered the queue · ${fmtInt(lr.waiting)} left waiting.</div>`;
+    } else {
+      box.hidden = true;
+    }
     if (!data.queue.length) {
-      body.innerHTML = '<tr><td colspan="5" class="empty">Nothing waiting in the queue.</td></tr>';
+      body.innerHTML = `<tr><td colspan="5" class="empty">Queue is empty — all discovered coins have been analyzed.
+        New coins appear here when they're waiting their turn.</td></tr>`;
       return;
     }
     let html = "", group = null;

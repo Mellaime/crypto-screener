@@ -274,3 +274,22 @@ class CoinCheckCache(Base):
     contract = Column(String, nullable=False, unique=True, index=True)   # lowercased
     day = Column(Date, nullable=False)                                   # UTC day checked
     data = Column(String, nullable=False)                                # JSON
+
+
+class RunLog(Base):
+    """
+    One row per daily filter run: its funnel numbers, for the dashboard's
+    "Last run" summary on the Coming Up page. Written by save_to_db at the
+    end of each run; display only.
+    """
+    __tablename__ = "run_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_at = Column(DateTime, nullable=False)
+    discovered = Column(Integer)       # unique coins after discovery
+    passed_age = Column(Integer)       # arrived in the entry queue
+    analyzed = Column(Integer)         # went through steps 4-7 this run
+    saved = Column(Integer)            # passed all 7 steps -> active
+    rejected = Column(Integer)         # failed one of steps 4-7
+    retry = Column(Integer)            # CoinGecko hiccup -> next run
+    waiting = Column(Integer)          # still in the queue after the run
