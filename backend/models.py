@@ -260,3 +260,17 @@ class RevenueCache(Base):
     contract = Column(String, nullable=False, index=True)   # stored lowercased
     day = Column(Date, nullable=False)                       # UTC day it was fetched
     data = Column(String, nullable=False)                    # JSON
+
+
+class CoinCheckCache(Base):
+    """
+    "Check a Coin" page: the finished analysis of a manually checked contract
+    (coin_check.py) as JSON, cached for one UTC day. The checked coin itself
+    is never added to coins / snapshots / the queue.
+    """
+    __tablename__ = "coin_check_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    contract = Column(String, nullable=False, unique=True, index=True)   # lowercased
+    day = Column(Date, nullable=False)                                   # UTC day checked
+    data = Column(String, nullable=False)                                # JSON

@@ -90,6 +90,7 @@ def fetch(contract, mcap):
             "bars": [{"date": d.isoformat(), "revenue": v} for d, v in days],
             "revenue_24h": fees.get("total24h"),
             "revenue_30d": rev_30d,
+            "revenue_all_time": fees.get("totalAllTime"),
             "annual_revenue": annual,
             "mcap_to_revenue": round(mcap / annual, 2) if mcap and annual else None,
         }

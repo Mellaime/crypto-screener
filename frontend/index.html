@@ -185,6 +185,29 @@
   .revrow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
   @media (max-width: 560px) { .revrow { grid-template-columns: 1fr; } }
 
+  /* Check a Coin page */
+  .checkform { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 14px; }
+  .checkform input { flex: 1 1 320px; min-width: 0; min-height: 44px; padding: 10px 12px; font: inherit; font-size: 14px;
+                     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                     background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 10px; }
+  .checkform input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .checkform button { min-height: 44px; padding: 10px 22px; font: inherit; font-size: 14px; font-weight: 700; cursor: pointer;
+                      background: var(--accent); color: #0d1117; border: none; border-radius: 10px; }
+  .checkform button:disabled { opacity: 0.6; cursor: wait; }
+  .loading { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; padding: 14px 0; }
+  .spinner { width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--accent);
+             border-radius: 50%; animation: spin 0.8s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .cverdict { border-radius: 10px; padding: 12px 14px; margin: 4px 0 12px; font-weight: 700; font-size: 17px; border: 1px solid; }
+  .cverdict small { display: block; font-weight: 400; font-size: 13px; margin-top: 3px; color: var(--text); }
+  .cverdict.pass { background: rgba(63,185,80,0.12); border-color: rgba(63,185,80,0.45); color: var(--good); }
+  .cverdict.fail { background: rgba(248,81,73,0.10); border-color: rgba(248,81,73,0.45); color: var(--low); }
+  .cverdict.unknown { background: #21262d; border-color: var(--border); color: var(--muted); }
+  .steps .mark { display: inline-block; width: 20px; font-weight: 700; }
+  .steps .mark.pass { color: var(--good); } .steps .mark.fail { color: var(--low); } .steps .mark.unknown { color: var(--muted); }
+  .opinion { margin-top: 8px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--bg);
+             border-radius: 0 8px 8px 0; font-size: 14px; }
+
   /* Supply section */
   .supply { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .supply li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 11px 12px;
@@ -227,6 +250,8 @@
       Dropped Coins <span class="count" id="count-dropped"></span></button>
     <button class="tab" role="tab" id="tab-queue" aria-controls="view-queue" data-view="queue">
       Coming Up · <bdi>طابور</bdi> <span class="count" id="count-queue"></span></button>
+    <button class="tab" role="tab" id="tab-check" aria-controls="view-check" data-view="check">
+      Check a Coin</button>
   </nav>
 
   <section class="view" id="view-active" role="tabpanel" aria-labelledby="tab-active">
@@ -299,6 +324,18 @@
       <tbody id="queue-body"></tbody>
     </table>
   </div>
+  </section>
+
+  <section class="view" id="view-check" role="tabpanel" aria-labelledby="tab-check" hidden>
+  <h2>Check a coin</h2>
+  <div class="sub">Paste any coin's contract address. The chain is detected automatically, and the coin is run
+    through the same 7-step filter the bot uses. Nothing is saved to the lists.</div>
+  <form class="checkform" id="checkform" autocomplete="off">
+    <input id="checkinput" type="text" spellcheck="false" placeholder="Contract address, e.g. 0x… or a Solana address"
+           aria-label="Contract address" required>
+    <button id="checkbtn" type="submit">Check</button>
+  </form>
+  <div id="checkresult"></div>
   </section>
 
   <section class="view" id="view-coin" hidden>
@@ -468,8 +505,17 @@
   // URL (#dropped / #queue) so a reload or a shared link opens the same view.
   // The 30-second refresh keeps updating all three, so switching is instant
   // and always current.
-  const VIEWS = ["active", "dropped", "queue"];
+  const VIEWS = ["active", "dropped", "queue", "check"];
   function showView(name) {
+    // "#check/<contract>" -> the Check page, running that contract
+    if (name.startsWith("check/")) {
+      showView("check");
+      const addr = decodeURIComponent(name.slice(6));
+      history.replaceState(null, "", location.pathname + location.search + "#" + name);   // keep the shareable link
+      document.getElementById("checkinput").value = addr;
+      runCheck(addr);
+      return;
+    }
     // "#coin/<contract>" -> that coin's detail page
     if (name.startsWith("coin/")) {
       for (const v of VIEWS) document.getElementById("view-" + v).hidden = true;
@@ -564,7 +610,7 @@
   // Transactions chart: one bar per COMPLETE day. Height = total
   // transactions; split green (buys, bottom) / red (sells, top) by the
   // day's buy:sell count ratio. Hover or tap a bar for all 6 values.
-  function txChart(c) {
+  function txChart(c, pid = "tx") {
     const bars = c.tx_bars || [];
     const head = `<h3>Transactions</h3>
       <div class="note">Last ${bars.length} complete day${bars.length === 1 ? "" : "s"}
@@ -601,7 +647,7 @@
       <td class="num">${fmtUsd(b.volume)}</td><td class="num">${fmtInt(b.transactions)}</td></tr>`).join("");
     return `<div class="chartcard">${head}
       <div class="legend"><span><i style="background:var(--buy)"></i>Buys</span><span><i style="background:var(--sell)"></i>Sells</span></div>
-      <div class="plot" id="txplot">${grid}<div class="bars">${cols}</div><div class="tip" id="txtip"></div></div>
+      <div class="plot" id="${pid}plot">${grid}<div class="bars">${cols}</div><div class="tip" id="${pid}tip"></div></div>
       <div class="xlabels">${xl}</div>
       <details class="tbl"><summary>Show as table</summary><div class="card"><table>
         <thead><tr><th>Day</th><th class="num">Buys</th><th class="num">Sells</th><th class="num">Buy vol</th>
@@ -611,10 +657,10 @@
     </div>`;
   }
 
-  function wireChart(bars) {
-    const plot = document.getElementById("txplot");
+  function wireChart(bars, pid = "tx") {
+    const plot = document.getElementById(pid + "plot");
     if (!plot) return;
-    const tip = document.getElementById("txtip");
+    const tip = document.getElementById(pid + "tip");
     pinned = null;
     function show(el) {
       const b = bars[+el.dataset.i];
@@ -654,6 +700,98 @@
   }
   let pinned = null, unpinTip = () => {};
   document.addEventListener("click", () => unpinTip());   // tap elsewhere closes the tooltip
+
+  // ---- Check a Coin --------------------------------------------------------
+  let checkReq = 0;
+  document.getElementById("checkform").addEventListener("submit", e => {
+    e.preventDefault();
+    const addr = document.getElementById("checkinput").value.trim();
+    if (!addr) return;
+    history.replaceState(null, "", location.pathname + location.search + "#check/" + encodeURIComponent(addr));
+    runCheck(addr);
+  });
+
+  async function runCheck(addr) {
+    const box = document.getElementById("checkresult"), btn = document.getElementById("checkbtn");
+    const req = ++checkReq;
+    btn.disabled = true;
+    box.innerHTML = `<div class="loading"><span class="spinner"></span>
+      Checking… this can take 15–30 seconds (CoinGecko, CoinMarketCap, DexScreener, Codex, DefiLlama and GoPlus).</div>`;
+    try {
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 120000);
+      const res = await fetch("/api/check?contract=" + encodeURIComponent(addr), {signal: ctl.signal});
+      clearTimeout(timer);
+      if (req !== checkReq) return;
+      if (!res.ok) throw new Error("server returned " + res.status);
+      renderCheck(await res.json());
+    } catch (e) {
+      if (req === checkReq) box.innerHTML = `<div class="cverdict unknown">Couldn't run the check
+        <small>${esc(e.name === "AbortError" ? "it took too long - try again in a minute" : e.message)}</small></div>`;
+    } finally {
+      if (req === checkReq) btn.disabled = false;
+    }
+  }
+
+  function renderCheck(r) {
+    const box = document.getElementById("checkresult");
+    if (!r.found) {
+      box.innerHTML = `<div class="cverdict unknown">${esc(r.message || "Coin not found — check the contract address.")}</div>`;
+      return;
+    }
+    const v = r.verdict || {};
+    const verdict = v.passes === true
+      ? `<div class="cverdict pass">✅ PASSES the filter<small>It clears all 7 steps the bot uses.</small></div>`
+      : v.passes === false
+        ? `<div class="cverdict fail">❌ Does NOT pass<small>Reason: ${esc(v.reason)}</small></div>`
+        : `<div class="cverdict unknown">? Not finished<small>${esc(v.reason || "")}</small></div>`;
+    const rv = r.revenue || {}, lq = r.liquidity || {}, vol = r.volume || {}, age = r.age || {};
+    const revTotal = rv.status === "ok"
+      ? (rv.all_time != null ? fmtMoney(rv.all_time) + " total" : "—")
+      : "unknown";
+    const arrow = t => t === "rising" ? `<span class="dir up">↗ rising</span>` : t === "falling" ? `<span class="dir down">↘ falling</span>`
+                     : t === "stable" ? `<span class="dir flat">→ stable</span>` : `<span class="dir flat">—</span>`;
+    const volTrend = vol.pct == null ? null : vol.pct > 0 ? "rising" : "falling";
+    const tile = (k, val, sub = "") => `<div class="ratio"><div class="k">${k}</div><div class="v">${val}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`;
+    const steps = (r.steps || []).map(s0 => {
+      const mk = s0.status === "pass" ? "✓" : s0.status === "fail" ? "✗" : "?";
+      return `<li><span class="lbl"><span class="mark ${s0.status}" aria-hidden="true">${mk}</span>${esc(s0.label)}</span>
+        <span class="val" style="font-size:13px;font-weight:600;white-space:normal">${esc(s0.detail || "")}</span></li>`;
+    }).join("");
+    box.innerHTML = `
+      ${verdict}
+      <div class="coinhead" style="margin-top:4px">
+        <h2>${esc(r.name || "Unknown")} ${r.symbol ? `<span class="sym">${esc(r.symbol)}</span>` : ""}</h2>
+        <span class="chain">${esc(r.chain)}</span> <span class="note" style="font-size:12px">chain detected via ${esc(r.chain_source)}${r.cached ? " · result from earlier today" : ""}</span>
+      </div>
+      <div class="facts">
+        ${fact("Price", fmtPrice(r.price))}
+        ${fact("Market cap", fmtMoney(r.mcap))}
+        ${fact("Narrative", r.narrative && r.narrative !== "unknown" ? `<span class="tag">${esc(r.narrative)}</span>` : "unknown")}
+        ${fact("Revenue", esc(revTotal))}
+        ${fact("CoinGecko rank", r.ranks && r.ranks.coingecko ? "#" + r.ranks.coingecko.toLocaleString() : "—")}
+        ${fact("CMC rank", r.ranks && r.ranks.cmc ? "#" + r.ranks.cmc.toLocaleString() : "—")}
+        <div class="fact wide"><div class="k">Contract</div>
+          <div class="v mono" data-addr="${esc(r.contract)}" title="Click to copy">${esc(r.contract)}</div></div>
+      </div>
+      <div class="ratiocard"><h3>Analysis</h3><div class="note">The numbers the filter looks at.</div>
+        <div class="ratios three">
+          ${tile("Market cap", fmtMoney(r.mcap), esc(r.mcap_source || ""))}
+          ${tile("Age", age.days == null ? "—" : age.days.toLocaleString() + " days", age.source ? "via " + esc(age.source) : "")}
+          ${tile("Volume trend (5 days)", vol.pct == null ? "—" : (vol.pct > 0 ? "+" : "") + vol.pct.toFixed(0) + "%", arrow(volTrend))}
+          ${tile("Liquidity", fmtMoney(lq.now), lq.pct == null ? "trend unknown" : arrow(lq.trend) + ` ${lq.pct > 0 ? "+" : ""}${lq.pct.toFixed(1)}% since ${esc(shortDate(lq.since))}`)}
+          ${tile("Revenue", rv.status === "ok" ? fmtMoney(rv.d30) : "unknown",
+                 rv.status === "ok" ? "last 30 days" + (rv.all_time != null ? " · " + fmtMoney(rv.all_time) + " total" : "") : esc(rv.reason || ""))}
+          ${tile("Honeypot", r.honeypot === "safe" ? "✓ sellable" : r.honeypot === "unsafe" ? "✗ not sellable" : "unknown")}
+        </div></div>
+      <div style="margin-top:12px">${txChart(r, "ck")}</div>
+      <div class="ratiocard"><h3>Filter steps</h3>
+        <div class="note">Same order as the bot; the first ✗ is the reason above.</div>
+        <ul class="supply steps">${steps}</ul></div>
+      <div class="ratiocard"><h3>Summary</h3>
+        <div style="font-size:14px;line-height:1.55">${esc(r.summary || "")}</div>
+        <div class="opinion">${esc(r.opinion || "")}</div></div>`;
+    wireChart(r.tx_bars || [], "ck");
+  }
 
   // Volume ratio section: 4h · 24h · 7d · Total side by side.
   const WINDOWS = [["4h", "4h"], ["24h", "24h"], ["7d", "7d"], ["total", "Total"]];

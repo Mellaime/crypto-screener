@@ -8,6 +8,7 @@ Endpoints:
     GET /api/coins    -> ACTIVE coins, ranked by score (highest first)
     GET /api/dropped  -> dropped coins with date + reason
     GET /api/queue    -> the next 600 coins waiting in the entry queue
+    GET /api/check?contract=... -> "Check a Coin": the 7-step filter on any contract
     GET /api/coin/<contract> -> one coin: header info, 15-day transaction bars,
                                 Volume/MCap + Volume/Liquidity (4h, 24h, 7d, total),
                                 Liquidity, CoinGecko + CMC rank vs last week,
@@ -312,6 +313,19 @@ def get_coin(contract: str):
                                         if this_week is not None and last_week is not None else None),
                              "last_week_mcap_approx": snap_7d is None},
         }
+    finally:
+        session.close()
+
+
+@app.get("/api/check")
+def check_coin(contract: str = ""):
+    """'Check a Coin': run the 7-step filter + analysis on any contract, on
+    demand (chain auto-detected). Read-only for the coin lists; the result is
+    cached per contract per UTC day."""
+    from coin_check import get_check
+    session = SessionLocal()
+    try:
+        return get_check(session, contract)
     finally:
         session.close()
 
