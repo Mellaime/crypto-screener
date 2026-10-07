@@ -553,7 +553,8 @@
       ${rankCard(c)}
       ${holdersCard(c)}
       ${revenueCard(c)}
-      ${supplyCard(c)}`;
+      ${supplyCard(c)}
+      ${smartMoneyCard()}`;
     wireHolders((c.holders || {}).bars || []);
     wireBars("rplot", "rtip", ((c.revenue || {}).bars) || [],
              b => `<b>${esc(longDate(b.date))}</b><br>Revenue ${fmtUsd(b.revenue)}`);
@@ -895,6 +896,18 @@
         <li><span class="lbl">Max supply<small>the absolute cap${minting ? " · " + fmtSupply(sp.max - sp.total) + " above total supply" : ""}</small></span>${max}</li>
         <li class="soon"><span class="lbl">Burned<small>no free source yet</small></span><span class="val">—</span></li>
         <li class="soon"><span class="lbl">Upcoming unlock<small>needs an unlock-schedule source</small></span><span class="val">—</span></li>
+      </ul></div>`;
+  }
+  // Smart Money: placeholder only (no data source yet) - same list style as
+  // the Supply section; no data is fetched for it.
+  function smartMoneyCard() {
+    return `<div class="ratiocard"><h3>Smart Money</h3>
+      <div class="note">Coming soon - we haven't found a free data source yet.</div>
+      <ul class="supply">
+        <li class="soon"><span class="lbl">Whale Activity<small>large whale buys and sells</small></span>
+            <span class="val">Coming soon</span></li>
+        <li class="soon"><span class="lbl">Smart Money<small>wallets that bought several coins from our list</small></span>
+            <span class="val">Coming soon</span></li>
       </ul></div>`;
   }
   function fmtMult(v) {
