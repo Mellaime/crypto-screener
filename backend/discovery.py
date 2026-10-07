@@ -388,22 +388,27 @@ def discover_candidates(verbose=True):
     # memes and stablecoins so they never reach DexScreener enrichment or the
     # age/revenue/... chain.
     from meme_filter import (fetch_cg_meme_keys, fetch_cg_stablecoin_keys,
-                             fetch_cg_tokenized_keys, classify_excluded)
+                             fetch_cg_tokenized_keys, fetch_cg_wrapped_keys,
+                             classify_excluded)
     meme_keys, _ = fetch_cg_meme_keys()          # reuse the cached id->platforms map
     stable_keys, _ = fetch_cg_stablecoin_keys()
     tokenized_keys, _ = fetch_cg_tokenized_keys()
+    wrapped_keys, _ = fetch_cg_wrapped_keys()
     from meme_filter import looks_like_stablecoin
     kept, meme_dropped, stable_dropped, tokenized_dropped = [], 0, 0, 0
-    price_stable_dropped = 0
+    price_stable_dropped = wrapped_dropped = 0
     for c in merged:
         kind = classify_excluded(c["contract"], c["chain"], meme_keys, stable_keys,
-                                 cmc_tags=c.get("tags"), tokenized_keys=tokenized_keys)
+                                 cmc_tags=c.get("tags"), tokenized_keys=tokenized_keys,
+                                 wrapped_keys=wrapped_keys, name=c.get("name"))
         if kind == "meme":
             meme_dropped += 1
         elif kind == "stablecoin":
             stable_dropped += 1
         elif kind == "tokenized":
             tokenized_dropped += 1
+        elif kind == "wrapped":
+            wrapped_dropped += 1
         elif looks_like_stablecoin(c):
             stable_dropped += 1              # $1 peg that doesn't move
             price_stable_dropped += 1
@@ -419,6 +424,7 @@ def discover_candidates(verbose=True):
                         "stable_dropped": stable_dropped,
                         "tokenized_dropped": tokenized_dropped,
                         "price_stable_dropped": price_stable_dropped,
+                        "wrapped_dropped": wrapped_dropped,
                         "after_excl": after_excl})
 
     if verbose:
@@ -434,6 +440,7 @@ def discover_candidates(verbose=True):
         print(f"  STABLECOIN dropped ....... {stable_dropped:>5}"
               f"   (of which by $1 price peg: {price_stable_dropped})")
         print(f"  TOKENIZED stock/fund drop  {tokenized_dropped:>5}")
+        print(f"  WRAPPED / staked dropped . {wrapped_dropped:>5}")
         print(f"  AFTER meme+stable filter . {after_excl:>5}")
         failed = DISCOVERY_ISSUES.get("coingecko_failed_pages") or []
         print(f"  CoinGecko pages skipped (failed after retries): "

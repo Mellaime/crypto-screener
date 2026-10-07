@@ -167,7 +167,8 @@ def run_check(contract):
     from discovery import MIN_MCAP, MAX_MCAP
     from fetch_dexscreener import build_token_records
     from meme_filter import (classify_excluded, looks_like_stablecoin, CG_MEME_CATEGORIES,
-                             CG_STABLECOIN_CATEGORIES, CG_TOKENIZED_CATEGORIES)
+                             CG_STABLECOIN_CATEGORIES, CG_TOKENIZED_CATEGORIES,
+                             CG_WRAPPED_CATEGORIES, WRAPPED_KEEP_CG_IDS)
     from age_check import decide_age, MIN_AGE_DAYS
     from revenue_check import check_revenue
     from volume_check import check_volume_rising, VOLUME_MIN_RISE
@@ -223,17 +224,21 @@ def run_check(contract):
         return key if cats & {names.get(i) for i in ids if names.get(i)} else set()
     kind = classify_excluded(contract, chain, in_cats(CG_MEME_CATEGORIES),
                              in_cats(CG_STABLECOIN_CATEGORIES), cmc_tags,
-                             tokenized_keys=in_cats(CG_TOKENIZED_CATEGORIES))
+                             tokenized_keys=in_cats(CG_TOKENIZED_CATEGORIES),
+                             wrapped_keys=(set() if cg.get("id") in WRAPPED_KEEP_CG_IDS
+                                           else in_cats(CG_WRAPPED_CATEGORIES)),
+                             name=name)
     if kind is None and looks_like_stablecoin({
             "price": price, "chg_24h": md.get("price_change_percentage_24h", usd.get("percent_change_24h")),
             "chg_7d": usd.get("percent_change_7d"),
             "high_24h": (md.get("high_24h") or {}).get("usd"), "low_24h": (md.get("low_24h") or {}).get("usd")}):
         kind = "stablecoin"
-    words = {"meme": "a meme coin", "stablecoin": "a stablecoin", "tokenized": "a tokenized stock / fund"}
+    words = {"meme": "a meme coin", "stablecoin": "a stablecoin", "tokenized": "a tokenized stock / fund",
+             "wrapped": "a wrapped / staked / receipt token (it tracks another asset)"}
     if kind:
-        step("type", "Not a meme / stablecoin / tokenized stock", "fail", words[kind], f"It's {words[kind]}")
+        step("type", "Not a meme / stablecoin / tokenized / wrapped", "fail", words[kind], f"It's {words[kind]}")
     else:
-        step("type", "Not a meme / stablecoin / tokenized stock", "pass", "none of these")
+        step("type", "Not a meme / stablecoin / tokenized / wrapped", "pass", "none of these")
 
     # 3. Age
     listed = cmc_info.get("date_added")

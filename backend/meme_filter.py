@@ -14,6 +14,14 @@ don't want:
   * tokenized treasury / money-market / credit FUNDS (OUSG, JTRSY, Spiko
     T-Bills, BlackRock / Fidelity liquidity funds, CLO funds...) - fixed-yield
     real-world funds, not crypto growth
+  * WRAPPED / STAKED / RECEIPT tokens (WAVAX, Wrapped Fantom, stSOL, eETH,
+    ezETH, Haedal staked SUI, Venus vTokens, vault / fund receipt tokens...) -
+    they just track another asset, they aren't independent growth coins.
+    Signals: CG_WRAPPED_CATEGORIES, the exact CMC tags in WRAPPED_TAGS, and a
+    narrow name rule ("Wrapped X", "Venus <asset>") for wrappers the lists
+    miss. The PROTOCOL tokens behind them (Lido, Rocket Pool, Jito, EigenLayer,
+    Renzo REZ, ...) are NOT caught: the broad "Liquid Staking" / "Restaking" /
+    governance-token labels are deliberately not used.
 
 A coin is DROPPED if it is a meme OR a stablecoin OR a tokenized stock. Each
 kind uses the same two signals (checked by CONTRACT + CHAIN):
@@ -46,13 +54,15 @@ Public API:
   fetch_cg_tokenized_keys()  -> (set of (chain, contract_lower), id_count)
   is_meme(contract, chain, cg_meme_keys, cmc_tags=None)          -> dict
   is_stablecoin(contract, chain, cg_stable_keys, cmc_tags=None)  -> dict
+  fetch_cg_wrapped_keys()    -> (set of (chain, contract_lower), id_count)
   classify_excluded(contract, chain, meme_keys, stable_keys, cmc_tags=None,
-                    tokenized_keys=None)
-      -> "meme" | "stablecoin" | "tokenized" | None
+                    tokenized_keys=None, wrapped_keys=None, name=None)
+      -> "meme" | "stablecoin" | "tokenized" | "wrapped" | None
 Never raises.
 """
 
 import os
+import re
 import time
 
 from dotenv import load_dotenv
@@ -87,6 +97,22 @@ CG_TOKENIZED_CATEGORIES = [
     "tokenized-money-market-fund-mmfs", "tokenized-credit",
 ]
 # CMC tag slugs for the same thing (matched EXACTLY, not as substrings).
+# Wrapped / staked / receipt tokens. Only categories whose members are the
+# wrapper tokens themselves (checked on real data) - not the broad "Liquid
+# Staking", "Restaking" or "...Governance Tokens" ones, which also list real
+# protocols (RPL, JTO, SSV, EIGEN, REZ, PUFFER, ...).
+CG_WRAPPED_CATEGORIES = [
+    "wrapped-tokens", "liquid-staking-tokens", "liquid-restaking-tokens",
+    "yield-bearing-tokens", "midas-liquid-yield-tokens",
+]
+# Real projects those categories list anyway -> never treated as wrappers.
+WRAPPED_KEEP_CG_IDS = {"lista"}               # Lista DAO (in "Liquid Staking Tokens")
+WRAPPED_TAGS = {"wrapped-tokens", "eth-staking"}   # CMC tag slugs, EXACT match
+# Wrappers the lists miss (CoinGecko leaves e.g. Wrapped Fantom out of its
+# own "Wrapped-Tokens" list). Checked on the full CMC list in our range: only
+# wrappers / Venus receipt tokens match - "Venus" itself (XVS) does not.
+WRAPPED_NAME_RE = re.compile(r"^(wrapped\s.+|venus [a-z0-9.]+)$", re.IGNORECASE)
+
 TOKENIZED_TAGS = {
     "tokenized-stock", "tokenized-etfs", "bstocks", "xstocks-ecosystem",
     "ondo-stocks-ecosystem", "robinhood-stock", "prestocks-ecosystem",
@@ -187,6 +213,31 @@ def fetch_cg_tokenized_keys(id_platforms=None, min_mcap=MIN_MCAP, max_pages=8):
                                    min_mcap, max_pages)
 
 
+def fetch_cg_wrapped_keys(id_platforms=None, min_mcap=MIN_MCAP, max_pages=8):
+    """BULK set of CoinGecko wrapped / staked / receipt (chain, contract) keys,
+    minus the WRAPPED_KEEP_CG_IDS projects."""
+    if id_platforms is None:
+        id_platforms = _cg_id_to_platforms()
+    keys, n = _fetch_cg_category_keys(CG_WRAPPED_CATEGORIES, id_platforms, min_mcap, max_pages)
+    for cid in WRAPPED_KEEP_CG_IDS:
+        for platform, addr in (id_platforms.get(cid) or {}).items():
+            keys.discard((CG_PLATFORM_TO_CHAIN.get(platform, platform), addr.lower()))
+    return keys, n
+
+
+def is_wrapped(contract, chain, cg_wrapped_keys, cmc_tags=None, name=None):
+    """Wrapped / staked / receipt check. Returns {"is_wrapped", "matched"}."""
+    signals = []
+    if ((chain or "").lower(), (contract or "").lower()) in (cg_wrapped_keys or set()):
+        signals.append("CoinGecko wrapped / staked category")
+    hits = sorted(set(cmc_tags or []) & WRAPPED_TAGS)
+    if hits:
+        signals.append("CMC tag '%s'" % hits[0])
+    if name and WRAPPED_NAME_RE.match(name.strip()):
+        signals.append("name '%s'" % name.strip())
+    return {"is_wrapped": bool(signals), "matched": "; ".join(signals) if signals else None}
+
+
 def _check(kind_label, keywords, contract, chain, cg_keys, cmc_tags):
     """Shared category + tag check. Pure (no network I/O)."""
     signals = {}
@@ -258,14 +309,16 @@ def looks_like_stablecoin(c):
 
 
 def classify_excluded(contract, chain, meme_keys, stable_keys, cmc_tags=None,
-                      tokenized_keys=None):
-    """'meme', 'stablecoin', 'tokenized', or None (keep). Memes first."""
+                      tokenized_keys=None, wrapped_keys=None, name=None):
+    """'meme', 'stablecoin', 'tokenized', 'wrapped', or None (keep). Memes first."""
     if is_meme(contract, chain, meme_keys, cmc_tags)["is_meme"]:
         return "meme"
     if is_stablecoin(contract, chain, stable_keys, cmc_tags)["is_stablecoin"]:
         return "stablecoin"
     if is_tokenized(contract, chain, tokenized_keys, cmc_tags)["is_tokenized"]:
         return "tokenized"
+    if is_wrapped(contract, chain, wrapped_keys, cmc_tags, name)["is_wrapped"]:
+        return "wrapped"
     return None
 
 
