@@ -1,24 +1,26 @@
 """
 entry_zones_test.py
 -------------------
-READ-ONLY experiment: "Entry Zones" on 10 real active coins, using only the
-daily prices already stored in daily_snapshots.price_usd. No API calls, and
-nothing is written to the database or changed in the site / filter /
+READ-ONLY experiment: "Entry Zones" on 10 real active coins. The coins come
+from our database (active list); their DAILY PRICES come from Codex getBars
+(resolution 1D, the daily close) - Codex already has 15+ days of history,
+while our own snapshots only start at the Oct 5 wipe. One Codex request per
+coin. Nothing is written to the database or changed in the site / filter /
 drop_logic.
 
-Run (from the backend/ folder, with backend/.env present so DATABASE_URL points
-at the real Supabase database):
+Run (from the backend/ folder, with backend/.env present so DATABASE_URL and
+CODEX_API_KEY are set):
     python entry_zones_test.py
 Output: backend/entry_zones_live_test.xlsx
 
-Per coin, per day (window = the last RANGE_DAYS stored days, today included, so
+Per coin, per day (window = the last RANGE_DAYS price days, today included, so
 Position always lands between 0% and 100%):
     Range Low / High  = lowest / highest price in the window
     Position %        = (price - low) / (high - low) * 100   (0 = support)
     From Peak %       = (highest price so far - price) / highest price * 100
     3-Day Move %      = (price - price 3 days earlier) / price 3 days earlier * 100
 Zone (first rule that matches):
-    < 4 days of data                       -> TOO NEW
+    < 4 days of price history              -> TOO NEW
     pos <= 33 and |3d| < 15                -> GOOD ENTRY
     pos <= 33 and 3d < -15                 -> WAIT - falling
     from_peak < 10 and 3d > 20             -> TOO LATE
@@ -26,18 +28,31 @@ Zone (first rule that matches):
     otherwise                              -> MID
 """
 
-from datetime import timedelta
+import os
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from sqlalchemy import func
-
 from database import SessionLocal
-from models import Coin, DailySnapshot
+from models import Coin
+from liquidity_check import CHAIN_TO_NETWORK
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
+CODEX_KEY = os.getenv("CODEX_API_KEY")
+CODEX_URL = "https://graph.codex.io/graphql"
+BARS_QUERY = """
+query ($symbol: String!, $from: Int!, $to: Int!) {
+  getBars(symbol: $symbol, from: $from, to: $to, resolution: "1D",
+          removeLeadingNullValues: true) { t c }
+}"""
 
 N_COINS = 10
-MAX_DAYS = 15          # newest N stored price days per coin
+MAX_DAYS = 15          # newest N daily prices per coin (Codex, today included)
 MIN_DAYS = 10          # a coin needs at least this many price days to qualify
 RANGE_DAYS = 14        # rolling range window
 MIN_AGE_DAYS = 4
@@ -46,7 +61,7 @@ OUT_FILE = Path(__file__).resolve().parent / "entry_zones_live_test.xlsx"
 
 # zone key -> (label, fill colour, font colour, meaning)
 ZONES = {
-    "new":   ("— TOO NEW", "D9D9D9", "000000", "Less than 4 days of stored prices - not enough history to judge."),
+    "new":   ("— TOO NEW", "D9D9D9", "000000", "Less than 4 days of price history - not enough to judge."),
     "good":  ("GOOD ENTRY", "63BE7B", "000000", "Near the bottom of its range (Position <= 33%) and not moving hard (|3-day| < 15%)."),
     "fall":  ("WAIT — falling", "F4B183", "000000", "Near the bottom, but falling fast (3-day move < -15%) - wait for it to settle."),
     "late":  ("TOO LATE — near peak + pumping", "E06666", "FFFFFF", "Within 10% of its peak and up more than 20% in 3 days."),
@@ -55,28 +70,42 @@ ZONES = {
 }
 
 
-def pick_coins(session):
-    """Active coins with >= MIN_DAYS daily prices, most price-days first."""
-    rows = (session.query(Coin.id, Coin.name, Coin.chain, func.count(func.distinct(DailySnapshot.date)))
-            .join(DailySnapshot, DailySnapshot.coin_id == Coin.id)
-            .filter(Coin.status == "active", DailySnapshot.price_usd.isnot(None))
-            .group_by(Coin.id, Coin.name, Coin.chain)
-            .having(func.count(func.distinct(DailySnapshot.date)) >= MIN_DAYS)
-            .order_by(func.count(func.distinct(DailySnapshot.date)).desc(), Coin.id)
-            .limit(N_COINS).all())
-    return rows
-
-
-def load_prices(session, coin_id):
-    """[(date, price)] oldest first, newest MAX_DAYS days; one price per day
-    (the latest stored row of that day)."""
+def codex_prices(contract, chain):
+    """[(date, close)] oldest first: the newest MAX_DAYS daily closes from
+    Codex getBars (1D), today's (still-running) bar included. [] if Codex
+    doesn't cover the chain or has nothing."""
+    net = CHAIN_TO_NETWORK.get((chain or "").lower())
+    if not net or not CODEX_KEY:
+        return []
+    now = int(time.time())
+    try:
+        body = requests.post(CODEX_URL, json={"query": BARS_QUERY, "variables": {
+            "symbol": f"{contract}:{net}", "from": now - (MAX_DAYS + 3) * 86400, "to": now}},
+            headers={"Authorization": CODEX_KEY}, timeout=30).json()
+    except (requests.exceptions.RequestException, ValueError):
+        return []
+    bars = ((body or {}).get("data") or {}).get("getBars") or {}
     by_day = {}
-    for s in (session.query(DailySnapshot)
-              .filter(DailySnapshot.coin_id == coin_id, DailySnapshot.price_usd.isnot(None))
-              .order_by(DailySnapshot.date, DailySnapshot.id)):
-        by_day[s.date] = s.price_usd
+    for t, c in zip(bars.get("t") or [], bars.get("c") or []):
+        if c is not None and float(c) > 0:
+            by_day[datetime.fromtimestamp(t, tz=timezone.utc).date()] = float(c)
     days = sorted(by_day)[-MAX_DAYS:]
     return [(d, by_day[d]) for d in days]
+
+
+def pick_coins(session):
+    """The first N_COINS active coins (same order as before: by id) that have
+    >= MIN_DAYS daily prices on Codex. Returns [((id, name, chain), prices)]."""
+    picked, tried = [], 0
+    for coin in session.query(Coin).filter(Coin.status == "active").order_by(Coin.id):
+        if len(picked) == N_COINS:
+            break
+        tried += 1
+        prices = codex_prices(coin.contract, coin.chain)
+        if len(prices) >= MIN_DAYS:
+            picked.append(((coin.id, coin.name, coin.chain), prices))
+    print(f"(checked {tried} active coins on Codex to find {len(picked)} with >= {MIN_DAYS} days)")
+    return picked
 
 
 def pct(a, b):
@@ -193,10 +222,11 @@ def build(results):
     n = len(ZONES) + 3
     notes = [
         "Rules are checked top to bottom; the first one that matches wins.",
-        f"Range = lowest / highest price of the last {RANGE_DAYS} stored days (today included).",
+        f"Range = lowest / highest price of the last {RANGE_DAYS} days (today included).",
         "Position % = (price - low) / (high - low); 0% = bottom of the range, 100% = top.",
         "From Peak % = distance below the highest price in the sheet. 3-Day Move % = vs the price 3 days earlier.",
-        "Age = number of stored price days up to that date (not the coin's real age). Days with no stored price are skipped.",
+        "Prices = Codex daily close (getBars, 1D); today's value is the latest price so far.",
+        "Age = number of price days up to that date in this sheet (not the coin's real age). Days with no price are skipped.",
         "Experiment only - on-chain price history, not financial advice.",
     ]
     for i, t in enumerate(notes):
@@ -209,20 +239,19 @@ def build(results):
 def main():
     session = SessionLocal()
     try:
-        coins = pick_coins(session)
-        if not coins:
-            print(f"No active coin has >= {MIN_DAYS} days of stored daily prices (daily_snapshots.price_usd).")
-            return
-        results = []
-        for cid, name, chain, _ in coins:
-            results.append(((cid, name, chain), analyse(load_prices(session, cid))))
+        coins = pick_coins(session)                    # read-only: active coin list
     finally:
         session.close()
+    if not coins:
+        print(f"No active coin has >= {MIN_DAYS} days of daily prices on Codex.")
+        return
+    results = [(coin, analyse(prices)) for coin, prices in coins]
     build(results)
     print(f"Wrote {OUT_FILE}\n")
-    print(f"{'#':>2}  {'Coin':<28} {'Days':>4}  Last-day zone")
+    print(f"{'#':>2}  {'Coin':<28} {'Chain':<10} {'Days':>4}  {'From':<10} {'To':<10}  Last-day zone")
     for i, ((_, name, chain), rows) in enumerate(results, start=1):
-        print(f"{i:>2}  {name[:28]:<28} {len(rows):>4}  {ZONES[rows[-1]['zone']][0]}")
+        print(f"{i:>2}  {name[:28]:<28} {chain:<10} {len(rows):>4}  {rows[0]['date']}  {rows[-1]['date']}  "
+              f"{ZONES[rows[-1]['zone']][0]}")
 
 
 if __name__ == "__main__":
