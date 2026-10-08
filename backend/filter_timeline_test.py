@@ -10,7 +10,11 @@ Run (from the backend/ folder, with backend/.env present):
     python filter_timeline_test.py
 Output: backend/filter_timeline_15d.xlsx
 
-Per coin, per day D (Sep 24 -> today), with the history that actually exists:
+Window and coins are FIXED (Sep 24 -> Oct 8, the same 10 coins) so a re-run
+reproduces the same table. The last row (Oct 8) is the "current" row.
+
+Per coin, per day D, with the history that actually exists:
+    Price      Codex getBars 1D close for D (shown only, not a filter step)
     Age        days since the first DexScreener pool (else the CMC listing date
                cached in age_lookups)                         >= 10 days
     Market Cap CoinGecko market_chart (daily); if CoinGecko has none, Codex
@@ -22,7 +26,7 @@ Per coin, per day D (Sep 24 -> today), with the history that actually exists:
                reading, the higher one counts); no data -> pass
     Revenue    DefiLlama by contract: tracked with no fees -> FAIL; the value
                shown is DefiLlama's daily revenue for D when it has one
-    Honeypot   GoPlus answers for NOW only -> checked on today's row, "—" on
+    Honeypot   GoPlus answers for NOW only -> checked on the last row, "—" on
                past days (unknown passes, same as the live filter)
     Holders    shown only (not one of the entry steps); our own daily
                snapshots, which start Oct 5 -> "—" before that
@@ -42,7 +46,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from age_check import CHAIN_TO_CG_PLATFORM
 from database import SessionLocal
 from discovery import MAX_MCAP, MIN_MCAP
-from entry_zones_test import pick_coins, CODEX_KEY, CODEX_URL
+from entry_zones_test import CODEX_KEY, CODEX_URL
 from liquidity_check import CHAIN_TO_NETWORK, MAX_DROP_PCT, MIN_LIQUIDITY_USD
 from models import AgeLookup, Coin, DailySnapshot
 from revenue_check import check_revenue
@@ -54,8 +58,11 @@ DAYS = 15
 MIN_AGE = 10
 LIQ_WINDOW = 30
 OUT_FILE = Path(__file__).resolve().parent / "filter_timeline_15d.xlsx"
-TODAY = datetime.now(timezone.utc).date()
-DATES = [TODAY - timedelta(days=i) for i in range(DAYS - 1, -1, -1)]
+END = date(2026, 10, 8)                     # last day of the fixed window
+DATES = [END - timedelta(days=i) for i in range(DAYS - 1, -1, -1)]
+# The 10 coins of the first run (Aethir, Beam, SAND, BENQI, OPEN, Bless,
+# MAGIC, Kryll, Smooth Love Potion, Peapods) - pinned by id.
+COIN_IDS = [813, 814, 815, 816, 819, 821, 822, 823, 826, 827]
 
 BARS_QUERY = """
 query ($symbol: String!, $from: Int!, $to: Int!) {
@@ -74,7 +81,7 @@ def codex_bars(contract, chain):
     if not net:
         return {}
     now = int(time.time())
-    frm = now - (DAYS + LIQ_WINDOW + 5) * 86400
+    frm = int(datetime.combine(DATES[0], datetime.min.time(), timezone.utc).timestamp())         - (LIQ_WINDOW + 5) * 86400
     try:
         body = requests.post(CODEX_URL, json={"query": BARS_QUERY, "variables": {
             "symbol": f"{contract}:{net}", "from": frm, "to": now}},
@@ -103,7 +110,8 @@ def coingecko_chart(contract, chain):
     time.sleep(2.5)
     try:
         r = requests.get(CG_MC_URL.format(platform=platform, contract=contract),
-                         params={"vs_currency": "usd", "days": DAYS + 8},
+                         params={"vs_currency": "usd",
+                                 "days": (datetime.now(timezone.utc).date() - DATES[0]).days + 8},
                          headers={"x-cg-demo-api-key": CG_KEY}, timeout=30)
         data = r.json() if r.status_code == 200 else {}
     except (requests.exceptions.RequestException, ValueError):
@@ -148,6 +156,15 @@ def money(v):
         if abs(v) >= div:
             return f"${v / div:.1f}{suf}".replace(".0" + suf, suf)
     return f"${v:,.0f}"
+
+
+def price(v):
+    """Close price with enough significant digits for sub-cent tokens."""
+    if v is None:
+        return "—"
+    if v >= 1:
+        return f"${v:,.4f}"
+    return f"${v:.4g}" if v >= 0.0001 else f"${v:.3e}"
 
 
 def evaluate(coin, session):
@@ -203,7 +220,7 @@ def evaluate(coin, session):
             if win[-1] < win[0] * VOLUME_MIN_RISE:
                 fails.append(f"volume {chg:+.0f}% (needs +35%)")
         # Step 6 - honeypot (today only)
-        if d == TODAY:
+        if d == END:
             hp = {"safe": "Safe", "unsafe": "Unsafe"}.get(sec["verdict"], "Unknown")
             if sec["verdict"] == "unsafe":
                 fails.append("honeypot / can't sell")
@@ -218,14 +235,15 @@ def evaluate(coin, session):
             base = next((v for dd, v in liq_series if d - timedelta(days=LIQ_WINDOW) <= dd <= d), None)
             pct = (liq / base - 1) * 100 if base else None
             liq_txt = money(liq) + (f" ({pct:+.0f}%)" if pct is not None else "")
-            best = max(liq, dex_liq or 0) if d == TODAY else liq
+            best = max(liq, dex_liq or 0) if d == END else liq
             if pct is not None and pct < -MAX_DROP_PCT:
                 fails.append(f"liquidity {pct:+.0f}% vs 30d")
             if best < MIN_LIQUIDITY_USD:
                 fails.append(f"liquidity {money(best)} < $5K")
         h = holders.get(d)
+        close = bars.get(d, {}).get("c")
         rows.append({
-            "date": d.isoformat(), "age": age if age is not None else "—",
+            "date": d.isoformat(), "price": price(close), "age": age if age is not None else "—",
             "mcap": money(mcap) + mcap_note, "vol": vol_txt,
             "holders": f"{h:,}" if h else "—", "liq": liq_txt, "rev": rev_txt, "hp": hp,
             "pass": not fails, "fails": fails,
@@ -248,9 +266,9 @@ WHITE = Font(name="Arial", size=10, bold=True, color="FFFFFF")
 TITLE = Font(name="Arial", size=14, bold=True, color=NAVY)
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
-HEADERS = ["Date", "Age (days)", "Market Cap", "Volume (5d)", "Holders", "Liquidity",
+HEADERS = ["Date", "Price (USD)", "Age (days)", "Market Cap", "Volume (5d)", "Holders", "Liquidity",
            "Fees/Revenue", "Honeypot", "Passes Filter?", "Note"]
-WIDTHS = [12, 10, 14, 24, 11, 16, 13, 10, 13, 48]
+WIDTHS = [12, 13, 10, 14, 24, 11, 16, 13, 10, 13, 48]
 
 
 def sheet_name(name, used):
@@ -266,25 +284,25 @@ def coin_sheet(wb, title, coin, rows, meta, used):
     ws = wb.create_sheet(sheet_name(coin.name, used))
     ws["A1"] = f"{coin.name} — Filter Application Timeline (last {DAYS} days, {coin.chain})"
     ws["A1"].font = TITLE
-    ws.merge_cells("A1:J1")
+    ws.merge_cells("A1:K1")
     for c, h in enumerate(HEADERS, 1):
         cell = ws.cell(row=3, column=c, value=h)
         cell.fill, cell.font, cell.alignment = F_HEAD, WHITE, CENTER
     ws.row_dimensions[3].height = 27.75
     first = next((i for i, r in enumerate(rows) if r["pass"]), None)
     for i, r in enumerate(rows):
-        vals = [r["date"], r["age"], r["mcap"], r["vol"], r["holders"], r["liq"], r["rev"],
+        vals = [r["date"], r["price"], r["age"], r["mcap"], r["vol"], r["holders"], r["liq"], r["rev"],
                 r["hp"], "YES" if r["pass"] else "NO",
                 ("First pass in this window — " + r["note"]) if i == first else r["note"]]
         for c, v in enumerate(vals, 1):
             cell = ws.cell(row=4 + i, column=c, value=v)
-            cell.font, cell.alignment = BASE, (LEFT if c == 10 else CENTER)
+            cell.font, cell.alignment = BASE, (LEFT if c == 11 else CENTER)
             if i == first:
                 cell.fill = F_HI
-        pc = ws.cell(row=4 + i, column=9)
+        pc = ws.cell(row=4 + i, column=10)
         pc.fill, pc.font = (F_YES if r["pass"] else F_NO), BOLD
         if i == first:
-            ws.cell(row=4 + i, column=10).font = BOLD
+            ws.cell(row=4 + i, column=11).font = BOLD
     for c, w in enumerate(WIDTHS, 1):
         ws.column_dimensions[chr(64 + c)].width = w
     end = 4 + len(rows) + 1
@@ -293,9 +311,9 @@ def coin_sheet(wb, title, coin, rows, meta, used):
     born = meta["born"].date().isoformat() if meta["born"] else "unknown"
     ws.cell(row=end, column=3, value=(
         f"Passed {passed} of {DAYS} days  •  Created {born} ({meta['born_src']})  •  "
-        f"Revenue: {meta['rev']}  •  Honeypot today: {meta['sec']}")).font = BASE
+        f"Revenue: {meta['rev']}  •  Honeypot (checked {datetime.now(timezone.utc).date()}): {meta['sec']}")).font = BASE
     ws.merge_cells(start_row=end, start_column=1, end_row=end, end_column=2)
-    ws.merge_cells(start_row=end, start_column=3, end_row=end, end_column=10)
+    ws.merge_cells(start_row=end, start_column=3, end_row=end, end_column=11)
 
 
 def summary_sheet(ws, results):
@@ -322,7 +340,7 @@ def summary_sheet(ws, results):
         (3, "Age", f">= {MIN_AGE} days", "DexScreener first pool (else CMC listing)"),
         (4, "Fees OR Revenue", "Not 'tracked with no fees'", "DefiLlama by contract; daily revenue shown"),
         (5, "Volume (5d)", "day5 >= day1 × 1.35", "CoinGecko daily volume, 5 complete days before the date"),
-        (6, "Honeypot", "Safe (can sell)", "GoPlus — current only, so checked on today's row"),
+        (6, "Honeypot", "Safe (can sell)", "GoPlus — current only, so checked on the last row"),
         (7, "Liquidity", "Not down > 5% vs 30d, and >= $5K", "Codex daily liquidity (+ DexScreener today)"),
     ]
     for i, row in enumerate(crit):
@@ -349,7 +367,7 @@ def summary_sheet(ws, results):
     n = r0 + 2 + len(results) + 1
     ws.cell(row=n, column=1, value="DATA NOTES:").font = BOLD
     for k, t in enumerate([
-        f"1. Window: {DATES[0]} → {DATES[-1]} (today's row uses today's data so far).",
+        f"1. Window: {DATES[0]} → {DATES[-1]} (fixed). Price (USD) = Codex daily close, shown only.",
         "2. Holders: we only keep daily holder counts since Oct 5 — earlier days show '—'. Holders is not an entry step.",
         "3. Honeypot: GoPlus only answers for now — past days show '—' and pass (unknown passes, as in the live filter).",
         "4. Fees/Revenue: '$X/day' = DefiLlama daily revenue that day; 'Not tracked' = DefiLlama doesn't list the contract (passes).",
@@ -365,11 +383,10 @@ def summary_sheet(ws, results):
 def main():
     session = SessionLocal()
     try:
-        picked = pick_coins(session)                   # same 10 coins as the Entry Zones run
         results = []
-        for (cid, name, chain), _ in picked:
+        for cid in COIN_IDS:
             coin = session.get(Coin, cid)
-            print(f"  {name} ({chain}) ...", flush=True)
+            print(f"  {coin.name} ({coin.chain}) ...", flush=True)
             rows, meta = evaluate(coin, session)
             results.append((coin, rows, meta))
     finally:
@@ -384,7 +401,7 @@ def main():
     print(f"\nWrote {OUT_FILE}\n")
     for coin, rows, meta in results:
         print(f"  {coin.name[:28]:<28} {coin.chain:<10} passed {sum(r['pass'] for r in rows):>2}/{DAYS}  "
-              f"| today: {'YES' if rows[-1]['pass'] else 'NO '} {rows[-1]['note'][:70]}")
+              f"| {END}: {'YES' if rows[-1]['pass'] else 'NO '} {rows[-1]['note'][:70]}")
 
 
 if __name__ == "__main__":
