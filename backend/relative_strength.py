@@ -120,26 +120,46 @@ def _pct(v):
     return f"{v:+.1f}%"
 
 
+def _ltr(text):
+    """Wrap a number / name in a left-to-right isolate (U+2066 ... U+2069) so
+    "+18.6%" or "Gaming (GameFi)" keeps its order inside the Arabic sentence."""
+    return f"⁦{text}⁩"
+
+
 def explain(v, coin, market, sector, sector_name):
-    """One plain-language line (data, not advice)."""
+    """One plain-language line in Arabic (data, not advice). Numbers, BTC and
+    the sector name stay as they are."""
+    c = _ltr(_pct(coin))
+    m = _ltr(_pct(market)) if market is not None else None
+    sec = (f"القطاع {_ltr(f'({sector_name})')} {_ltr(_pct(sector))}"
+           if sector is not None else None)
+    direction = "صاعد" if coin >= 0 else "نازل"
     ctx = []
-    if market is not None:
-        ctx.append(f"BTC is {_pct(market)}")
-    if sector is not None:
-        ctx.append(f"its sector, {sector_name}, is {_pct(sector)}")
-    ctx_txt = " and ".join(ctx) if ctx else "there's no market data"
-    moved = f"{'Up' if coin >= 0 else 'Down'} {_pct(coin)} while {ctx_txt}"
-    both = "the market and its sector" if sector is not None else "the market"
-    tail = {
-        "STRONG": f"moving on its own, well ahead of {both}.",
-        "SECTOR-DRIVEN": "moving with its sector rather than on its own.",
-        "MARKET-DRIVEN": "following the overall market rather than moving on its own.",
-        "WEAK": (f"weaker than {both}." if coin < 0 and coin < max(
-                     [x for x in (market, sector) if x is not None] or [0]) else
-                 "down or flat - no strength of its own." if coin < FLAT_PCT else
-                 "only slightly up - not enough to call it its own move."),
-    }[v]
-    return f"{moved} — {tail}"
+    if m is not None:
+        ctx.append(f"{_ltr('BTC')} {m}")
+    if sec is not None:
+        ctx.append(sec)
+    while_txt = f" بينما {' و'.join(ctx)}" if ctx else ""
+    both = "السوق وقطاعه" if sector is not None else "السوق"
+
+    if v == "STRONG":
+        return f"صاعد {c}{while_txt} — صاعد بمفرده، متقدّم بوضوح على {both}."
+    if v == "SECTOR-DRIVEN":
+        return (f"صاعد {c} والقطاع {_ltr(f'({sector_name})')} صاعد {_ltr(_pct(sector))}"
+                f" — مدفوع بقطاعه أكثر منه بنفسه.")
+    if v == "MARKET-DRIVEN":
+        return f"صاعد {c} تبعاً للسوق {_ltr(f'(BTC {_pct(market)})')} — مدفوع بالسوق، لا يتفوّق عليه."
+    # WEAK
+    refs = [x for x in (market, sector) if x is not None]
+    if coin < 0 and coin < max(refs or [0]):
+        tail = f"أضعف من {both}."
+    elif coin < 0:
+        tail = "نازل، دون قوة ذاتية."
+    elif coin < FLAT_PCT:
+        tail = "شبه ثابت، دون قوة ذاتية."
+    else:
+        tail = "صاعد قليلاً فقط، ولا يكفي ذلك لاعتباره تحركاً ذاتياً."
+    return f"{direction} {c}{while_txt} — {tail}"
 
 
 def build(coin_chg, categories):

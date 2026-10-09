@@ -435,7 +435,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength")   # result layout: has these display sections
+            "|pricerange|relstrength-ar")   # result layout: has these display sections
 
 
 def get_check(session, contract):

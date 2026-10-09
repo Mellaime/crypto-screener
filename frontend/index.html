@@ -232,6 +232,8 @@
   .rsv.SECTOR-DRIVEN { color: #d2a8ff; background: rgba(210,168,255,0.12); border-color: rgba(210,168,255,0.45); }
   .rsv.MARKET-DRIVEN { color: #58a6ff; background: rgba(88,166,255,0.12); border-color: rgba(88,166,255,0.45); }
   .rsv.WEAK { color: var(--low); background: rgba(248,81,73,0.10); border-color: rgba(248,81,73,0.45); }
+  .opinion.rtl { border-left: none; border-right: 3px solid var(--accent); border-radius: 8px 0 0 8px;
+                 text-align: right; font-size: 15px; line-height: 1.7; }
   .supply .val.up { color: var(--good); } .supply .val.down { color: var(--low); }
   .prends { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted);
             font-variant-numeric: tabular-nums; margin: 0 0 12px; }
@@ -1121,7 +1123,7 @@
               rs.sector_24h)}
         <li><span class="lbl">Verdict</span><span class="val"><span class="rsv ${esc(rs.verdict)}">${esc(rs.verdict)}</span></span></li>
       </ul>
-      <div class="opinion" style="margin-top:10px">${esc(rs.line || "")}</div></div>`;
+      <div class="opinion rtl" dir="rtl" lang="ar" style="margin-top:10px">${esc(rs.line || "")}</div></div>`;
   }
   // Smart Money: placeholder only (no data source yet) - same list style as
   // the Supply section; no data is fetched for it.
