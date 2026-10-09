@@ -347,3 +347,19 @@ class NarrativeSnapshot(Base):
     market_cap = Column(Float)
     volume_24h = Column(Float)
     market_cap_change_24h = Column(Float)                     # % (CoinGecko)
+
+
+class EntryZoneCache(Base):
+    """
+    Detail page: a coin's "Entry Zone" section (60-day price position, 15-day
+    volume groups, liquidity / holders change, zone; entry_zone.py) as JSON,
+    cached for one UTC day. Display only.
+    """
+    __tablename__ = "entry_zone_cache"
+    __table_args__ = (UniqueConstraint("chain", "contract"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chain = Column(String, nullable=False)
+    contract = Column(String, nullable=False, index=True)   # stored lowercased
+    day = Column(Date, nullable=False)                       # UTC day it was computed
+    data = Column(String, nullable=False)                    # JSON

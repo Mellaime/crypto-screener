@@ -258,6 +258,26 @@
                border-radius: 50%; background: var(--text); border: 3px solid var(--card); box-shadow: 0 0 0 1px var(--border); }
   .prbar .mk b { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); font-size: 12px;
                  white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* Entry Zone section */
+  .ezhead { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .ezbadge { padding: 3px 12px; border-radius: 999px; font-size: 13px; font-weight: 700; border: 1px solid; white-space: nowrap; }
+  .ezbadge.RISK { color: #f0883e; background: rgba(240,136,62,0.12); border-color: rgba(240,136,62,0.5); }
+  .ezbadge.WAIT { color: #db6d28; background: rgba(219,109,40,0.12); border-color: rgba(219,109,40,0.5); }
+  .ezbadge.FALLING { color: var(--low); background: rgba(248,81,73,0.10); border-color: rgba(248,81,73,0.45); }
+  .ezbadge.BEST { color: var(--good); background: rgba(63,185,80,0.12); border-color: rgba(63,185,80,0.45); }
+  .ezbadge.GOOD { color: #58a6ff; background: rgba(88,166,255,0.12); border-color: rgba(88,166,255,0.45); }
+  .ezbadge.ACCUMULATE { color: #d29922; background: rgba(210,153,34,0.12); border-color: rgba(210,153,34,0.45); }
+  .ezbadge.NEUTRAL, .ezbadge.TOO_NEW { color: var(--muted); background: #21262d; border-color: var(--border); }
+  .ezchart { margin: 10px 0 2px; }
+  .ezchart svg { width: 100%; height: 90px; display: block; }
+  .ezcap { font-size: 12px; color: var(--muted); text-align: right; margin-bottom: 10px; }
+  .eztable { width: 100%; border-collapse: collapse; font-size: 14px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .eztable th, .eztable td { padding: 9px 12px; text-align: center; border-bottom: 1px solid var(--border); }
+  .eztable th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--bg); text-transform: none; letter-spacing: 0; }
+  .eztable tbody tr:nth-child(odd) td { background: rgba(255,255,255,0.025); }
+  .eztable td.lbl { text-align: right; font-weight: 600; }
+  .eztable .up { color: var(--good); font-weight: 700; } .eztable .down { color: var(--low); font-weight: 700; }
+  .eztable .flat, .eztable .na { color: var(--muted); font-weight: 600; }
   /* Relative Strength section */
   .rsv { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 13px; font-weight: 700; border: 1px solid; }
   .rsv.STRONG { color: var(--good); background: rgba(63,185,80,0.12); border-color: rgba(63,185,80,0.45); }
@@ -852,6 +872,7 @@
       ${revenueCard(c)}
       ${priceRangeCard(c.price_range)}
       ${relStrengthCard(c.rel_strength)}
+      ${entryZoneCard(c.entry_zone)}
       ${supplyCard(c)}
       ${smartMoneyCard()}`;
     wireHolders((c.holders || {}).bars || []);
@@ -1041,6 +1062,7 @@
       <div style="margin-top:12px">${txChart(r, "ck")}</div>
       ${priceRangeCard(r.price_range)}
       ${relStrengthCard(r.rel_strength)}
+      ${entryZoneCard(r.entry_zone)}
       <div class="ratiocard"><h3>Filter steps</h3>
         <div class="note">Same order as the bot; the first ✗ is the reason above.</div>
         <ul class="supply steps">${steps}</ul></div>
@@ -1337,6 +1359,51 @@
         <li><span class="lbl">Verdict</span><span class="val"><span class="rsv ${esc(rs.verdict)}">${esc(rs.verdict)}</span></span></li>
       </ul>
       <div class="opinion rtl" dir="rtl" lang="ar" style="margin-top:10px">${esc(rs.line || "")}</div></div>`;
+  }
+  // Entry Zone: 60-day price line + table (volume in 3 five-day groups, price
+  // position, liquidity, holders) + zone badge + one Arabic sentence.
+  function entryZoneCard(ez) {
+    ez = ez || {status: "unknown", reason: "no data yet"};
+    const head = (badge) => `<div class="ratiocard"><div class="ezhead"><h3>Entry Zone</h3>${badge}</div>
+      <div class="note">Long-term: daily price over the last 60 days · short-term: the last 15 days. Updated once a day. Data, not advice.</div>`;
+    if (ez.status !== "ok") return head("") + `<div class="empty" style="padding:8px 0">${esc(ez.reason || "No data")}</div></div>`;
+    const badge = `<span class="ezbadge ${esc(ez.zone)}">${esc(ez.zone_label)}</span>`;
+    const sig = (v, flat = 10) => v == null ? `<span class="na">—</span>`
+      : `<span class="${v === 0 || (flat && Math.abs(v) <= flat) ? "flat" : v > 0 ? "up" : "down"}" dir="ltr">${v > 0 ? "+" : ""}${v.toFixed(1)}%</span>`;
+    const days = ez.history_days;
+    // 60-day line chart (SVG), current price marked.
+    const pts = ez.chart || [];
+    let chart = "";
+    if (pts.length >= 2) {
+      const ps = pts.map(p => p.price), lo = Math.min(...ps), hi = Math.max(...ps), W = 600, H = 90, pad = 6;
+      const x = i => pad + i * (W - 2 * pad) / (pts.length - 1);
+      const y = v => hi > lo ? H - pad - (v - lo) / (hi - lo) * (H - 2 * pad) : H / 2;
+      const d = ps.map((v, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1)).join(" ");
+      const lx = x(ps.length - 1), ly = y(ps[ps.length - 1]);
+      chart = `<div class="ezchart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
+          aria-label="Price over the last ${days} days">
+          <path d="${d}" fill="none" stroke="#5b8def" stroke-width="2" vector-effect="non-scaling-stroke"/>
+          <circle cx="${lx}" cy="${ly}" r="4" fill="var(--text)" stroke="#5b8def" stroke-width="2" vector-effect="non-scaling-stroke"/>
+        </svg></div>
+        <div class="ezcap" dir="rtl" lang="ar">السعر — آخر <bdi>${days}</bdi> يوم · الآن <bdi>${fmtPrice(ez.price)}</bdi>
+          (<bdi>${ez.above_low_pct == null ? "—" : (ez.above_low_pct >= 0 ? "+" : "") + ez.above_low_pct.toFixed(0) + "%"}</bdi> فوق القاع)</div>`;
+    }
+    const g = ez.volume_groups || [null, null, null];
+    const pos = ez.too_new ? `<span class="na">جديدة جداً</span>`
+      : `<span dir="ltr">${ez.position_pct.toFixed(0)}%</span> <small class="na">من نطاق <bdi>${days}</bdi> يوم (0% = القاع، 100% = القمة)</small>`;
+    const liqNote = ez.liquidity_source && ez.liquidity_source !== "Codex" ? ` <small class="na">(${esc(ez.liquidity_source)})</small>` : "";
+    const holdNote = ez.holders_since ? ` <small class="na">منذ <bdi>${esc(shortDate(ez.holders_since))}</bdi></small>` : "";
+    return head(badge) + chart + `
+      <table class="eztable" dir="rtl" lang="ar">
+        <thead><tr><th></th><th>الأقدم (5d)</th><th>الوسط (5d)</th><th>الأحدث (5d)</th></tr></thead>
+        <tbody>
+          <tr><td class="lbl">الفوليم</td><td>${sig(g[0])}</td><td>${sig(g[1])}</td><td>${sig(g[2])}</td></tr>
+          <tr><td class="lbl">السعر</td><td colspan="3">${pos}</td></tr>
+          <tr><td class="lbl">السيولة</td><td colspan="3">${sig(ez.liquidity_pct, 0)}${liqNote}</td></tr>
+          <tr><td class="lbl">Holders</td><td colspan="3">${sig(ez.holders_pct, 0)}${holdNote}</td></tr>
+        </tbody>
+      </table>
+      <div class="opinion rtl" dir="rtl" lang="ar" style="margin-top:10px">${esc(ez.line || "")}</div></div>`;
   }
   // Smart Money: placeholder only (no data source yet) - same list style as
   // the Supply section; no data is fetched for it.
