@@ -1391,7 +1391,8 @@
     const g = ez.volume_groups || [null, null, null];
     const pos = ez.too_new ? `<span class="na">جديدة جداً</span>`
       : `<span dir="ltr">${ez.position_pct.toFixed(0)}%</span> <small class="na">من نطاق <bdi>${days}</bdi> يوم (0% = القاع، 100% = القمة)</small>`;
-    const liqNote = ez.liquidity_source && ez.liquidity_source !== "Codex" ? ` <small class="na">(${esc(ez.liquidity_source)})</small>` : "";
+    const liqNote = (ez.liquidity_usd != null ? ` <small class="${ez.liquidity_usd < 5000 ? "down" : "na"}">· الآن <bdi>${fmtMoney(ez.liquidity_usd)}</bdi></small>` : "")
+      + (ez.liquidity_source && ez.liquidity_source !== "Codex" ? ` <small class="na">(${esc(ez.liquidity_source)})</small>` : "");
     const holdNote = ez.holders_since ? ` <small class="na">منذ <bdi>${esc(shortDate(ez.holders_since))}</bdi></small>` : "";
     return head(badge) + chart + `
       <table class="eztable" dir="rtl" lang="ar">

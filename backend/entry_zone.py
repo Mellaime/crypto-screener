@@ -17,16 +17,19 @@ Two layers:
 Sources: Codex daily bars (close, volume, liquidity) - one call; CoinGecko
 market_chart (60 days, daily) when Codex doesn't cover the coin. Liquidity
 uses DexScreener instead when Codex reports > 10x DexScreener (the same
-"liquidity source mismatch" rule as the rest of the bot). Holders: our own
+"liquidity source mismatch" rule as the rest of the bot) - both for the
+liquidity change and for the real liquidity SIZE (liquidity_check.best_liquidity:
+the higher of Codex / DexScreener, or DexScreener on a mismatch). Holders: our own
 daily snapshots (detail page only).
 
 ZONES - checked in this order, first match wins:
-  1. RISK        liquidity fell > LIQ_DROP_PCT  OR  holders fell > HOLDERS_DROP_PCT
+  1. RISK        real liquidity under MIN_LIQUIDITY_USD (untradeable, whatever
+                 else)  OR  liquidity fell > LIQ_DROP_PCT  OR  holders fell > HOLDERS_DROP_PCT
   2. WAIT        price position >= PRICE_HIGH_PCT (near the 60-day high)
   3. FALLING     volume falling strongly (latest group < -VOL_FLAT_PCT, or all
                  three groups below 0)  OR  holders fell > HOLDERS_DROP_PCT
-  4. BEST        price <= PRICE_LOW_PCT AND volume rising strongly (latest >=
-                 VOL_STRONG_PCT) AND liquidity not down AND holders not down
+  4. BEST        price <= PRICE_LOW_PCT AND volume rising (latest group
+                 > VOL_FLAT_PCT) AND liquidity not down AND holders not down
   5. GOOD        price <= PRICE_LOW_PCT AND volume quiet (latest within
                  +/-VOL_FLAT_PCT) AND liquidity not down AND holders not down
   6. ACCUMULATE  PRICE_LOW_PCT < price < PRICE_HIGH_PCT AND volume rising
@@ -51,9 +54,10 @@ PRICE_LOW_PCT = 35       # position <= this -> price is cheap in its range
 PRICE_HIGH_PCT = 70      # position >= this -> near the high -> WAIT
 VOL_GROUP_DAYS = 5       # volume: 3 groups of 5 complete days ...
 VOL_FLAT_PCT = 10        # ... each vs the 5 days before; within +/-10% = flat
-VOL_STRONG_PCT = 30      # latest group >= +30% = rising strongly
+VOL_STRONG_PCT = 30      # latest group >= +30% = "rising strongly" (sentence wording only)
 WINDOW_DAYS = 15         # liquidity / holders change measured over this
 LIQ_DROP_PCT = 5         # liquidity down more than this = fell (RISK)
+MIN_LIQUIDITY_USD = 5_000  # real liquidity under this = untradeable -> RISK, whatever else
 HOLDERS_DROP_PCT = 5     # holders down more than this = fell (RISK / FALLING)
 
 ZONES = {
@@ -126,7 +130,7 @@ def coingecko_daily(contract, chain):
 
 
 # ---------------------------------------------------------------- the numbers
-def compute(bars, today, liq_override=None, holders=None):
+def compute(bars, today, liq_override=None, holders=None, liq_usd=None):
     """The section's numbers from daily bars. liq_override = (pct, label) to
     use instead of the bars' liquidity; holders = [(date, count)] or None."""
     prices = [(d, c) for d, c, _, _ in bars][-PRICE_DAYS:]
@@ -159,6 +163,7 @@ def compute(bars, today, liq_override=None, holders=None):
     h = [(d, n) for d, n in (holders or []) if n and d >= today - timedelta(days=WINDOW_DAYS)]
     res["holders_pct"] = _pct(h[-1][1], h[0][1]) if len(h) >= 2 else None
     res["holders_since"] = h[0][0].isoformat() if len(h) >= 2 else None
+    res["liquidity_usd"] = liq_usd                  # real liquidity now (None = unknown)
     res["zone"] = classify(res)
     res["zone_label"] = ZONES[res["zone"]]
     res["line"] = sentence(res)
@@ -176,7 +181,8 @@ def classify(r):
     hold_fell = hold is not None and hold < -HOLDERS_DROP_PCT
     ok = not liq_fell and not hold_fell              # "not down" (flat is fine, unknown passes)
 
-    if liq_fell or hold_fell:
+    thin = r.get("liquidity_usd") is not None and r["liquidity_usd"] < MIN_LIQUIDITY_USD
+    if thin or liq_fell or hold_fell:
         return "RISK"
     if pos >= PRICE_HIGH_PCT:
         return "WAIT"
@@ -184,7 +190,7 @@ def classify(r):
         return "FALLING"
     if latest is None:
         return "NEUTRAL"
-    if pos <= PRICE_LOW_PCT and latest >= VOL_STRONG_PCT and ok:
+    if pos <= PRICE_LOW_PCT and latest > VOL_FLAT_PCT and ok:
         return "BEST"
     if pos <= PRICE_LOW_PCT and abs(latest) <= VOL_FLAT_PCT and ok:
         return "GOOD"
@@ -209,6 +215,11 @@ def sentence(r):
     z = r["zone"]
     if z == "RISK":
         bits = []
+        if r.get("liquidity_usd") is not None and r["liquidity_usd"] < MIN_LIQUIDITY_USD:
+            have = _ltr("$" + format(r["liquidity_usd"], ",.0f"))
+            need = _ltr("$" + format(MIN_LIQUIDITY_USD, ","))
+            return (f"إشارة خطر: السيولة الفعلية {have} فقط، أقل من {need}"
+                    " — يصعب التداول عليها مهما كانت باقي الإشارات." + tail)
         if r.get("liquidity_pct") is not None and r["liquidity_pct"] < -LIQ_DROP_PCT:
             bits.append(f"السيولة انخفضت {p(r['liquidity_pct'])}")
         if r.get("holders_pct") is not None and r["holders_pct"] < -HOLDERS_DROP_PCT:
@@ -220,7 +231,8 @@ def sentence(r):
     if z == "FALLING":
         return f"حجم التداول يتراجع ({vol} في آخر 5 أيام مقارنة بما قبلها) — الزخم يضعف." + tail
     if z == "BEST":
-        return (f"السعر في الجزء المنخفض من نطاق {n} يوماً ({pos}) مع ارتفاع قوي في حجم التداول ({vol})"
+        strong = groups and groups[-1] >= VOL_STRONG_PCT
+        return (f"السعر في الجزء المنخفض من نطاق {n} يوماً ({pos}) مع ارتفاع {'قوي ' if strong else ''}في حجم التداول ({vol})"
                 f"، والسيولة والحاملون غير متراجعين — أفضل منطقة دخول حسب البيانات." + tail)
     if z == "GOOD":
         return (f"السعر منخفض في نطاق {n} يوماً ({pos}) وحجم التداول هادئ ({vol})"
@@ -249,10 +261,12 @@ def build(contract, chain, today=None, dex_liq=None, holders=None, liq_history=N
     codex_liq = next((l for _, _, _, l in reversed(bars) if l), None)
     if source == "Codex" and codex_unreliable(codex_liq, dex_liq):
         h = [(d, l) for d, l in (liq_history or []) if l and d >= today - timedelta(days=WINDOW_DAYS)]
-        override = (_pct(h[-1][1], h[0][1]) if len(h) >= 2 else None, "DexScreener (Codex unreliable)")
+        override = (_pct(h[-1][1], h[0][1]) if len(h) >= 2 else None, "DexScreener · Codex unreliable")
     elif source == "CoinGecko":
         override = (None, None)
-    res = compute(bars, today, override, holders)
+    from liquidity_check import best_liquidity
+    liq_usd = best_liquidity(codex_liq if source == "Codex" else None, dex_liq)[0]
+    res = compute(bars, today, override, holders, liq_usd)
     res.update(status="ok", source=source)
     return res
 
