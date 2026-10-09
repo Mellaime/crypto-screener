@@ -59,7 +59,7 @@ def latest_snapshot(session, coin_id):
     )
 
 
-def make_narrative(chain, mcap, vol_liq_ratio):
+def make_narrative(chain, mcap, vol_liq_ratio, arabic=False):
     """
     A short, human-readable summary of the coin.
 
@@ -85,6 +85,16 @@ def make_narrative(chain, mcap, vol_liq_ratio):
     else:
         activity = "light trading activity"
 
+    if arabic:      # detail page: the same sentence in Arabic (chain name stays LTR)
+        from relative_strength import _ltr
+        size_ar = {"Large-cap": "عملة كبيرة القيمة السوقية", "Mid-cap": "عملة متوسطة القيمة السوقية",
+                   "Small-cap": "عملة صغيرة القيمة السوقية"}[size]
+        activity_ar = {"unknown activity": "نشاط تداول غير معروف",
+                       "very high trading activity": "نشاط تداول مرتفع جداً",
+                       "strong trading activity": "نشاط تداول قوي",
+                       "moderate trading activity": "نشاط تداول معتدل",
+                       "light trading activity": "نشاط تداول خفيف"}[activity]
+        return f"{size_ar} على شبكة {_ltr(chain)}، مع {activity_ar}."
     return f"{size} token on {chain} with {activity}."
 
 
@@ -254,11 +264,12 @@ def get_coin(contract: str):
         from holders_check import CHAIN_TO_PLATFORM as HOLDER_CHAINS
         holders_missing_reason = None
         if holders_now is None:
+            from relative_strength import _ltr
             holders_missing_reason = (
-                f"CoinMarketCap doesn't track holder counts on {coin.chain}."
+                f"{_ltr('CoinMarketCap')} لا يتتبّع عدد الحاملين على شبكة {_ltr(coin.chain)}."
                 if (coin.chain or "").lower() not in HOLDER_CHAINS else
-                "No holder count stored yet - CoinMarketCap hasn't returned one for "
-                "this coin. The daily run tries again each day.")
+                f"لم يُحفظ عدد الحاملين بعد — لم يُرجع {_ltr('CoinMarketCap')} رقماً لهذه "
+                "العملة. التشغيل اليومي يعيد المحاولة كل يوم.")
         week_ago = [(d, h) for d, h in hist if hist and d <= hist[-1][0] - timedelta(days=7)]
         holders_7d = week_ago[-1][1] if week_ago else None
         holders_week_pct = (round((holders_now - holders_7d) / holders_7d * 100, 2)
@@ -299,7 +310,7 @@ def get_coin(contract: str):
             "score": b["total"] if b else None,
             "category": coin.category,
             "narrative": make_narrative(coin.chain, snap.mcap if snap else None,
-                                        b["vol_liq_ratio"] if b else None),
+                                        b["vol_liq_ratio"] if b else None, arabic=True),
             "security": coin.security_verdict,
             "tx_window_days": WINDOW_DAYS,
             "tx_bars": tx["bars"],
