@@ -22,7 +22,8 @@ picked from a single first-come-first-served queue (the coin_queue table):
     un-analyzed and gets another try next run.
 
 SECOND CHANCE: a coin that was REJECTED (failed revenue / volume / honeypot /
-liquidity) or DELETED by drop_logic after its 7 unhealthy days becomes
+liquidity), DELETED by drop_logic after its 7 unhealthy days, or BLOCKED by
+drop_logic for a confirmed PRICE CRASH (outcome "crashed") becomes
 eligible again RECHECK_AFTER_DAYS (15) after that, for ONE more pass through
 the entry filter (MAX_ATTEMPTS = 2 analyses in total). If it fails again it's
 locked for good. Never-analyzed coins are always picked before re-checks.
@@ -43,7 +44,7 @@ from datetime import datetime, timedelta, timezone
 # analyzes the day's NEW coins, usually far fewer than this.
 ROTATION_BUDGET = 300
 
-RECHECK_AFTER_DAYS = 15   # rejected / deleted -> eligible again after this
+RECHECK_AFTER_DAYS = 15   # rejected / deleted / crashed -> eligible again after this
 MAX_ATTEMPTS = 2          # the first analysis + ONE second chance
 
 
@@ -58,7 +59,7 @@ def _now():
 def _recheck_due(row, now):
     """True if an analyzed coin is due its one 15-day second chance."""
     return (row.last_checked is not None
-            and row.outcome in ("rejected", "deleted")
+            and row.outcome in ("rejected", "deleted", "crashed")
             and (row.attempts or 0) < MAX_ATTEMPTS
             and row.last_checked <= now - timedelta(days=RECHECK_AFTER_DAYS))
 
@@ -134,9 +135,10 @@ def mark_checked(session, tokens, outcome, when=None):
             row.attempts = (row.attempts or 0) + 1
 
 
-def mark_deleted(session, chain, contract, when=None):
-    """drop_logic deleted this coin (7 unhealthy days): it may come back
-    through the entry filter once, RECHECK_AFTER_DAYS after the deletion."""
+def mark_deleted(session, chain, contract, when=None, outcome="deleted"):
+    """drop_logic deleted this coin (7 unhealthy days -> outcome "deleted",
+    or a confirmed price crash -> outcome "crashed"): it may come back through
+    the entry filter once, RECHECK_AFTER_DAYS after `when`."""
     from models import CoinQueue
 
     when = when or _now()
@@ -146,5 +148,5 @@ def mark_deleted(session, chain, contract, when=None):
         row = CoinQueue(chain=ch, contract=ct, first_seen=when, attempts=1)
         session.add(row)
     row.last_checked = when            # the 15-day clock starts at deletion
-    row.outcome = "deleted"
+    row.outcome = outcome
     row.attempts = max(row.attempts or 0, 1)

@@ -13,7 +13,16 @@ where tracked coins get their fresh daily numbers - with NO CoinGecko calls:
      codex_volume24); drop_logic computes the volume and liquidity TRENDS from
      this stored history.
   2. DexScreener - what the dashboard shows: price, 24h volume, liquidity
-     (main pool; the fast batched fetch).
+     (main pool; the fast batched fetch). Two guards against bad readings:
+       * DUST-POOL GUARD: if the batch returned a near-empty pool (under
+         DUST_POOL_USD) while yesterday's liquidity was much higher, that one
+         token is re-fetched with ALL its pools before anything is saved.
+       * PRICE SANITY CHECK: today's DexScreener price must be within
+         PRICE_SANITY_PCT of at least one reference - the Codex price (from
+         the same bulk request, no extra call) or CoinGecko/CMC's
+         market cap / circulating supply (from discovery, no extra call).
+         If it agrees with neither, it isn't saved: the Codex price is used
+         (else the CoinGecko one) and a warning is logged.
   3. Market cap - the coin's GLOBAL market cap from CoinGecko / CMC, taken
      from this run's discovery (discovery.LAST_MCAPS, no extra calls). Not
      from DexScreener: one pool's market cap is tiny for a bridged copy. A
@@ -50,10 +59,16 @@ CODEX_URL = "https://graph.codex.io/graphql"
 CODEX_BATCH = 200             # coins per filterTokens request
 RETRY_WAITS = [5, 15, 30]
 
+# Bad-reading guards (see docstring, item 2).
+DUST_POOL_USD = 1_000          # a "main pool" under this is suspicious ...
+DUST_DROP_RATIO = 10           # ... if yesterday's liquidity was >= 10x higher
+DUST_MIN_PREV_USD = 10_000     # ... and at least this much
+PRICE_SANITY_PCT = 50          # DexScreener price may differ this much from a reference
+
 BULK_QUERY = """
 query ($tokens: [String]) {
   filterTokens(tokens: $tokens, limit: %d) {
-    results { liquidity volume24 token { address networkId } }
+    results { liquidity volume24 priceUSD token { address networkId } }
   }
 }""" % CODEX_BATCH
 
@@ -65,11 +80,12 @@ def _to_float(v):
         return None
 
 
-def codex_bulk_readings(coins, stats):
+def codex_bulk_readings(coins, stats, prices=None):
     """
     {contract_lower: (liquidity, volume24)} for the given coins, via bulk
     filterTokens requests (200 coins each). Coins on chains Codex doesn't
-    cover get no reading. Never raises.
+    cover get no reading. If `prices` (a dict) is given, it is filled with
+    {contract_lower: Codex USD price} from the same requests. Never raises.
     """
     from liquidity_check import CHAIN_TO_NETWORK
 
@@ -111,7 +127,34 @@ def codex_bulk_readings(coins, stats):
             addr = ((r.get("token") or {}).get("address") or "").lower()
             if addr:
                 out[addr] = (_to_float(r.get("liquidity")), _to_float(r.get("volume24")))
+                if prices is not None and _to_float(r.get("priceUSD")):
+                    prices[addr] = _to_float(r.get("priceUSD"))
     return out
+
+
+def refetch_all_pools(coin):
+    """Dust-pool guard: one coin's record rebuilt from ALL its DexScreener
+    pools on its own chain (1 request), or None."""
+    from fetch_dexscreener import _fetch_all_pools, _new_stats, build_token_records
+    pairs = [p for p in _fetch_all_pools([coin.contract], _new_stats(1))
+             if (p.get("chainId") or "").lower() == (coin.chain or "").lower()]
+    recs = build_token_records(pairs, keep_addresses={coin.contract.lower()})
+    return recs[0] if recs else None
+
+
+def sane_price(dex_price, refs):
+    """(price_to_save, reason_or_None). `refs` = [(label, price)] reference
+    prices (Codex first). The DexScreener price is kept when it is within
+    PRICE_SANITY_PCT of at least one reference (or there is no reference);
+    otherwise the first reference replaces it."""
+    refs = [(lbl, p) for lbl, p in refs if p]
+    if dex_price is None or not refs:
+        return dex_price, None
+    if any(abs(dex_price / p - 1) * 100 <= PRICE_SANITY_PCT for _, p in refs):
+        return dex_price, None
+    lbl, p = refs[0]
+    others = ", ".join(f"{l} ${v:.6g}" for l, v in refs)
+    return p, f"DexScreener price ${dex_price:.6g} disagrees with {others} by > {PRICE_SANITY_PCT}% - using {lbl}"
 
 
 def _catch_up_categories(coins):
@@ -155,7 +198,9 @@ def run_daily_tracking():
             return stats
 
         # 1. Codex: today's liquidity + 24h volume (trend history).
-        codex = codex_bulk_readings(coins, stats)
+        codex_prices = {}
+        codex = codex_bulk_readings(coins, stats, codex_prices)
+        stats["dust_refetched"] = stats["price_replaced"] = 0
 
         # 2. DexScreener: today's dashboard numbers (price, mcap, vol, liq).
         cands = [{"contract": c.contract, "chain": c.chain} for c in coins]
@@ -191,9 +236,34 @@ def run_daily_tracking():
                 stats["codex_readings"] += 1
 
             rec = dex.get(key)
+            # Dust-pool guard: a near-empty "main pool" while yesterday's
+            # liquidity was far higher -> re-fetch this token with ALL its pools.
+            last = (session.query(DailySnapshot.liquidity)
+                    .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date < today,
+                            DailySnapshot.liquidity.isnot(None))
+                    .order_by(DailySnapshot.date.desc()).first())
+            rec_liq = _to_float(rec.get("liquidity_usd")) if rec else None
+            if (rec is not None and (rec_liq or 0) < DUST_POOL_USD and last
+                    and last[0] >= DUST_MIN_PREV_USD
+                    and last[0] >= DUST_DROP_RATIO * max(rec_liq or 0, 1)):
+                fresh = refetch_all_pools(coin)
+                stats["dust_refetched"] += 1
+                print(f"[WARN] {coin.name}: DexScreener main pool ${rec_liq or 0:,.0f} vs "
+                      f"${last[0]:,.0f} yesterday - re-fetched all pools: "
+                      + (f"${_to_float(fresh.get('liquidity_usd')) or 0:,.0f}" if fresh else "nothing"))
+                if fresh is not None:
+                    rec = fresh
             if rec is not None:
                 stats["dex_data"] += 1
                 price = _to_float(rec.get("price_usd"))
+                # Price sanity check vs Codex / CoinGecko (no extra calls).
+                sup = (LAST_SUPPLY.get(key) or {}).get("circulating")
+                cg_price = LAST_MCAPS[key] / sup if LAST_MCAPS.get(key) and sup else None
+                price, why = sane_price(price, [("Codex", codex_prices.get(key)),
+                                                ("CoinGecko", cg_price)])
+                if why:
+                    stats["price_replaced"] += 1
+                    print(f"[WARN] {coin.name}: {why}")
                 snap.volume = _to_float(rec.get("volume_24h"))
                 snap.liquidity = _to_float(rec.get("liquidity_usd"))
                 if price is not None:
@@ -241,6 +311,8 @@ def run_daily_tracking():
           f"{stats['codex_ids']} coins on Codex chains)")
     print(f"  DexScreener data (price etc.) ... {stats['dex_data']:>5}")
     print(f"  price refreshed ................. {stats['price_updated']:>5}")
+    print(f"  bad DexScreener price replaced .. {stats.get('price_replaced', 0):>5}")
+    print(f"  dust pool -> all pools re-fetch . {stats.get('dust_refetched', 0):>5}")
     print(f"  market cap from CoinGecko/CMC ... {stats.get('mcap_discovery', 0):>5}"
           f"   (moved with price: {stats.get('mcap_scaled', 0)})")
     print(f"  today's snapshots created ....... {stats['snapshots_created']:>5}")

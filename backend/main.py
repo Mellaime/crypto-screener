@@ -120,6 +120,9 @@ def reason_ar(reason):
             parts.append(("السعر انخفض " if mm.group(1) == "price" else "السيولة انخفضت ")
                          + pct(mm.group(2)))
         return f"انهيار — {' و'.join(parts)} خلال {_ltr(m.group(2))} أيام"
+    m = re.fullmatch(r"Liquidity crash - liquidity down ([\d.]+)% in (\d+) days", r)
+    if m:
+        return f"انهيار في السيولة — السيولة انخفضت {pct(m.group(1))} خلال {_ltr(m.group(2))} أيام"
     m = re.fullmatch(r"Volume falling \(last (\d+) daily readings\)", r)
     if m:
         return f"حجم التداول يتراجع (آخر {_ltr(m.group(1))} قراءات يومية)"
