@@ -133,6 +133,10 @@ def reason_ar(reason):
     if m:
         return (f"السيولة أقل من {_ltr(m.group(1))} ({_ltr(m.group(2))} على "
                 f"{_ltr('Codex')} و{_ltr('DexScreener')})")
+    m = re.fullmatch(r"Liquidity under (\$[\d,]+) \((\$[\d,]+) on DexScreener; Codex unreliable - source mismatch\)", r)
+    if m:
+        return (f"السيولة أقل من {_ltr(m.group(1))} ({_ltr(m.group(2))} على {_ltr('DexScreener')}؛ "
+                f"قراءة {_ltr('Codex')} غير موثوقة)")
     m = re.fullmatch(r"Holders down ([\d.]+)% \((.+) -> (.+)\)", r)
     if m:
         return f"عدد الحاملين انخفض {pct(m.group(1))} ({_ltr(m.group(2) + ' → ' + m.group(3))})"
