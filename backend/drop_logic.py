@@ -93,32 +93,99 @@ def days_since(when, today):
     return (today - when.date()).days
 
 
-def crash_reason(session, coin, today):
+def _fall_pct(values):
+    """% fall of the LAST value vs the highest earlier one (None if unknown)."""
+    vals = list(values)
+    now_v = vals[-1] if vals else None
+    peak = max((v for v in vals[:-1] if v), default=None)
+    if now_v is None or not peak:
+        return None
+    return (1 - now_v / peak) * 100
+
+
+def _second_source_price_fall(coin, days):
+    """Price fall % over the last `days` days from an INDEPENDENT source:
+    CoinGecko market_chart (by contract), else Codex daily closes. None if
+    neither has the coin. One call; only made for a suspected price crash."""
+    import time as _time
+    import requests
+    from age_check import CHAIN_TO_CG_PLATFORM
+    from discovery import CG_KEY
+    plat = CHAIN_TO_CG_PLATFORM.get((coin.chain or "").lower())
+    if plat and CG_KEY:
+        try:
+            r = requests.get(f"https://api.coingecko.com/api/v3/coins/{plat}/contract/{coin.contract.lower()}/market_chart",
+                             params={"vs_currency": "usd", "days": days + 1},
+                             headers={"x-cg-demo-api-key": CG_KEY}, timeout=20)
+            prices = [p[1] for p in (r.json().get("prices") or [])] if r.status_code == 200 else []
+            if len(prices) >= 2:
+                return "CoinGecko", _fall_pct(prices)
+        except (requests.exceptions.RequestException, ValueError):
+            pass
+    from liquidity_check import CHAIN_TO_NETWORK, CODEX_KEY, CODEX_URL
+    net = CHAIN_TO_NETWORK.get((coin.chain or "").lower())
+    if net and CODEX_KEY:
+        now = int(_time.time())
+        q = ('query ($s: String!, $f: Int!, $t: Int!) { getBars(symbol: $s, from: $f, to: $t, '
+             'resolution: "60", removeLeadingNullValues: true) { c } }')
+        try:
+            body = requests.post(CODEX_URL, json={"query": q, "variables": {
+                "s": f"{coin.contract}:{net}", "f": now - (days + 1) * 86400, "t": now}},
+                headers={"Authorization": CODEX_KEY}, timeout=30).json()
+            closes = [float(c) for c in (((body.get("data") or {}).get("getBars") or {}).get("c") or []) if c]
+            if len(closes) >= 2:
+                return "Codex", _fall_pct(closes)
+        except (requests.exceptions.RequestException, ValueError, TypeError):
+            pass
+    return None, None
+
+
+def crash_reason(session, coin, today, suspects=None):
     """The crash override: "Crash - ..." if today's price or liquidity is
     down CRASH_PCT% or more from its highest reading in the previous
-    CRASH_WINDOW_DAYS days, else None. Uses stored daily snapshots only."""
+    CRASH_WINDOW_DAYS days - and TWO SOURCES AGREE:
+      * liquidity: Codex AND DexScreener (each vs its own 3-day peak) both
+        down >= CRASH_PCT%;
+      * price: the stored (DexScreener) price down >= CRASH_PCT% AND an
+        independent source (CoinGecko, else Codex) shows the same over the
+        same days (one live call, only for a suspected price crash).
+    A fall seen by ONE source only is a "suspect reading": nothing is dropped,
+    a note is added to `suspects` (a list) and tomorrow's run looks again."""
     snaps = (session.query(DailySnapshot)
              .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date <= today,
                      DailySnapshot.date >= today - timedelta(days=CRASH_WINDOW_DAYS))
              .order_by(DailySnapshot.date).all())
     if len(snaps) < 2:
         return None
-    cur, earlier = snaps[-1], snaps[:-1]
 
-    def liquidity(sn):
-        vals = [v for v in (sn.codex_liquidity, sn.liquidity) if v is not None]
-        return max(vals) if vals else None
+    falls, notes = [], []
+    # Liquidity: each source against its own peak.
+    liq = {"Codex": _fall_pct(sn.codex_liquidity for sn in snaps),
+           "DexScreener": _fall_pct(sn.liquidity for sn in snaps)}
+    big = {src: f for src, f in liq.items() if f is not None and f >= CRASH_PCT}
+    if len(big) == 2:
+        falls.append(f"liquidity down {min(big.values()):.1f}%")
+    elif big:
+        (src, f), = big.items()
+        other = "Codex" if src == "DexScreener" else "DexScreener"
+        seen = f"{-liq[other]:+.1f}%" if liq[other] is not None else "no reading"
+        notes.append(f"liquidity down {f:.1f}% on {src} only ({other}: {seen})")
 
-    falls = []
-    for label, get in (("price", lambda sn: sn.price_usd), ("liquidity", liquidity)):
-        now_v = get(cur)
-        peak = max((v for v in (get(sn) for sn in earlier) if v), default=None)
-        if now_v is not None and peak:
-            pct = (now_v / peak - 1) * 100
-            if pct <= -CRASH_PCT:
-                falls.append(f"{label} down {abs(pct):.1f}%")
+    # Price: the stored price, confirmed by an independent source.
+    pf = _fall_pct(sn.price_usd for sn in snaps)
+    if pf is not None and pf >= CRASH_PCT:
+        src, f2 = _second_source_price_fall(coin, CRASH_WINDOW_DAYS)
+        if f2 is not None and f2 >= CRASH_PCT:
+            falls.append(f"price down {pf:.1f}%")
+        else:
+            seen = f"{src} {-f2:+.1f}%" if f2 is not None else "no second source"
+            notes.append(f"price down {pf:.1f}% on DexScreener only ({seen})")
+
+    if notes and suspects is not None:
+        suspects.append((coin.name, "; ".join(notes)))
     if not falls:
         return None
+    falls.sort(key=lambda x: not x.startswith("price"))      # "price ... and liquidity ..."
     return f"Crash - {' and '.join(falls)} in {CRASH_WINDOW_DAYS} days"
 
 
@@ -218,6 +285,7 @@ def run_drop_logic():
              "recovered": 0, "still_dropped": 0, "removed_7d": 0,
              "removed_never_qualified": 0}
     dropped_details, recovered_details, removed_details = [], [], []
+    crash_suspects = []          # one-source crash readings: logged, not dropped
     just_dropped = set()
     # Snapshots are dated with date.today() (like save_to_db / tracking), so
     # the Codex trend history is read against that same date.
@@ -228,7 +296,7 @@ def run_drop_logic():
         # --- ACTIVE: grace, then the 4 health criteria -----------------------
         for coin in session.query(Coin).filter_by(status="active").all():
             # Crash override FIRST - applies even during the grace period.
-            reason = crash_reason(session, coin, snap_day)
+            reason = crash_reason(session, coin, snap_day, crash_suspects)
             if reason is not None:
                 stats["crashed"] += 1
             elif in_grace(coin, today):
@@ -286,11 +354,12 @@ def run_drop_logic():
     finally:
         session.close()
 
-    _print_summary(stats, dropped_details, recovered_details, removed_details)
+    stats["crash_suspects"] = len(crash_suspects)
+    _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects)
     return stats
 
 
-def _print_summary(stats, dropped_details, recovered_details, removed_details):
+def _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects=()):
     line = "=" * 52
     print(line)
     print("  DROP LOGIC SUMMARY")
@@ -298,6 +367,9 @@ def _print_summary(stats, dropped_details, recovered_details, removed_details):
     print(f"  Active - in {GRACE_DAYS}-day grace (untouched) .. {stats['in_grace']:>5}")
     print(f"  Active - re-checked ............... {stats['checked']:>5}")
     print(f"  Crash override (>= {CRASH_PCT}% in {CRASH_WINDOW_DAYS}d) .... {stats['crashed']:>5}")
+    print(f"  Suspect crash readings (1 source) . {len(crash_suspects):>5}   (not dropped - re-checked tomorrow)")
+    for name, note in crash_suspects:
+        print(f"      ? {(name or 'unknown')[:18]:<18}  ({note})")
     print(f"  Newly dropped (unhealthy) ......... {stats['newly_dropped']:>5}")
     for name, reason in dropped_details:
         print(f"      - {(name or 'unknown')[:18]:<18}  ({reason})")
