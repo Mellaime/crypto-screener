@@ -63,6 +63,9 @@ class Coin(Base):
     max_supply = Column(Float)
     supply_uncapped = Column(Boolean)       # CMC infinite_supply; None = not said
     supply_updated_at = Column(DateTime)
+    # X / Twitter handle from CoinGecko (socials.py) - display only.
+    twitter_handle = Column(String)         # None = no handle on CoinGecko
+    twitter_checked_at = Column(DateTime)   # None = never checked yet
     price_updated_at = Column(DateTime)
 
     # Security info (from GoPlus, filter #7) - stored so the dashboard shows it.
