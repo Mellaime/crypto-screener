@@ -295,7 +295,7 @@ def run_daily_tracking():
 
         stats["category_lookups"] = _catch_up_categories(coins)
         from socials import refresh_twitter
-        stats["twitter_calls"] = refresh_twitter(session, coins, now)
+        stats["twitter_calls"] = refresh_twitter(session, coins, now, counts=stats)
         session.commit()
     except Exception:
         session.rollback()
@@ -320,7 +320,8 @@ def run_daily_tracking():
     print(f"  today's snapshots created ....... {stats['snapshots_created']:>5}")
     print(f"  category catch-up (CG calls) .... {stats.get('category_lookups', 0):>5}")
     print(f"  supply refreshed (CG / CMC) ..... {stats.get('supply', 0):>5}")
-    print(f"  X handle lookups (CG calls) ..... {stats.get('twitter_calls', 0):>5}")
+    print(f"  X handle lookups (CG calls) ..... {stats.get('twitter_calls', 0):>5}"
+          f"   (CMC fallback calls: {stats.get('cmc_calls', 0)}, handles found there: {stats.get('from_cmc', 0)})")
     if stats["codex_failed_batches"]:
         print(f"  Codex batches FAILED ............ {stats['codex_failed_batches']:>5}")
     print(line)

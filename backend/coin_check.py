@@ -179,7 +179,7 @@ def run_check(contract):
     from tx_bars import fetch_from_codex
     from revenue_detail import fetch as fetch_revenue
     from price_range import from_market_data
-    from socials import handle_from, x_url
+    from socials import handle_from, handle_from_cmc, x_url
     from relative_strength import from_coingecko as rel_from_cg, _ltr
 
     def money(v):
@@ -350,12 +350,14 @@ def run_check(contract):
         p = liq["pct"]
         liq_trend = "rising" if p > 1 else "falling" if p < -MAX_DROP_PCT else "stable"
 
+    x_handle = handle_from(cg) or handle_from_cmc(cmc_info, contract, chain)
     result = {
         "found": True,
         "contract": contract, "chain": chain, "chain_source": chain_source,
         "name": name, "symbol": symbol, "price": price, "narrative": narrative,
         # X / Twitter from the CoinGecko response above (no extra call).
-        "twitter": x_url(handle_from(cg)), "twitter_handle": handle_from(cg),
+        # ...else CoinMarketCap's info response above (contract + chain match).
+        "twitter": x_url(x_handle), "twitter_handle": x_handle,
         "mcap": mcap, "mcap_source": mcap_source,
         "ranks": {"coingecko": cg.get("market_cap_rank"), "cmc": cmc_q.get("cmc_rank")},
         "age": {"days": age_days, "source": age_src},
@@ -456,7 +458,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter")   # result layout: has these display sections
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc")   # result layout: has these display sections
 
 
 def get_check(session, contract):
