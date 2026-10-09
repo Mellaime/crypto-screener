@@ -625,7 +625,7 @@
         ${fact("Price", fmtPrice(c.price))}
         ${fact("Market cap", fmtMoney(c.mcap))}
         ${fact("Score", c.score == null ? "—" : `<span class="badge ${scoreClass(c.score)}">${c.score}</span>`)}
-        ${fact("Narrative", c.category ? `<span class="tag">${esc(c.category)}</span>` : esc(c.narrative))}
+        ${fact("Narrative", c.category ? `<span class="tag">${esc(c.category)}</span>` : `<span dir="rtl" lang="ar">${esc(c.narrative)}</span>`)}
         <div class="fact wide"><div class="k">Contract</div>
           <div class="v mono" data-addr="${esc(c.contract)}" title="Click to copy">${esc(c.contract)}</div></div>
       </div>
@@ -781,10 +781,10 @@
     }
     const v = r.verdict || {};
     const verdict = v.passes === true
-      ? `<div class="cverdict pass">✅ PASSES the filter<small>It clears all 7 steps the bot uses.</small></div>`
+      ? `<div class="cverdict pass">✅ PASSES the filter<small dir="rtl" lang="ar">يجتاز خطوات الفلتر السبع التي يستخدمها البوت.</small></div>`
       : v.passes === false
-        ? `<div class="cverdict fail">❌ Does NOT pass<small>Reason: ${esc(v.reason)}</small></div>`
-        : `<div class="cverdict unknown">? Not finished<small>${esc(v.reason || "")}</small></div>`;
+        ? `<div class="cverdict fail">❌ Does NOT pass<small dir="rtl" lang="ar">السبب: ${esc(v.reason)}</small></div>`
+        : `<div class="cverdict unknown">? Not finished<small dir="rtl" lang="ar">${esc(v.reason || "")}</small></div>`;
     const rv = r.revenue || {}, lq = r.liquidity || {}, vol = r.volume || {}, age = r.age || {};
     const revTotal = rv.status === "ok"
       ? (rv.all_time != null ? fmtMoney(rv.all_time) + " total" : "—")
@@ -832,8 +832,8 @@
         <div class="note">Same order as the bot; the first ✗ is the reason above.</div>
         <ul class="supply steps">${steps}</ul></div>
       <div class="ratiocard"><h3>Summary</h3>
-        <div style="font-size:14px;line-height:1.55">${esc(r.summary || "")}</div>
-        <div class="opinion">${esc(r.opinion || "")}</div></div>`;
+        <div dir="rtl" lang="ar" style="font-size:15px;line-height:1.8;text-align:right">${esc(r.summary || "")}</div>
+        <div class="opinion rtl" dir="rtl" lang="ar">${esc(r.opinion || "")}</div></div>`;
     wireChart(r.tx_bars || [], "ck");
   }
 
@@ -942,7 +942,7 @@
       <div class="note">Holder count (CoinMarketCap DEX), one reading per day from our daily run.</div>
       <div class="subhead" style="margin-top:4px">Total holders</div>
       <div class="holdtop"><span class="big">${h.now == null ? "—" : fmtInt(h.now)}</span>${h.now == null ? "" : chg + `<span class="sub">${esc(sub)}</span>`}</div>
-      ${h.now == null && h.missing_reason ? `<div class="note" style="margin:-4px 0 10px">${esc(h.missing_reason)}</div>` : ""}
+      ${h.now == null && h.missing_reason ? `<div class="note" dir="rtl" lang="ar" style="margin:-4px 0 10px;text-align:right">${esc(h.missing_reason)}</div>` : ""}
       ${plot}
       ${bars.length && bars.length < 7 ? `<div class="note" style="margin:8px 0 0">${bars.length} day${bars.length === 1 ? "" : "s"} so far - one bar is added each day.</div>` : ""}
     </div>`;

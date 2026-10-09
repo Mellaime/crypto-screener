@@ -179,7 +179,10 @@ def run_check(contract):
     from tx_bars import fetch_from_codex
     from revenue_detail import fetch as fetch_revenue
     from price_range import from_market_data
-    from relative_strength import from_coingecko as rel_from_cg
+    from relative_strength import from_coingecko as rel_from_cg, _ltr
+
+    def money(v):
+        return _ltr(f"${v:,.0f}")
 
     # Outside lookups run in PARALLEL (a check used to take 16-27 s one after
     # another): first CoinGecko + CMC together (name, market cap, tags)...
@@ -229,13 +232,13 @@ def run_check(contract):
     rng = f"${MIN_MCAP / 1e6:g}M–${MAX_MCAP / 1e6:g}M"
     if mcap is None:
         step("mcap", f"Market cap {rng}", "fail", "no market cap on CoinGecko or CoinMarketCap",
-             "Not listed with a market cap on CoinGecko or CoinMarketCap (the bot only finds coins listed there)")
+             f"غير مُدرج بقيمة سوقية على {_ltr('CoinGecko')} أو {_ltr('CoinMarketCap')} (البوت لا يجد إلا العملات المدرجة هناك)")
     elif mcap < MIN_MCAP:
         step("mcap", f"Market cap {rng}", "fail", f"${mcap:,.0f}",
-             f"Market cap out of range (${mcap:,.0f}, below ${MIN_MCAP / 1e6:g}M)")
+             f"القيمة السوقية خارج النطاق ({money(mcap)}، أقل من {_ltr(f'${MIN_MCAP / 1e6:g}M')})")
     elif mcap > MAX_MCAP:
         step("mcap", f"Market cap {rng}", "fail", f"${mcap:,.0f}",
-             f"Market cap out of range (${mcap:,.0f}, above ${MAX_MCAP / 1e6:g}M)")
+             f"القيمة السوقية خارج النطاق ({money(mcap)}، أعلى من {_ltr(f'${MAX_MCAP / 1e6:g}M')})")
     else:
         step("mcap", f"Market cap {rng}", "pass", f"${mcap:,.0f} ({mcap_source})")
 
@@ -260,7 +263,10 @@ def run_check(contract):
     words = {"meme": "a meme coin", "stablecoin": "a stablecoin", "tokenized": "a tokenized stock / fund",
              "wrapped": "a wrapped / staked / receipt token (it tracks another asset)"}
     if kind:
-        step("type", "Not a meme / stablecoin / tokenized / wrapped", "fail", words[kind], f"It's {words[kind]}")
+        words_ar = {"meme": "عملة ميم", "stablecoin": "عملة مستقرة",
+                    "tokenized": "سهم أو صندوق مُرمَّز (tokenized)",
+                    "wrapped": "رمز مُغلَّف / مُخزَّن / إيصال (يتتبّع أصلاً آخر)"}
+        step("type", "Not a meme / stablecoin / tokenized / wrapped", "fail", words[kind], f"إنها {words_ar[kind]}")
     else:
         step("type", "Not a meme / stablecoin / tokenized / wrapped", "pass", "none of these")
 
@@ -268,17 +274,18 @@ def run_check(contract):
     keep_age, age_days, age_src = f_age.result()
     if age_days is None:
         step("age", "Age ≥ 10 days", "fail", "unknown",
-             "Age unknown (no DexScreener pool date and no listing date)")
+             f"العمر غير معروف (لا يوجد تاريخ مجمّع على {_ltr('DexScreener')} ولا تاريخ إدراج)")
     elif not keep_age:
         step("age", "Age ≥ 10 days", "fail", f"{age_days} days",
-             f"Age is under {MIN_AGE_DAYS} days (it's {age_days} day{'s' if age_days != 1 else ''} old)")
+             f"العمر أقل من {_ltr(MIN_AGE_DAYS)} أيام (العمر الحالي: {_ltr(age_days)} يوم)")
     else:
         step("age", "Age ≥ 10 days", "pass", f"{age_days} days ({age_src})")
 
     # 4. Revenue
     rev, revd = f_rev.result()
     if rev["verdict"] == "NO_REVENUE":
-        step("revenue", "Revenue (not 'no fees')", "fail", rev["reason"], "No revenue / fees found (DefiLlama tracks it with no fees)")
+        step("revenue", "Revenue (not 'no fees')", "fail", rev["reason"],
+             f"لا توجد إيرادات / رسوم ({_ltr('DefiLlama')} يتتبّعه دون رسوم)")
     else:
         step("revenue", "Revenue (not 'no fees')", "pass",
              "has revenue" if rev["verdict"] == "HAS_REVENUE" else "not tracked by DefiLlama (passes)")
@@ -292,17 +299,17 @@ def run_check(contract):
     elif vol["verdict"] == "rising":
         step("volume", "Volume up ≥ 35% over 5 days", "pass", f"{vol_pct:+.0f}%")
     elif vol["verdict"] == "falling":
-        reason = (f"Volume is falling over the last 5 days ({vol_pct:+.0f}%)" if vol_pct is not None and vol_pct < 0
-                  else f"Volume didn't rise enough over the last 5 days ({vol_pct:+.0f}%, needs +{need:.0f}%)")
+        reason = (f"الحجم ينخفض خلال آخر 5 أيام ({_ltr(f'{vol_pct:+.0f}%')})" if vol_pct is not None and vol_pct < 0
+                  else f"الحجم لم يرتفع بما يكفي خلال آخر 5 أيام ({_ltr(f'{vol_pct:+.0f}%')}، والمطلوب {_ltr(f'+{need:.0f}%')})")
         step("volume", "Volume up ≥ 35% over 5 days", "fail", f"{vol_pct:+.0f}%", reason)
     else:
         step("volume", "Volume up ≥ 35% over 5 days", "fail", "no CoinGecko volume history",
-             "No CoinGecko volume history for this contract (the filter needs 5 days)")
+             f"لا يوجد سجل حجم على {_ltr('CoinGecko')} لهذا العقد (الفلتر يحتاج 5 أيام)")
 
     # 6. Honeypot
     sec = f_sec.result()
     if sec["verdict"] == "unsafe":
-        step("honeypot", "Not a honeypot", "fail", sec["reason"], "It's a honeypot / not sellable")
+        step("honeypot", "Not a honeypot", "fail", sec["reason"], "إنها فخ (honeypot) / لا يمكن بيعها")
     else:
         step("honeypot", "Not a honeypot", "pass",
              "sellable" if sec["verdict"] == "safe" else f"unknown ({sec['reason']}) - passes")
@@ -311,7 +318,7 @@ def run_check(contract):
     liq = f_liq.result()
     if liq["verdict"] == "drop":
         step("liquidity", "Liquidity not down > 5%", "fail", f"{liq['pct']:+.1f}%",
-             f"Liquidity dropped more than {MAX_DROP_PCT}% ({liq['pct']:+.1f}% since {liq['base_date']})")
+             f"السيولة انخفضت بأكثر من {_ltr(f'{MAX_DROP_PCT:g}%')} ({_ltr(format(liq['pct'], '+.1f') + '%')} منذ {_ltr(liq['base_date'])})")
     elif liq["verdict"] == "keep":
         step("liquidity", "Liquidity not down > 5%", "pass", f"{liq['pct']:+.1f}% since {liq['base_date']}")
     else:
@@ -322,7 +329,7 @@ def run_check(contract):
     if thin:
         step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,}", "fail",
              f"${best_liq:,.0f} (Codex + DexScreener)",
-             f"Liquidity is below our ${MIN_LIQUIDITY_USD:,} minimum (${best_liq:,.0f}) — too thin to analyze")
+             f"السيولة أقل من الحد الأدنى لدينا {money(MIN_LIQUIDITY_USD)} ({money(best_liq)}) — ضعيفة جداً للتحليل")
     else:
         step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,}", "pass",
              "unknown - passes" if best_liq is None else f"${best_liq:,.0f} (higher of Codex / DexScreener)")
@@ -332,7 +339,7 @@ def run_check(contract):
     if first_fail:
         verdict = {"passes": False, "reason": first_fail["fail_reason"]}
     elif pending:
-        verdict = {"passes": None, "reason": "One step couldn't be checked right now - try again later."}
+        verdict = {"passes": None, "reason": "تعذّر التحقق من إحدى الخطوات الآن — حاول مرة أخرى لاحقاً."}
     else:
         verdict = {"passes": True, "reason": None}
 
@@ -380,51 +387,62 @@ def run_check(contract):
 
 
 def summarize(r):
-    """Plain-language description of what the on-chain numbers show, plus a
-    short factual take. Not investment advice - no buy / sell language."""
+    """Plain-language description (in Arabic) of what the on-chain numbers
+    show, plus a short factual take. Numbers, dates and source names stay
+    left-to-right. Not investment advice - no buy / sell language."""
+    from relative_strength import _ltr
     parts, plus, minus, has_revenue = [], 0, 0, False
+
+    def pct0(x):
+        return _ltr(format(x, "+.0f") + "%")
+
+    def pct1(x):
+        return _ltr(format(x, "+.1f") + "%")
     v = r["volume"]
     if v["pct"] is not None:
         if v["pct"] >= 35:
-            parts.append(f"Volume is rising strongly over the last 5 days ({v['pct']:+.0f}%)."); plus += 2
+            parts.append(f"الحجم يرتفع بقوة خلال آخر 5 أيام ({pct0(v['pct'])})."); plus += 2
         elif v["pct"] > 0:
-            parts.append(f"Volume is up a little over the last 5 days ({v['pct']:+.0f}%)."); plus += 1
+            parts.append(f"الحجم ارتفع قليلاً خلال آخر 5 أيام ({pct0(v['pct'])})."); plus += 1
         else:
-            parts.append(f"Volume is falling over the last 5 days ({v['pct']:+.0f}%)."); minus += 1
+            parts.append(f"الحجم ينخفض خلال آخر 5 أيام ({pct0(v['pct'])})."); minus += 1
     else:
-        parts.append("There isn't enough volume history to judge the trend.")
+        parts.append("لا يوجد سجل حجم كافٍ للحكم على الاتجاه.")
     lq = r["liquidity"]
+    since = _ltr(lq["since"]) if lq.get("since") else ""
     if lq["trend"] == "rising":
-        parts.append(f"Liquidity is building ({lq['pct']:+.1f}% since {lq['since']})."); plus += 1
+        parts.append(f"السيولة تتزايد ({pct1(lq['pct'])} منذ {since})."); plus += 1
     elif lq["trend"] == "stable":
-        parts.append(f"Liquidity is roughly stable ({lq['pct']:+.1f}% since {lq['since']}).")
+        parts.append(f"السيولة مستقرة تقريباً ({pct1(lq['pct'])} منذ {since}).")
     elif lq["trend"] == "falling":
-        parts.append(f"Liquidity is draining ({lq['pct']:+.1f}% since {lq['since']})."); minus += 1
+        parts.append(f"السيولة تتناقص ({pct1(lq['pct'])} منذ {since})."); minus += 1
     else:
-        parts.append("Liquidity history isn't available.")
+        parts.append("سجل السيولة غير متاح.")
     rv = r["revenue"]
+    llama = _ltr("DefiLlama")
     if rv["status"] == "ok" and (rv.get("d30") or 0) > 0:
-        parts.append(f"It earns real revenue (${rv['d30']:,.0f} in the last 30 days, per DefiLlama)."); plus += 1
+        d30 = _ltr("$" + format(rv["d30"], ",.0f"))
+        parts.append(f"يحقق إيرادات فعلية ({d30} خلال آخر 30 يوماً، حسب {llama})."); plus += 1
         has_revenue = True
     elif rv["status"] == "ok":
-        parts.append("DefiLlama tracks it but shows no revenue in the last 30 days."); minus += 1
+        parts.append(f"يتتبّعه {llama} لكنه لا يُظهر إيرادات خلال آخر 30 يوماً."); minus += 1
     else:
-        parts.append("No revenue data (not tracked by DefiLlama).")
+        parts.append(f"لا توجد بيانات إيرادات (لا يتتبّعه {llama}).")
     vd = r["verdict"]
-    parts.append("It passes all 7 filter steps." if vd["passes"] else
-                 f"It does not pass the filter: {vd['reason']}." if vd["passes"] is False else vd["reason"])
+    parts.append("يجتاز خطوات الفلتر السبع كلها." if vd["passes"] else
+                 f"لا يجتاز الفلتر: {vd['reason']}." if vd["passes"] is False else vd["reason"])
 
     if plus >= 3 and minus == 0 and has_revenue:
-        opinion = "Strong on-chain signals: activity and liquidity are growing, backed by real revenue."
+        opinion = "إشارات قوية على السلسلة: النشاط والسيولة في نمو، وتدعمهما إيرادات فعلية."
     elif plus >= 3 and minus == 0:
-        opinion = "Strong activity and liquidity signals, but there's no revenue data to back them up."
+        opinion = "إشارات قوية في النشاط والسيولة، لكن لا توجد بيانات إيرادات تدعمها."
     elif plus > minus:
-        opinion = "Mostly positive signals, but not all of them line up."
+        opinion = "إشارات إيجابية في معظمها، لكنها لا تتوافق كلها."
     elif minus > plus:
-        opinion = "Weak signals: activity is fading or the fundamentals the screener looks for are missing."
+        opinion = "إشارات ضعيفة: النشاط يتراجع، أو أن الأساسيات التي يبحث عنها الفلتر غائبة."
     else:
-        opinion = "Mixed signals: nothing stands out strongly either way."
-    return " ".join(parts), opinion + " This describes the on-chain data only - it isn't financial advice."
+        opinion = "إشارات متباينة: لا شيء يبرز بقوة في أي اتجاه."
+    return " ".join(parts), opinion + " هذا وصف للبيانات على السلسلة فقط — وليس نصيحة مالية."
 
 
 def rules_signature():
@@ -435,7 +453,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar")   # result layout: has these display sections
+            "|pricerange|relstrength-ar|summary-ar")   # result layout: has these display sections
 
 
 def get_check(session, contract):
