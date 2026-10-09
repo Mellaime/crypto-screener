@@ -77,6 +77,10 @@ CRASH_WINDOW_DAYS = 3        # ... vs the peak of the last 3 days = crash
 #                       come back by passing the entry filter again (once).
 #   LIQUIDITY-only   -> price roughly held: a normal drop (7-day recovery).
 CRASH_BLOCK_DAYS = 15        # = rotation.RECHECK_AFTER_DAYS
+# A LIQUIDITY-crash drop only recovers once liquidity is back to at least
+# this share of its pre-crash peak (the highest reading in the
+# CRASH_WINDOW_DAYS days before the drop), on top of the 4 health rules.
+LIQ_CRASH_RECOVER_SHARE = 0.5
 
 
 def _delete_coin(session, coin, outcome="deleted", when=None):
@@ -212,6 +216,38 @@ def is_price_crash_reason(reason):
     return r.startswith("Crash - ") and "price down" in r
 
 
+def is_liquidity_crash_reason(reason):
+    """A stored drop reason for a liquidity-only crash: "Liquidity crash - ..."
+    (or the older "Crash - liquidity down ..." wording without a price fall)."""
+    r = reason or ""
+    return r.startswith("Liquidity crash - ") or (r.startswith("Crash - ") and "price down" not in r)
+
+
+def _best_liquidity(sn):
+    vals = [v for v in (sn.codex_liquidity, sn.liquidity) if v is not None]
+    return max(vals) if vals else None
+
+
+def liquidity_recovery(session, coin, dropped_at, today):
+    """(recovered, now_liq, pre_crash_peak) for a liquidity-crash drop.
+    Liquidity = the higher of Codex and DexScreener (as for the $5K minimum).
+    pre_crash_peak = highest reading in the CRASH_WINDOW_DAYS days before the
+    drop; recovered = today's (latest) reading >= LIQ_CRASH_RECOVER_SHARE of it.
+    No pre-crash reading -> nothing to compare against -> recovered."""
+    drop_day = dropped_at.date()
+    before = (session.query(DailySnapshot)
+              .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date < drop_day,
+                      DailySnapshot.date >= drop_day - timedelta(days=CRASH_WINDOW_DAYS)).all())
+    peak = max((v for v in map(_best_liquidity, before) if v), default=None)
+    latest = (session.query(DailySnapshot)
+              .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date <= today)
+              .order_by(DailySnapshot.date.desc()).first())
+    now_liq = _best_liquidity(latest) if latest else None
+    if not peak:
+        return True, now_liq, peak
+    return (now_liq or 0) >= LIQ_CRASH_RECOVER_SHARE * peak, now_liq, peak
+
+
 def _block_crashed(session, coin, reason, when):
     """REAL CRASH: remove the coin from the site now and block it for
     CRASH_BLOCK_DAYS from `when` (the entry queue's "crashed" outcome; after
@@ -317,6 +353,7 @@ def run_drop_logic():
     dropped_details, recovered_details, removed_details = [], [], []
     crash_suspects = []          # one-source crash readings: logged, not dropped
     blocked_details = []         # confirmed price crashes: removed + 15-day block
+    held_details = []            # liquidity-crash drops healthy but liquidity < 50% of peak
     just_dropped = set()
     # Snapshots are dated with date.today() (like save_to_db / tracking), so
     # the Codex trend history is read against that same date.
@@ -379,7 +416,15 @@ def run_drop_logic():
                 blocked_details.append((coin.name, reason))
                 continue
 
-            if unhealthy_reason(coin, session, snap_day) is None:
+            healthy = unhealthy_reason(coin, session, snap_day) is None
+            if healthy and last and is_liquidity_crash_reason(last[1]):
+                # Liquidity-crash drop: also needs liquidity back to half its
+                # pre-crash peak; until then it stays dropped (7-day clock runs).
+                ok, now_liq, peak = liquidity_recovery(session, coin, last[0], snap_day)
+                if not ok:
+                    healthy = False
+                    held_details.append((coin.name, now_liq, peak))
+            if healthy:
                 # all 4 healthy -> RECOVER
                 session.query(DroppedCoin).filter_by(coin_id=coin.id).delete(
                     synchronize_session=False)
@@ -407,13 +452,14 @@ def run_drop_logic():
         session.close()
 
     stats["crash_suspects"] = len(crash_suspects)
+    stats["held_liquidity"] = len(held_details)
     _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects,
-                   blocked_details)
+                   blocked_details, held_details)
     return stats
 
 
 def _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects=(),
-                   blocked_details=()):
+                   blocked_details=(), held_details=()):
     line = "=" * 52
     print(line)
     print("  DROP LOGIC SUMMARY")
@@ -430,6 +476,10 @@ def _print_summary(stats, dropped_details, recovered_details, removed_details, c
     print(f"  Newly dropped (unhealthy) ......... {stats['newly_dropped']:>5}")
     for name, reason in dropped_details:
         print(f"      - {(name or 'unknown')[:18]:<18}  ({reason})")
+    print(f"  Held: liquidity < {LIQ_CRASH_RECOVER_SHARE:.0%} of pre-crash . {len(held_details):>5}")
+    for name, now_liq, peak in held_details:
+        print(f"      = {(name or 'unknown')[:18]:<18}  (liquidity ${now_liq or 0:,.0f} vs pre-crash ${peak:,.0f}; "
+              f"needs ${LIQ_CRASH_RECOVER_SHARE * peak:,.0f})")
     print(f"  Recovered (back to active) ........ {stats['recovered']:>5}")
     for name in recovered_details[:20]:
         print(f"      - {(name or 'unknown')[:18]}")
