@@ -8,7 +8,7 @@ history. DISPLAY ONLY - the filter and drop_logic never read it.
 Daily job (scheduler.py) - save_daily_snapshot():
     ONE call to CoinGecko /coins/categories. Only sectors whose total market
     cap is at least MIN_SECTOR_MCAP ($200M), and that aren't stablecoin
-    sectors (EXCLUDE_NAME_WORDS), are stored - one
+    sectors (names ending in Stablecoin/Stablecoins), are stored - one
     narrative_snapshots row per sector for today (date, category_id, name,
     market_cap, volume_24h, market_cap_change_24h). Re-running the same day
     overwrites today's rows (and removes any of today's rows that are now under
@@ -39,15 +39,16 @@ BAR_DAYS = 7           # the page shows one bar per day for the last 7 days
 # Hard, fixed server-side cut: sectors whose TOTAL market cap is under this
 # are neither stored nor shown (small categories swing wildly on tiny volume).
 MIN_SECTOR_MCAP = 200_000_000
-# Fixed exclusion: stablecoin sectors (Stablecoins, USD / EUR / JPY Stablecoin,
-# Algorithmic Stablecoin, ...) are pegged and don't move - neither stored nor
-# shown. Matched case-insensitively on the category name.
-EXCLUDE_NAME_WORDS = ("stablecoin",)
+# Fixed exclusion: the pegged-coin sectors - names that END with "Stablecoin"
+# or "Stablecoins" (Stablecoins, USD / EUR / JPY Stablecoin, Algorithmic
+# Stablecoin, ...). They don't move - neither stored nor shown. Names that only
+# CONTAIN the word stay (e.g. "Stablecoin Issuer": issuers' tokens can move).
+# Case-insensitive.
+EXCLUDE_NAME_ENDINGS = ("stablecoin", "stablecoins")
 
 
 def is_excluded(name):
-    low = (name or "").lower()
-    return any(w in low for w in EXCLUDE_NAME_WORDS)
+    return (name or "").strip().lower().endswith(EXCLUDE_NAME_ENDINGS)
 
 
 def _utc_today():
