@@ -92,6 +92,10 @@ def pick_batch(session, tokens, budget=ROTATION_BUDGET, now=None):
     for t in tokens:
         by_key.setdefault(_key(t["chain"], t["contract"]), t)
 
+    # The session doesn't autoflush: write pending changes first, so queue
+    # rows added earlier in this run (rehome_coin adds the new chain's row)
+    # are seen here and not inserted a second time (duplicate-key crash).
+    session.flush()
     rows = {(r.chain, r.contract): r for r in session.query(CoinQueue)}
     new_keys = [k for k in by_key if k not in rows]
 
