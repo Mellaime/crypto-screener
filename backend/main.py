@@ -9,6 +9,7 @@ Endpoints:
     GET /api/dropped  -> dropped coins with date + reason
     GET /api/queue    -> the next 600 coins waiting in the entry queue
     GET /api/check?contract=... -> "Check a Coin": the 7-step filter on any contract
+    GET /api/narratives -> CoinGecko categories: 24h %, 7d % (our daily snapshots), mcap, volume
     GET /api/coin/<contract> -> one coin: header info, 15-day transaction bars,
                                 Volume/MCap + Volume/Liquidity (4h, 24h, 7d, total),
                                 Liquidity, CoinGecko + CMC rank vs last week,
@@ -363,6 +364,18 @@ def check_coin(contract: str = ""):
     session = SessionLocal()
     try:
         return get_check(session, contract)
+    finally:
+        session.close()
+
+
+@app.get("/api/narratives")
+def get_narratives_api():
+    """Narratives tab: every CoinGecko category, hottest 24h first, with a
+    7-day change computed from our own daily snapshots. Display only."""
+    from narratives import get_narratives
+    session = SessionLocal()
+    try:
+        return get_narratives(session)
     finally:
         session.close()
 

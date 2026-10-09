@@ -86,6 +86,10 @@
          border-color: var(--accent); }
   .tab .count { font-weight: 400; opacity: 0.8; }
   .view[hidden], .tabs[hidden] { display: none; }
+  /* Narratives tab */
+  #narr-body .chg { font-weight: 700; font-variant-numeric: tabular-nums; }
+  #narr-body .chg.up { color: var(--good); } #narr-body .chg.down { color: var(--low); }
+  #narr-body .muted, #narr-body small { color: var(--muted); font-weight: 400; }
   .card { overflow-x: auto; }       /* wide tables scroll sideways on phones */
   @media (max-width: 560px) {
     .tab { flex-basis: 100%; }      /* stack the buttons full-width on phones */
@@ -271,6 +275,8 @@
       Coming Up · <bdi>طابور</bdi> <span class="count" id="count-queue"></span></button>
     <button class="tab" role="tab" id="tab-check" aria-controls="view-check" data-view="check">
       Check a Coin</button>
+    <button class="tab" role="tab" id="tab-narratives" aria-controls="view-narratives" data-view="narratives">
+      Narratives</button>
   </nav>
 
   <section class="view" id="view-active" role="tabpanel" aria-labelledby="tab-active">
@@ -356,6 +362,26 @@
     <button id="checkbtn" type="submit">Check</button>
   </form>
   <div id="checkresult"></div>
+  </section>
+
+  <section class="view" id="view-narratives" role="tabpanel" aria-labelledby="tab-narratives" hidden>
+  <h2>Narratives</h2>
+  <div class="sub" dir="rtl" lang="ar" style="text-align:right">أداء القطاعات — 24 ساعة من <bdi>CoinGecko</bdi>، و7 أيام محسوبة من بياناتنا اليومية. تُجمَّع البيانات يومياً.</div>
+  <div class="sub" id="narr-meta"></div>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Narrative</th>
+          <th class="num">24h %</th>
+          <th class="num">7d change %</th>
+          <th class="num">Market Cap</th>
+          <th class="num">Volume 24h</th>
+        </tr>
+      </thead>
+      <tbody id="narr-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
   </section>
 
   <section class="view" id="view-coin" hidden>
@@ -540,7 +566,7 @@
   // URL (#dropped / #queue) so a reload or a shared link opens the same view.
   // The 30-second refresh keeps updating all three, so switching is instant
   // and always current.
-  const VIEWS = ["active", "dropped", "queue", "check"];
+  const VIEWS = ["active", "dropped", "queue", "check", "narratives"];
   // A hand-edited / truncated link can hold a broken %-escape; decodeURIComponent
   // would throw and stop the whole page script (nothing would load), so fall
   // back to the raw text.
@@ -575,6 +601,49 @@
     }
     const hash = name === "active" ? "" : "#" + name;
     if (location.hash !== hash) history.replaceState(null, "", location.pathname + location.search + hash);
+    if (name === "narratives") loadNarratives();
+  }
+
+  // ---- Narratives tab (CoinGecko categories, our own 7-day history) --------
+  function fmtBig(v) {
+    if (v == null) return "—";
+    const a = Math.abs(v);
+    if (a >= 1e12) return "$" + (v / 1e12).toFixed(2) + "T";
+    if (a >= 1e9) return "$" + (v / 1e9).toFixed(1) + "B";
+    if (a >= 1e6) return "$" + Math.round(v / 1e6) + "M";
+    if (a >= 1e3) return "$" + Math.round(v / 1e3) + "K";
+    return "$" + Math.round(v);
+  }
+  function chgCell(v, note = "") {
+    if (v == null) return `<td class="num"><span class="muted">—</span>${note}</td>`;
+    const cls = v > 0 ? "up" : v < 0 ? "down" : "";
+    return `<td class="num"><span class="chg ${cls}">${v > 0 ? "+" : ""}${v.toFixed(2)}%</span>${note}</td>`;
+  }
+  let narrLoaded = 0;
+  async function loadNarratives() {
+    if (Date.now() - narrLoaded < 5 * 60 * 1000) return;     // the data changes once a day
+    const body = document.getElementById("narr-body"), meta = document.getElementById("narr-meta");
+    try {
+      const res = await fetch("/api/narratives", {cache: "no-store"});
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const d = await res.json();
+      narrLoaded = Date.now();
+      if (!d.rows.length) {
+        body.innerHTML = `<tr><td colspan="5" class="empty">No narrative snapshots yet — the daily run saves the first one.</td></tr>`;
+        meta.textContent = "";
+        return;
+      }
+      meta.textContent = `${d.rows.length} narratives · snapshot of ${longDate(d.as_of)} · `
+        + (d.days_of_history >= 7 ? "7 days of history" : `${d.days_of_history} of 7 days of history collected so far`);
+      body.innerHTML = d.rows.map(r => `<tr>
+          <td>${esc(r.name)}</td>
+          ${chgCell(r.chg_24h)}
+          ${chgCell(r.chg_7d, r.chg_7d != null && r.days < 7 ? ` <small class="muted">(${r.days} day${r.days === 1 ? "" : "s"})</small>` : "")}
+          <td class="num">${fmtBig(r.market_cap)}</td>
+          <td class="num">${fmtBig(r.volume_24h)}</td></tr>`).join("");
+    } catch (e) {
+      body.innerHTML = `<tr><td colspan="5" class="empty">Couldn't load narratives (${esc(e.message)}).</td></tr>`;
+    }
   }
   document.querySelectorAll(".tab").forEach(b =>
     b.addEventListener("click", () => showView(b.dataset.view)));

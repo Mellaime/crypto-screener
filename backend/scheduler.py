@@ -41,6 +41,7 @@ from tracking import run_daily_tracking
 from rank_check import run_rank_update
 from holders_check import run_holders_update
 from scoring import score_all, print_ranking
+from narratives import run_narrative_snapshot
 
 # How often the pipeline runs automatically.
 RUN_EVERY_HOURS = 24
@@ -113,6 +114,14 @@ def run_pipeline(raise_on_error=False):
 
         log.info("Updating holder counts (CMC DEX)...")
         run_holders_update()
+
+        # Narratives tab: today's CoinGecko category snapshot (ONE call).
+        # Display only - its own try so a CoinGecko hiccup never fails the run.
+        log.info("Saving narrative (category) snapshot...")
+        try:
+            run_narrative_snapshot()
+        except Exception:
+            log.exception("Narrative snapshot failed - continuing.")
 
         log.info("Scoring active coins...")
         results = score_all()
