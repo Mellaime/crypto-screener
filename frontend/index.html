@@ -226,6 +226,13 @@
                border-radius: 50%; background: var(--text); border: 3px solid var(--card); box-shadow: 0 0 0 1px var(--border); }
   .prbar .mk b { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); font-size: 12px;
                  white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* Relative Strength section */
+  .rsv { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 13px; font-weight: 700; border: 1px solid; }
+  .rsv.STRONG { color: var(--good); background: rgba(63,185,80,0.12); border-color: rgba(63,185,80,0.45); }
+  .rsv.SECTOR-DRIVEN { color: #d2a8ff; background: rgba(210,168,255,0.12); border-color: rgba(210,168,255,0.45); }
+  .rsv.MARKET-DRIVEN { color: #58a6ff; background: rgba(88,166,255,0.12); border-color: rgba(88,166,255,0.45); }
+  .rsv.WEAK { color: var(--low); background: rgba(248,81,73,0.10); border-color: rgba(248,81,73,0.45); }
+  .supply .val.up { color: var(--good); } .supply .val.down { color: var(--low); }
   .prends { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted);
             font-variant-numeric: tabular-nums; margin: 0 0 12px; }
 
@@ -630,6 +637,7 @@
       ${holdersCard(c)}
       ${revenueCard(c)}
       ${priceRangeCard(c.price_range)}
+      ${relStrengthCard(c.rel_strength)}
       ${supplyCard(c)}
       ${smartMoneyCard()}`;
     wireHolders((c.holders || {}).bars || []);
@@ -817,6 +825,7 @@
         </div></div>
       <div style="margin-top:12px">${txChart(r, "ck")}</div>
       ${priceRangeCard(r.price_range)}
+      ${relStrengthCard(r.rel_strength)}
       <div class="ratiocard"><h3>Filter steps</h3>
         <div class="note">Same order as the bot; the first ✗ is the reason above.</div>
         <ul class="supply steps">${steps}</ul></div>
@@ -1092,6 +1101,27 @@
         <li><span class="lbl">Current price position<small>0% = at the all-time low · 100% = at the all-time high</small></span>
             <span class="val">${pos == null ? "—" : pos > 0 && pos < 0.1 ? "&lt;0.1%" : pos.toFixed(1) + "%"}<small>${fmtPrice(pr.current)}</small></span></li>
       </ul></div>`;
+  }
+  // Relative Strength: the coin's 24h change vs Bitcoin and its CoinGecko
+  // sector, and a verdict on what's driving it (data, not advice).
+  function relStrengthCard(rs) {
+    rs = rs || {status: "unknown", reason: "no data yet"};
+    const head = `<div class="ratiocard"><h3>Relative Strength — why is it moving?</h3>
+      <div class="note">24h price change vs Bitcoin and the coin's CoinGecko sector. Updated once a day. Data, not advice.</div>`;
+    if (rs.status !== "ok") return head + `<div class="empty" style="padding:8px 0">${esc(rs.reason || "No data")}</div></div>`;
+    const p = v => v == null ? "—" : (v > 0 ? "+" : "") + v.toFixed(1) + "%";
+    const cls = v => v == null ? "" : v > 0 ? " up" : v < 0 ? " down" : "";
+    const row = (lbl, sub, v) => `<li><span class="lbl">${lbl}<small>${sub}</small></span><span class="val${cls(v)}">${p(v)}</span></li>`;
+    return head + `
+      <ul class="supply">
+        ${row("Coin (24h)", "this coin's price change", rs.coin_24h)}
+        ${row("Market / BTC (24h)", "Bitcoin's price change", rs.market_24h)}
+        ${row("Sector" + (rs.sector_name ? " · " + esc(rs.sector_name) : ""),
+              rs.sector_name ? "category market cap change" : "no CoinGecko category with data - verdict uses the market only",
+              rs.sector_24h)}
+        <li><span class="lbl">Verdict</span><span class="val"><span class="rsv ${esc(rs.verdict)}">${esc(rs.verdict)}</span></span></li>
+      </ul>
+      <div class="opinion" style="margin-top:10px">${esc(rs.line || "")}</div></div>`;
   }
   // Smart Money: placeholder only (no data source yet) - same list style as
   // the Supply section; no data is fetched for it.

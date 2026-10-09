@@ -179,6 +179,7 @@ def run_check(contract):
     from tx_bars import fetch_from_codex
     from revenue_detail import fetch as fetch_revenue
     from price_range import from_market_data
+    from relative_strength import from_coingecko as rel_from_cg
 
     # Outside lookups run in PARALLEL (a check used to take 16-27 s one after
     # another): first CoinGecko + CMC together (name, market cap, tags)...
@@ -364,6 +365,8 @@ def run_check(contract):
         # Display only: from the CoinGecko response above (no extra call).
         "price_range": from_market_data(md) if md else
                        {"status": "unknown", "reason": "CoinGecko doesn't list this contract"},
+        "rel_strength": rel_from_cg(cg) if cg else
+                        {"status": "unknown", "reason": "CoinGecko doesn't list this contract"},
         "tx_bars": (daily or {}).get("bars") or [],
         "tx_error": tx_err,
         "tx_window_days": 15,
@@ -432,7 +435,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange")   # result layout: has the Price Range section
+            "|pricerange|relstrength")   # result layout: has these display sections
 
 
 def get_check(session, contract):
