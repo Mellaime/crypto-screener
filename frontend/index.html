@@ -306,7 +306,7 @@
   <section class="view" id="view-active" role="tabpanel" aria-labelledby="tab-active">
   <h2 id="active-title">Active coins</h2>
   <div class="badgelegend"><span>🆕 new — entered the list on the latest daily run</span>
-    <span>🔥 hot — 24h volume above 50% of market cap</span></div>
+    <span>🔥 hot — 24h volume above 25% of market cap</span></div>
   <div class="card">
     <table>
       <thead>
@@ -514,12 +514,13 @@
       </tr>`).join("");
   }
 
-  // 🆕 = entered the active list on the latest run; 🔥 = Volume / MCap > 50%.
+  // 🆕 = entered the active list on the latest run; 🔥 = Volume / MCap > HOT_VOL_MCAP_PCT.
+  const HOT_VOL_MCAP_PCT = 25;
   function coinBadges(c) {
     let s = "";
     if (c.is_new) s += `<span class="cbadge" title="New: entered the active list on the latest daily run" aria-label="new this run">🆕</span>`;
-    if (c.vol_mcap != null && c.vol_mcap > 50)
-      s += `<span class="cbadge" title="Hot: 24h volume is ${c.vol_mcap.toFixed(1)}% of market cap (above 50%)" aria-label="volume above 50% of market cap">🔥</span>`;
+    if (c.vol_mcap != null && c.vol_mcap > HOT_VOL_MCAP_PCT)
+      s += `<span class="cbadge" title="Hot: 24h volume is ${c.vol_mcap.toFixed(1)}% of market cap (above ${HOT_VOL_MCAP_PCT}%)" aria-label="volume above ${HOT_VOL_MCAP_PCT}% of market cap">🔥</span>`;
     return s;
   }
 
