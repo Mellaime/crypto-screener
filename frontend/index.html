@@ -101,6 +101,13 @@
   .dday:focus-visible .bx { outline: 2px solid var(--accent); outline-offset: 2px; }
   .dday.none .bx { border: 1px dashed #6e7681; border-radius: 3px; }
   #narrtip { position: fixed; }
+  /* clickable sort headers */
+  .sorth { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+           font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; white-space: nowrap; }
+  .sorth:hover { color: var(--text); }
+  .sorth:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  .sorth .arr { display: inline-block; width: 10px; font-size: 10px; color: var(--accent); }
+  th[aria-sort="none"] .sorth .arr::after { content: "↕"; color: var(--muted); opacity: 0.6; }
   #narrtip .up { color: var(--good); } #narrtip .down { color: var(--low); } #narrtip .flat { color: var(--muted); }
   .card { overflow-x: auto; }       /* wide tables scroll sideways on phones */
   @media (max-width: 560px) {
@@ -387,8 +394,8 @@
         <tr>
           <th>Narrative</th>
           <th>Daily · 7 days <small style="font-weight:400;text-transform:none;letter-spacing:0">(bar = market cap · hover or tap a bar for details)</small></th>
-          <th class="num">Market Cap</th>
-          <th class="num">Volume 24h</th>
+          <th class="num" data-sort="market_cap" aria-sort="none"><button type="button" class="sorth">Market Cap<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="volume_24h" aria-sort="none"><button type="button" class="sorth">Volume 24h<span class="arr" aria-hidden="true"></span></button></th>
         </tr>
       </thead>
       <tbody id="narr-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
@@ -692,7 +699,35 @@
     document.addEventListener("click", () => { if (narrPinned) narrHide(true); });
     window.addEventListener("scroll", () => narrHide(true), {passive: true});
   })();
-  let narrLoaded = 0;
+  // Sorting: default = the server's order. Clicking Market Cap or Volume 24h
+  // sorts by that column high -> low; clicking the same header again flips
+  // it. The arrow shows the active column and direction.
+  let narrLoaded = 0, narrData = null, narrSort = null;   // narrSort = {key, dir: 1 | -1}
+  function renderNarratives() {
+    const body = document.getElementById("narr-body"), d = narrData;
+    narrRows = d.rows.slice();
+    if (narrSort) {
+      const {key, dir} = narrSort;
+      narrRows.sort((a, b) => (a[key] == null) - (b[key] == null) || dir * ((a[key] || 0) - (b[key] || 0)));
+    }
+    document.querySelectorAll("#view-narratives th[data-sort]").forEach(th => {
+      const on = narrSort && narrSort.key === th.dataset.sort;
+      th.setAttribute("aria-sort", on ? (narrSort.dir === 1 ? "ascending" : "descending") : "none");
+      th.querySelector(".arr").textContent = on ? (narrSort.dir === 1 ? "▲" : "▼") : "";
+    });
+    narrHide(true);
+    body.innerHTML = narrRows.map((r, i) => `<tr>
+        <td>${esc(r.name)}</td>
+        <td>${dayBars(r.daily, d.bar_dates, i)}</td>
+        <td class="num">${fmtBig(r.market_cap)}</td>
+        <td class="num">${fmtBig(r.volume_24h)}</td></tr>`).join("");
+  }
+  document.querySelectorAll("#view-narratives th[data-sort] .sorth").forEach(btn =>
+    btn.addEventListener("click", () => {
+      const key = btn.closest("th").dataset.sort;
+      narrSort = narrSort && narrSort.key === key ? {key, dir: -narrSort.dir} : {key, dir: -1};
+      if (narrData && narrData.rows.length) renderNarratives();
+    }));
   async function loadNarratives() {
     if (Date.now() - narrLoaded < 5 * 60 * 1000) return;     // the data changes once a day
     const body = document.getElementById("narr-body"), meta = document.getElementById("narr-meta");
@@ -708,13 +743,9 @@
       }
       meta.textContent = `${d.rows.length} narratives with a total market cap of at least ${fmtBig(d.min_mcap)} · snapshot of ${longDate(d.as_of)} · `
         + (d.days_of_history >= 7 ? "7 days of history" : `${d.days_of_history} of 7 days collected so far`)
-        + " · sorted by 24h market-cap change, hottest first";
-      narrRows = d.rows;
-      body.innerHTML = d.rows.map((r, i) => `<tr>
-          <td>${esc(r.name)}</td>
-          <td>${dayBars(r.daily, d.bar_dates, i)}</td>
-          <td class="num">${fmtBig(r.market_cap)}</td>
-          <td class="num">${fmtBig(r.volume_24h)}</td></tr>`).join("");
+        + " · click Market Cap or Volume 24h to sort";
+      narrData = d;
+      renderNarratives();
     } catch (e) {
       body.innerHTML = `<tr><td colspan="4" class="empty">Couldn't load narratives (${esc(e.message)}).</td></tr>`;
     }
