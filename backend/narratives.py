@@ -7,15 +7,16 @@ history. DISPLAY ONLY - the filter and drop_logic never read it.
 
 Daily job (scheduler.py) - save_daily_snapshot():
     ONE call to CoinGecko /coins/categories. Only sectors whose total market
-    cap is at least MIN_SECTOR_MCAP ($200M) are stored - one
+    cap is at least MIN_SECTOR_MCAP ($200M), and that aren't stablecoin
+    sectors (EXCLUDE_NAME_WORDS), are stored - one
     narrative_snapshots row per sector for today (date, category_id, name,
     market_cap, volume_24h, market_cap_change_24h). Re-running the same day
     overwrites today's rows (and removes any of today's rows that are now under
     the cut). Rows older than KEEP_DAYS are deleted.
 
 Dashboard (/api/narratives) - get_narratives():
-    Reads narrative_snapshots only (the same $200M cut is applied again before
-    sorting, so nothing under it ever reaches the page). Per sector, one slot
+    Reads narrative_snapshots only (the same $200M cut and stablecoin
+    exclusion are applied again before sorting, so neither ever reaches the page). Per sector, one slot
     per day for the last BAR_DAYS days:
         mcap     = that day's market cap            -> the bar's height
         volume   = that day's 24h volume
@@ -38,6 +39,15 @@ BAR_DAYS = 7           # the page shows one bar per day for the last 7 days
 # Hard, fixed server-side cut: sectors whose TOTAL market cap is under this
 # are neither stored nor shown (small categories swing wildly on tiny volume).
 MIN_SECTOR_MCAP = 200_000_000
+# Fixed exclusion: stablecoin sectors (Stablecoins, USD / EUR / JPY Stablecoin,
+# Algorithmic Stablecoin, ...) are pegged and don't move - neither stored nor
+# shown. Matched case-insensitively on the category name.
+EXCLUDE_NAME_WORDS = ("stablecoin",)
+
+
+def is_excluded(name):
+    low = (name or "").lower()
+    return any(w in low for w in EXCLUDE_NAME_WORDS)
 
 
 def _utc_today():
@@ -60,10 +70,12 @@ def save_daily_snapshot(session):
 
     today = _utc_today()
     cats, transient = _cg_get("/coins/categories")
-    res = {"fetched": None, "saved": None, "removed_today": 0, "deleted": 0}
+    res = {"fetched": None, "saved": None, "stablecoin": 0, "removed_today": 0, "deleted": 0}
     if isinstance(cats, list) and cats:
         res["fetched"] = len(cats)
-        kept = [c for c in cats if c.get("id") and (_num(c.get("market_cap")) or 0) >= MIN_SECTOR_MCAP]
+        big = [c for c in cats if c.get("id") and (_num(c.get("market_cap")) or 0) >= MIN_SECTOR_MCAP]
+        kept = [c for c in big if not is_excluded(c.get("name"))]
+        res["stablecoin"] = len(big) - len(kept)
         existing = {r.category_id: r for r in
                     session.query(NarrativeSnapshot).filter(NarrativeSnapshot.date == today)}
         for c in kept:
@@ -94,9 +106,9 @@ def run_narrative_snapshot():
     session = SessionLocal()
     try:
         res = save_daily_snapshot(session)
-        log.info("Narrative snapshots: %s categories fetched, %s sectors >= $%dM saved, "
-                 "%d of today's removed (under the cut), %d old rows pruned",
-                 res["fetched"], res["saved"], MIN_SECTOR_MCAP // 1_000_000,
+        log.info("Narrative snapshots: %s categories fetched, %s stablecoin sectors excluded, "
+                 "%s sectors >= $%dM saved, %d of today's removed (excluded now), %d old rows pruned",
+                 res["fetched"], res["stablecoin"], res["saved"], MIN_SECTOR_MCAP // 1_000_000,
                  res["removed_today"], res["deleted"])
         return res
     finally:
@@ -131,13 +143,18 @@ def get_narratives(session):
         by_cat.setdefault(r.category_id, {})[r.date] = r
     current = {cid: days for cid, days in by_cat.items() if latest in days}
 
-    # HARD CUT before anything is ranked or sorted.
+    # HARD CUTS before anything is ranked or sorted: $200M, then stablecoins.
     count_before = len(current)
     current = {cid: days for cid, days in current.items()
                if (days[latest].market_cap or 0) >= MIN_SECTOR_MCAP}
+    after_mcap = len(current)
+    current = {cid: days for cid, days in current.items()
+               if not is_excluded(days[latest].category_name)}
     count_after = len(current)
-    log.info("Narratives: %d sectors before the $%dM market-cap cut, %d after",
-             count_before, MIN_SECTOR_MCAP // 1_000_000, count_after)
+    log.info("Narratives: %d sectors before the $%dM market-cap cut, %d after it; "
+             "%d stablecoin sectors removed -> %d shown",
+             count_before, MIN_SECTOR_MCAP // 1_000_000, after_mcap,
+             after_mcap - count_after, count_after)
 
     try:                                    # fresher 24h % from the shared 30-min cache
         from relative_strength import shared_market
@@ -168,4 +185,5 @@ def get_narratives(session):
     return {"as_of": latest.isoformat(), "rows": out,
             "days_of_history": min(BAR_DAYS, (latest - first).days + 1) if first else 0,
             "bar_dates": [d.isoformat() for d in bar_dates],
-            "min_mcap": MIN_SECTOR_MCAP, "count_before": count_before, "count_after": count_after}
+            "min_mcap": MIN_SECTOR_MCAP, "count_before": count_before, "count_after": count_after,
+            "stablecoin_removed": after_mcap - count_after}
