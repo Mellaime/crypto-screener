@@ -71,16 +71,23 @@ VOLUME_LOOKBACK_DAYS = 10    # ...taken from at most the last 10 days
 LIQ_WINDOW_DAYS = 30         # liquidity: vs up to 30 days back
 CRASH_PCT = 70               # price or liquidity down this much ...
 CRASH_WINDOW_DAYS = 3        # ... vs the peak of the last 3 days = crash
+# Two kinds of crash (both need two sources to agree):
+#   PRICE crash      -> the coin is removed from the site and BLOCKED for
+#                       CRASH_BLOCK_DAYS: no recovery; after that it can only
+#                       come back by passing the entry filter again (once).
+#   LIQUIDITY-only   -> price roughly held: a normal drop (7-day recovery).
+CRASH_BLOCK_DAYS = 15        # = rotation.RECHECK_AFTER_DAYS
 
 
-def _delete_coin(session, coin):
+def _delete_coin(session, coin, outcome="deleted", when=None):
     """Remove a coin completely: its snapshots, dropped_coins rows, weekly
     rank history, itself (every table that points at the coin - otherwise
-    the database refuses the delete). The entry queue records the deletion,
-    so the coin can come back through the entry filter ONCE, 15 days from now
+    the database refuses the delete). The entry queue records the deletion
+    (outcome "deleted", or "crashed" for a 15-day crash block), so the coin
+    can come back through the entry filter ONCE, 15 days after `when`
     (rotation.py)."""
     from rotation import mark_deleted
-    mark_deleted(session, coin.chain, coin.contract)
+    mark_deleted(session, coin.chain, coin.contract, when=when, outcome=outcome)
     for table in (DailySnapshot, DroppedCoin, RankHistory):
         session.query(table).filter_by(coin_id=coin.id).delete(
             synchronize_session=False
@@ -140,7 +147,7 @@ def _second_source_price_fall(coin, days):
     return None, None
 
 
-def crash_reason(session, coin, today, suspects=None):
+def crash_check(session, coin, today, suspects=None):
     """The crash override: "Crash - ..." if today's price or liquidity is
     down CRASH_PCT% or more from its highest reading in the previous
     CRASH_WINDOW_DAYS days - and TWO SOURCES AGREE:
@@ -156,7 +163,7 @@ def crash_reason(session, coin, today, suspects=None):
                      DailySnapshot.date >= today - timedelta(days=CRASH_WINDOW_DAYS))
              .order_by(DailySnapshot.date).all())
     if len(snaps) < 2:
-        return None
+        return None, None
 
     falls, notes = [], []
     # Liquidity: each source against its own peak.
@@ -184,9 +191,32 @@ def crash_reason(session, coin, today, suspects=None):
     if notes and suspects is not None:
         suspects.append((coin.name, "; ".join(notes)))
     if not falls:
-        return None
+        return None, None
     falls.sort(key=lambda x: not x.startswith("price"))      # "price ... and liquidity ..."
-    return f"Crash - {' and '.join(falls)} in {CRASH_WINDOW_DAYS} days"
+    if falls[0].startswith("price"):
+        # REAL CRASH: the price itself collapsed -> 15-day block.
+        return "price", f"Crash - {' and '.join(falls)} in {CRASH_WINDOW_DAYS} days"
+    # Price roughly held, liquidity collapsed -> a normal drop (7-day recovery).
+    return "liquidity", f"Liquidity crash - {falls[0]} in {CRASH_WINDOW_DAYS} days"
+
+
+def crash_reason(session, coin, today, suspects=None):
+    """crash_check's reason only (None = no confirmed crash)."""
+    return crash_check(session, coin, today, suspects)[1]
+
+
+def is_price_crash_reason(reason):
+    """A stored drop reason that records a confirmed PRICE crash (also the
+    older "Crash - price down ..." wording, before the 15-day block existed)."""
+    r = reason or ""
+    return r.startswith("Crash - ") and "price down" in r
+
+
+def _block_crashed(session, coin, reason, when):
+    """REAL CRASH: remove the coin from the site now and block it for
+    CRASH_BLOCK_DAYS from `when` (the entry queue's "crashed" outcome; after
+    that it can only come back through the full entry filter)."""
+    _delete_coin(session, coin, outcome="crashed", when=when)
 
 
 def in_grace(coin, today):
@@ -282,10 +312,11 @@ def run_drop_logic():
     now = utcnow()
     today = now.date()
     stats = {"active_remaining": 0, "in_grace": 0, "checked": 0, "newly_dropped": 0, "crashed": 0,
-             "recovered": 0, "still_dropped": 0, "removed_7d": 0,
+             "crash_blocked": 0, "recovered": 0, "still_dropped": 0, "removed_7d": 0,
              "removed_never_qualified": 0}
     dropped_details, recovered_details, removed_details = [], [], []
     crash_suspects = []          # one-source crash readings: logged, not dropped
+    blocked_details = []         # confirmed price crashes: removed + 15-day block
     just_dropped = set()
     # Snapshots are dated with date.today() (like save_to_db / tracking), so
     # the Codex trend history is read against that same date.
@@ -296,7 +327,12 @@ def run_drop_logic():
         # --- ACTIVE: grace, then the 4 health criteria -----------------------
         for coin in session.query(Coin).filter_by(status="active").all():
             # Crash override FIRST - applies even during the grace period.
-            reason = crash_reason(session, coin, snap_day, crash_suspects)
+            kind, reason = crash_check(session, coin, snap_day, crash_suspects)
+            if kind == "price":                            # REAL crash -> 15-day block
+                _block_crashed(session, coin, reason, now)
+                stats["crash_blocked"] += 1
+                blocked_details.append((coin.name, reason))
+                continue
             if reason is not None:
                 stats["crashed"] += 1
             elif in_grace(coin, today):
@@ -322,10 +358,26 @@ def run_drop_logic():
         for coin in session.query(Coin).filter_by(status="dropped").all():
             if coin.id in just_dropped:
                 continue                                   # dropped a moment ago
-            last = (session.query(DroppedCoin.dropped_date)
+            last = (session.query(DroppedCoin.dropped_date, DroppedCoin.reason)
                     .filter_by(coin_id=coin.id)
                     .order_by(DroppedCoin.dropped_date.desc()).first())
             days = days_since(last[0], today) if last else RECOVERY_DAYS
+
+            # Crash block: a coin dropped for a confirmed PRICE crash (e.g. an
+            # older "Crash - price down ..." drop), or whose price crashes
+            # while dropped, is never recovered - it's removed and blocked
+            # for CRASH_BLOCK_DAYS from the crash.
+            if last and is_price_crash_reason(last[1]):
+                _block_crashed(session, coin, last[1], last[0])
+                stats["crash_blocked"] += 1
+                blocked_details.append((coin.name, last[1] + f" (dropped {last[0]:%Y-%m-%d})"))
+                continue
+            kind, reason = crash_check(session, coin, snap_day, crash_suspects)
+            if kind == "price":
+                _block_crashed(session, coin, reason, now)
+                stats["crash_blocked"] += 1
+                blocked_details.append((coin.name, reason))
+                continue
 
             if unhealthy_reason(coin, session, snap_day) is None:
                 # all 4 healthy -> RECOVER
@@ -355,18 +407,23 @@ def run_drop_logic():
         session.close()
 
     stats["crash_suspects"] = len(crash_suspects)
-    _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects)
+    _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects,
+                   blocked_details)
     return stats
 
 
-def _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects=()):
+def _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects=(),
+                   blocked_details=()):
     line = "=" * 52
     print(line)
     print("  DROP LOGIC SUMMARY")
     print(line)
     print(f"  Active - in {GRACE_DAYS}-day grace (untouched) .. {stats['in_grace']:>5}")
     print(f"  Active - re-checked ............... {stats['checked']:>5}")
-    print(f"  Crash override (>= {CRASH_PCT}% in {CRASH_WINDOW_DAYS}d) .... {stats['crashed']:>5}")
+    print(f"  PRICE crash -> removed, {CRASH_BLOCK_DAYS}-day block {stats.get('crash_blocked', 0):>5}")
+    for name, reason in blocked_details:
+        print(f"      x {(name or 'unknown')[:18]:<18}  ({reason})")
+    print(f"  Liquidity crash (normal drop) .... {stats['crashed']:>5}")
     print(f"  Suspect crash readings (1 source) . {len(crash_suspects):>5}   (not dropped - re-checked tomorrow)")
     for name, note in crash_suspects:
         print(f"      ? {(name or 'unknown')[:18]:<18}  ({note})")
