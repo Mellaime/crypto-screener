@@ -115,8 +115,13 @@
   }
 
   /* Clickable rows -> coin detail page */
-  #coins-body tr { cursor: pointer; }
-  #coins-body tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #coins-body tr, #dropped-body tr[data-contract] { cursor: pointer; }
+  #coins-body tr:focus-visible, #dropped-body tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #coins-body tr:hover, #dropped-body tr[data-contract]:hover { background: rgba(88,166,255,0.05); }
+  .reason[dir="rtl"] { text-align: right; }
+  /* Active table badges + legend */
+  .cbadge { display: inline-block; font-size: 13px; line-height: 1; margin-left: 3px; cursor: help; }
+  .badgelegend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 0 0 8px; }
 
   /* Coin detail page */
   :root { --buy: #238f5c; --sell: #e65d8a; }   /* validated pair (CVD-safe on the dark card) */
@@ -300,6 +305,8 @@
 
   <section class="view" id="view-active" role="tabpanel" aria-labelledby="tab-active">
   <h2 id="active-title">Active coins</h2>
+  <div class="badgelegend"><span>🆕 new — entered the list on the latest daily run</span>
+    <span>🔥 hot — 24h volume above 25% of market cap</span></div>
   <div class="card">
     <table>
       <thead>
@@ -492,7 +499,7 @@
       <tr tabindex="0" data-contract="${esc(c.contract)}" title="Open ${esc(c.name)}">
         <td class="rank">${c.rank}</td>
         <td>
-          <div class="name">${esc(c.name)} ${secBadge(c)}</div>
+          <div class="name">${esc(c.name)}${coinBadges(c)} ${secBadge(c)}</div>
           <span class="chain">${esc(c.chain)}</span>
           ${secInfo(c)}
         </td>
@@ -507,6 +514,16 @@
       </tr>`).join("");
   }
 
+  // 🆕 = entered the active list on the latest run; 🔥 = Volume / MCap > HOT_VOL_MCAP_PCT.
+  const HOT_VOL_MCAP_PCT = 25;
+  function coinBadges(c) {
+    let s = "";
+    if (c.is_new) s += `<span class="cbadge" title="New: entered the active list on the latest daily run" aria-label="new this run">🆕</span>`;
+    if (c.vol_mcap != null && c.vol_mcap > HOT_VOL_MCAP_PCT)
+      s += `<span class="cbadge" title="Hot: 24h volume is ${c.vol_mcap.toFixed(1)}% of market cap (above ${HOT_VOL_MCAP_PCT}%)" aria-label="volume above ${HOT_VOL_MCAP_PCT}% of market cap">🔥</span>`;
+    return s;
+  }
+
   function renderDropped(data) {
     const body = document.getElementById("dropped-body");
     document.getElementById("dropped-title").textContent =
@@ -517,11 +534,11 @@
       return;
     }
     body.innerHTML = data.dropped.map(d => `
-      <tr>
+      <tr${d.contract ? ` tabindex="0" data-contract="${esc(d.contract)}" title="Open ${esc(d.name)}"` : ""}>
         <td><div class="name">${esc(d.name)}</div><span class="chain">${esc(d.chain)}</span></td>
         ${priceCell(d)}
         <td class="num" style="text-align:left">${esc(d.date)}</td>
-        <td class="reason">${esc(d.reason)}</td>
+        <td class="reason" dir="rtl" lang="ar" title="${esc(d.reason)}">${esc(d.reason_ar || d.reason)}</td>
       </tr>`).join("");
   }
 
@@ -753,17 +770,25 @@
   document.querySelectorAll(".tab").forEach(b =>
     b.addEventListener("click", () => showView(b.dataset.view)));
   // Click (or Enter) on an active-coin row opens its detail page.
+  let backTo = "active";     // which table "Back" returns to
   function openRow(e) {
-    const tr = e.target.closest("#coins-body tr[data-contract]");
+    const tr = e.target.closest("#coins-body tr[data-contract], #dropped-body tr[data-contract]");
+    if (tr) {
+      backTo = tr.closest("#dropped-body") ? "dropped" : "active";
+      document.getElementById("back").textContent = backTo === "dropped" ? "← Back to Dropped coins" : "← Back to Active coins";
+    }
     if (tr) showView("coin/" + encodeURIComponent(tr.dataset.contract));
   }
   document.getElementById("coins-body").addEventListener("click", openRow);
   document.getElementById("coins-body").addEventListener("keydown", e => { if (e.key === "Enter") openRow(e); });
+  document.getElementById("dropped-body").addEventListener("click", openRow);
+  document.getElementById("dropped-body").addEventListener("keydown", e => { if (e.key === "Enter") openRow(e); });
   // "Back to Active coins" always lands on the Active table (the browser's
   // own back button still steps through history).
   document.getElementById("back").addEventListener("click", () => {
-    history.pushState(null, "", location.pathname + location.search);
-    showView("active");
+    const to = backTo || "active";
+    history.pushState(null, "", location.pathname + location.search + (to === "active" ? "" : "#" + to));
+    showView(to);
   });
   window.addEventListener("popstate", () => showView(location.hash.slice(1)));
 

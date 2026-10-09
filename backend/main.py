@@ -99,6 +99,46 @@ def make_narrative(chain, mcap, vol_liq_ratio, arabic=False):
     return f"{size} token on {chain} with {activity}."
 
 
+def reason_ar(reason):
+    """A drop reason (drop_logic.py, stored in English) as an Arabic sentence.
+    Numbers, %, dates, amounts and source names stay left-to-right (U+2066
+    isolates). Unknown / older free-text reasons are returned unchanged."""
+    import re
+    from relative_strength import _ltr
+    r = (reason or "").strip()
+
+    def pct(v):
+        return _ltr(v + "%")
+
+    m = re.fullmatch(r"Crash - (.+) in (\d+) days", r)
+    if m:
+        parts = []
+        for p in m.group(1).split(" and "):
+            mm = re.fullmatch(r"(price|liquidity) down ([\d.]+)%", p.strip())
+            if not mm:
+                return reason
+            parts.append(("السعر انخفض " if mm.group(1) == "price" else "السيولة انخفضت ")
+                         + pct(mm.group(2)))
+        return f"انهيار — {' و'.join(parts)} خلال {_ltr(m.group(2))} أيام"
+    m = re.fullmatch(r"Volume falling \(last (\d+) daily readings\)", r)
+    if m:
+        return f"حجم التداول يتراجع (آخر {_ltr(m.group(1))} قراءات يومية)"
+    m = re.fullmatch(r"Liquidity down ([\d.]+)% since (\S+)", r)
+    if m:
+        return f"السيولة انخفضت {pct(m.group(1))} منذ {_ltr(m.group(2))}"
+    m = re.fullmatch(r"Liquidity under (\$[\d,]+) \((\$[\d,]+) on Codex and DexScreener\)", r)
+    if m:
+        return (f"السيولة أقل من {_ltr(m.group(1))} ({_ltr(m.group(2))} على "
+                f"{_ltr('Codex')} و{_ltr('DexScreener')})")
+    m = re.fullmatch(r"Holders down ([\d.]+)% \((.+) -> (.+)\)", r)
+    if m:
+        return f"عدد الحاملين انخفض {pct(m.group(1))} ({_ltr(m.group(2) + ' → ' + m.group(3))})"
+    m = re.fullmatch(r"Honeypot flagged \((.*)\)", r)
+    if m:
+        return f"مُصنَّفة كفخ (honeypot) لا يمكن البيع منه ({_ltr(m.group(1))})"
+    return reason
+
+
 def _iso(dt):
     """Datetime -> 'YYYY-MM-DDTHH:MM:SSZ' (UTC), or None."""
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
@@ -110,6 +150,16 @@ def get_coins():
     session = SessionLocal()
     try:
         coins = session.query(Coin).filter_by(status="active").all()
+
+        # 🆕 = first recorded during the most recent filter run (run_log.run_at
+        # is stamped when that run's saving finishes; a run takes < 3 h). Uses
+        # first_seen, so a re-homed coin (fresh active_since) isn't "new".
+        from datetime import timedelta
+        from models import RunLog
+        last_run = session.query(RunLog.run_at).order_by(RunLog.run_at.desc()).first()
+        new_from = new_to = None
+        if last_run:
+            new_from, new_to = last_run[0] - timedelta(hours=3), last_run[0] + timedelta(minutes=5)
 
         rows = []
         for coin in coins:
@@ -134,6 +184,8 @@ def get_coins():
                 "volume": snap.volume,
                 "vol_liq": b["vol_liq_ratio"],     # e.g. 4.10 (means 4.10x)
                 "vol_mcap": b["vol_mcap_pct"],      # e.g. 25.4 (means 25.4%)
+                "is_new": bool(new_from and coin.first_seen
+                               and new_from <= coin.first_seen <= new_to),
                 "holders": snap.holders,            # None until we have a source
                 "revenue": snap.revenue,            # DefiLlama daily revenue (None if unknown)
                 "score": b["total"],
@@ -173,10 +225,12 @@ def get_dropped():
         rows = [{
             "name": coin.name,
             "chain": coin.chain,
+            "contract": coin.contract,              # opens the coin's detail page
             "price": coin.price_usd,                # current USD price (refreshed each run)
             "price_updated": _iso(coin.price_updated_at),
             "date": dropped.dropped_date.strftime("%Y-%m-%d"),
             "reason": dropped.reason,
+            "reason_ar": reason_ar(dropped.reason),
         } for dropped, coin in results]
 
         return {"count": len(rows), "dropped": rows}
