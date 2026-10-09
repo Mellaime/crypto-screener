@@ -326,3 +326,21 @@ class RelStrengthCache(Base):
     contract = Column(String, nullable=False, index=True)   # stored lowercased
     day = Column(Date, nullable=False)                       # UTC day it was fetched
     data = Column(String, nullable=False)                    # JSON
+
+
+class NarrativeSnapshot(Base):
+    """
+    "Narratives" tab: one CoinGecko category's numbers on one UTC day
+    (narratives.py). Saved once a day by the daily job from a single
+    /coins/categories call; rows older than 7 days are deleted. Display only.
+    """
+    __tablename__ = "narrative_snapshots"
+    __table_args__ = (UniqueConstraint("date", "category_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(Date, nullable=False, index=True)          # UTC day
+    category_id = Column(String, nullable=False, index=True)  # CoinGecko category id
+    category_name = Column(String, nullable=False)
+    market_cap = Column(Float)
+    volume_24h = Column(Float)
+    market_cap_change_24h = Column(Float)                     # % (CoinGecko)
