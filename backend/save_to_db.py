@@ -352,7 +352,8 @@ def save_tokens(tokens):
                 stats["liquidity_unknown"] += 1
             # ...and a minimum: under $5K on BOTH Codex and DexScreener -> too
             # thin to analyze (the higher reading counts).
-            thin, _ = too_thin(liq.get("today_liq"), t.get("liquidity_usd"))
+            thin, _ = too_thin(liq.get("today_liq"), t.get("liquidity_usd"),
+                               label=t.get("name") or t.get("symbol") or t["contract"])
             if thin:
                 stats["skipped_thin"] += 1
                 continue

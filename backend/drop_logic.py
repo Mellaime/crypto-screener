@@ -169,9 +169,15 @@ def crash_check(session, coin, today, suspects=None):
     if len(snaps) < 2:
         return None, None
 
+    from liquidity_check import codex_unreliable, MISMATCHES
     falls, notes = [], []
-    # Liquidity: each source against its own peak.
-    liq = {"Codex": _fall_pct(sn.codex_liquidity for sn in snaps),
+    # Liquidity: each source against its own peak. On a source mismatch
+    # (Codex > 10x DexScreener on any day in the window) Codex is left out -
+    # DexScreener alone can then only ever make a "suspect" reading.
+    mismatch = any(codex_unreliable(sn.codex_liquidity, sn.liquidity) for sn in snaps)
+    if mismatch:
+        MISMATCHES.append((coin.name, snaps[-1].codex_liquidity or 0, snaps[-1].liquidity or 0))
+    liq = {"Codex": None if mismatch else _fall_pct(sn.codex_liquidity for sn in snaps),
            "DexScreener": _fall_pct(sn.liquidity for sn in snaps)}
     big = {src: f for src, f in liq.items() if f is not None and f >= CRASH_PCT}
     if len(big) == 2:
@@ -179,7 +185,8 @@ def crash_check(session, coin, today, suspects=None):
     elif big:
         (src, f), = big.items()
         other = "Codex" if src == "DexScreener" else "DexScreener"
-        seen = f"{-liq[other]:+.1f}%" if liq[other] is not None else "no reading"
+        seen = (f"{-liq[other]:+.1f}%" if liq[other] is not None
+                else "unreliable - source mismatch" if other == "Codex" and mismatch else "no reading")
         notes.append(f"liquidity down {f:.1f}% on {src} only ({other}: {seen})")
 
     # Price: the stored price, confirmed by an independent source.
@@ -223,14 +230,17 @@ def is_liquidity_crash_reason(reason):
     return r.startswith("Liquidity crash - ") or (r.startswith("Crash - ") and "price down" not in r)
 
 
-def _best_liquidity(sn):
-    vals = [v for v in (sn.codex_liquidity, sn.liquidity) if v is not None]
-    return max(vals) if vals else None
+def _best_liquidity(sn, label=None):
+    """The liquidity that counts for a snapshot (liquidity_check.best_liquidity:
+    higher of Codex / DexScreener, or DexScreener on a source mismatch)."""
+    from liquidity_check import best_liquidity
+    return best_liquidity(sn.codex_liquidity, sn.liquidity, label)[0]
 
 
 def liquidity_recovery(session, coin, dropped_at, today):
     """(recovered, now_liq, pre_crash_peak) for a liquidity-crash drop.
-    Liquidity = the higher of Codex and DexScreener (as for the $5K minimum).
+    Liquidity = the higher of Codex and DexScreener, or DexScreener alone on
+    a source mismatch (as for the $5K minimum).
     pre_crash_peak = highest reading in the CRASH_WINDOW_DAYS days before the
     drop; recovered = today's (latest) reading >= LIQ_CRASH_RECOVER_SHARE of it.
     No pre-crash reading -> nothing to compare against -> recovered."""
@@ -242,7 +252,7 @@ def liquidity_recovery(session, coin, dropped_at, today):
     latest = (session.query(DailySnapshot)
               .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date <= today)
               .order_by(DailySnapshot.date.desc()).first())
-    now_liq = _best_liquidity(latest) if latest else None
+    now_liq = _best_liquidity(latest, coin.name) if latest else None
     if not peak:
         return True, now_liq, peak
     return (now_liq or 0) >= LIQ_CRASH_RECOVER_SHARE * peak, now_liq, peak
@@ -284,16 +294,24 @@ def codex_volume_trend(session, coin, today):
 def codex_liquidity_trend(session, coin, today):
     """(verdict, pct, base_date): today's Codex liquidity vs the reading from up
     to 30 days ago, or since the coin entered active if that's shorter.
-    verdict 'drop' if down > 5%, 'keep' otherwise, 'unknown' if < 2 readings."""
+    verdict 'drop' if down > 5%, 'keep' otherwise, 'unknown' if < 2 readings.
+    On a source mismatch today (Codex > 10x DexScreener) the trend uses the
+    DexScreener readings instead."""
+    from liquidity_check import codex_unreliable
+    last = (session.query(DailySnapshot)
+            .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date <= today)
+            .order_by(DailySnapshot.date.desc()).first())
+    col = (DailySnapshot.liquidity if last is not None
+           and codex_unreliable(last.codex_liquidity, last.liquidity) else DailySnapshot.codex_liquidity)
     since = coin.active_since or coin.first_seen
     start = today - timedelta(days=LIQ_WINDOW_DAYS)
     if since is not None and since.date() > start:
         start = since.date()
-    rows = (session.query(DailySnapshot.date, DailySnapshot.codex_liquidity)
+    rows = (session.query(DailySnapshot.date, col)
             .filter(DailySnapshot.coin_id == coin.id,
                     DailySnapshot.date >= start,
                     DailySnapshot.date <= today,
-                    DailySnapshot.codex_liquidity.isnot(None))
+                    col.isnot(None))
             .order_by(DailySnapshot.date).all())
     if len(rows) < 2 or not rows[0][1]:
         return "unknown", None, None
@@ -323,8 +341,12 @@ def unhealthy_reason(coin, session, today):
             .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date <= today)
             .order_by(DailySnapshot.date.desc()).first())
     if snap is not None:
-        thin, best = too_thin(snap.codex_liquidity, snap.liquidity)
+        from liquidity_check import codex_unreliable
+        thin, best = too_thin(snap.codex_liquidity, snap.liquidity, coin.name)
         if thin:
+            if codex_unreliable(snap.codex_liquidity, snap.liquidity):
+                return (f"Liquidity under ${MIN_LIQUIDITY_USD:,} (${best:,.0f} on DexScreener;"
+                        f" Codex unreliable - source mismatch)")
             return f"Liquidity under ${MIN_LIQUIDITY_USD:,} (${best:,.0f} on Codex and DexScreener)"
 
     base = coin.holders_at_entry
@@ -353,6 +375,8 @@ def run_drop_logic():
     dropped_details, recovered_details, removed_details = [], [], []
     crash_suspects = []          # one-source crash readings: logged, not dropped
     blocked_details = []         # confirmed price crashes: removed + 15-day block
+    from liquidity_check import MISMATCHES
+    mismatch_start = len(MISMATCHES)   # this run's "liquidity source mismatch" notes
     held_details = []            # liquidity-crash drops healthy but liquidity < 50% of peak
     just_dropped = set()
     # Snapshots are dated with date.today() (like save_to_db / tracking), so
@@ -453,13 +477,18 @@ def run_drop_logic():
 
     stats["crash_suspects"] = len(crash_suspects)
     stats["held_liquidity"] = len(held_details)
+    from liquidity_check import MISMATCHES
+    mismatches = {}
+    for name, cx, dx in MISMATCHES[mismatch_start:]:
+        mismatches.setdefault(name, (cx, dx))
+    stats["liq_source_mismatch"] = len(mismatches)
     _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects,
-                   blocked_details, held_details)
+                   blocked_details, held_details, mismatches)
     return stats
 
 
 def _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects=(),
-                   blocked_details=(), held_details=()):
+                   blocked_details=(), held_details=(), mismatches=None):
     line = "=" * 52
     print(line)
     print("  DROP LOGIC SUMMARY")
@@ -476,6 +505,11 @@ def _print_summary(stats, dropped_details, recovered_details, removed_details, c
     print(f"  Newly dropped (unhealthy) ......... {stats['newly_dropped']:>5}")
     for name, reason in dropped_details:
         print(f"      - {(name or 'unknown')[:18]:<18}  ({reason})")
+    mismatches = mismatches or {}
+    print(f"  Liquidity source mismatch ......... {len(mismatches):>5}   (Codex > 10x DexScreener - using DexScreener)")
+    for name, (cx, dx) in mismatches.items():
+        print(f"      ~ {(name or 'unknown')[:18]:<18}  (liquidity source mismatch - using DexScreener: "
+              f"Codex ${cx:,.0f} vs DexScreener ${dx:,.0f})")
     print(f"  Held: liquidity < {LIQ_CRASH_RECOVER_SHARE:.0%} of pre-crash . {len(held_details):>5}")
     for name, now_liq, peak in held_details:
         print(f"      = {(name or 'unknown')[:18]:<18}  (liquidity ${now_liq or 0:,.0f} vs pre-crash ${peak:,.0f}; "

@@ -48,14 +48,43 @@ MAX_DROP_PCT = 5.0        # a fall of more than 5% drops the coin
 MIN_LIQUIDITY_USD = 5_000
 
 
-def too_thin(codex_liq, dex_liq):
-    """(is_too_thin, best_liquidity). Too thin only when the higher of the
-    Codex and DexScreener readings is under MIN_LIQUIDITY_USD. No reading
-    from either source = unknown -> not too thin (unknown passes)."""
+# SOURCE MISMATCH: when Codex reports more than this many times DexScreener's
+# liquidity for a coin, Codex is treated as unreliable for it and DexScreener's
+# reading is used instead (e.g. QAIT: Codex ~$580K vs DexScreener ~$1.5K).
+MISMATCH_RATIO = 10
+# (label, codex, dex) of every mismatch met in this process - printed in the
+# run logs as "liquidity source mismatch - using DexScreener".
+MISMATCHES = []
+
+
+def codex_unreliable(codex_liq, dex_liq):
+    """True when both readings exist and Codex is > MISMATCH_RATIO x DexScreener."""
+    if codex_liq is None or dex_liq is None:
+        return False
+    return float(codex_liq) > MISMATCH_RATIO * max(float(dex_liq), 1.0)
+
+
+def best_liquidity(codex_liq, dex_liq, label=None):
+    """(liquidity, mismatch). Normally the higher of Codex and DexScreener
+    (Codex sometimes under-reports); if Codex is > MISMATCH_RATIO x
+    DexScreener it is unreliable for this coin -> DexScreener's reading.
+    None if neither source has a reading."""
+    if codex_unreliable(codex_liq, dex_liq):
+        if label is not None:
+            MISMATCHES.append((label, float(codex_liq), float(dex_liq)))
+        return float(dex_liq), True
     vals = [float(v) for v in (codex_liq, dex_liq) if v is not None]
-    if not vals:
+    return (max(vals) if vals else None), False
+
+
+def too_thin(codex_liq, dex_liq, label=None):
+    """(is_too_thin, liquidity). Too thin when the liquidity that counts
+    (best_liquidity: the higher of Codex and DexScreener, or DexScreener alone
+    on a source mismatch) is under MIN_LIQUIDITY_USD. No reading from either
+    source = unknown -> not too thin (unknown passes)."""
+    best, _ = best_liquidity(codex_liq, dex_liq, label)
+    if best is None:
         return False, None
-    best = max(vals)
     return best < MIN_LIQUIDITY_USD, best
 REQUEST_DELAY = 0.3       # small pause between calls (free tier: 10k req/month)
 
