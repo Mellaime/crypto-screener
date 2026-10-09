@@ -139,6 +139,7 @@
   .fact.wide { grid-column: 1 / -1; }
   .fact .v a.xlink { color: var(--text); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
   .fact .v a.xlink:hover { color: var(--accent); }
+  .fact .v .xunknown { color: var(--muted); font-weight: 600; }
   .fact .v a.xlink svg { width: 15px; height: 15px; flex: none; fill: currentColor; }
   .fact .v.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; font-weight: 400; cursor: copy; }
 
@@ -812,10 +813,11 @@
     }
   }
 
-  // X / Twitter link (CoinGecko handle). Nothing at all when there's no handle.
+  // X / Twitter link (CoinGecko handle); "Unknown" (plain text) when CoinGecko has none.
   const X_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3l-4.9-6.4L6.4 22H3.3l7.3-8.3L1 2h6.4l4.4 5.9L18.9 2zm-1.1 18.1h1.7L6.3 3.8H4.5l13.3 16.3z"/></svg>`;
   function xFact(c) {
-    if (!c.twitter || !/^https:\/\/x\.com\/[A-Za-z0-9_]{1,15}$/.test(c.twitter)) return "";
+    if (!c.twitter || !/^https:\/\/x\.com\/[A-Za-z0-9_]{1,15}$/.test(c.twitter))
+      return fact("X", `<span class="xunknown" title="No X / Twitter account listed on CoinGecko">Unknown</span>`);
     return fact("X", `<a class="xlink" href="${esc(c.twitter)}" target="_blank" rel="noopener noreferrer"
       title="Open @${esc(c.twitter_handle)} on X">${X_ICON}@${esc(c.twitter_handle)}</a>`);
   }

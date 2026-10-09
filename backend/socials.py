@@ -5,7 +5,8 @@ A coin's X / Twitter link, shown on the detail page and in Check a Coin.
 DISPLAY ONLY - the filter and drop_logic never use it.
 
 Source: CoinGecko coin data (by contract), field links.twitter_screen_name.
-The URL is https://x.com/<handle>. No handle on CoinGecko -> nothing is shown.
+The URL is https://x.com/<handle>. No handle on CoinGecko -> the page shows
+"Unknown" (plain text, not a link).
 
 Where the handle comes from, cheapest first:
   1. remember(contract, data) - called wherever the daily run ALREADY fetches
