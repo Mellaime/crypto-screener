@@ -18,12 +18,14 @@ Dashboard (/api/narratives) - get_narratives():
     sorting, so nothing under it ever reaches the page). Per sector, one slot
     per day for the last BAR_DAYS days:
         mcap     = that day's market cap            -> the bar's height
-        vol_chg  = that day's 24h volume vs the PREVIOUS day's 24h volume, in %
-                   -> the small coloured number beside the bar. The first
-                   slot (day 1) has none; neither does a day whose previous
-                   day has no snapshot.
-    24h % = the Relative Strength 30-minute categories cache when it has the
-    sector (fresher), else the snapshot's value.
+        volume   = that day's 24h volume
+        mcap_chg = market cap vs the PREVIOUS day's, in %
+        vol_chg  = 24h volume vs the PREVIOUS day's, in %
+    (both changes shown in the bar's tooltip). The first slot (day 1) has no
+    changes; neither does a day whose previous day has no snapshot.
+    Rows are sorted hottest first by CoinGecko's 24h market-cap change (the
+    Relative Strength 30-minute categories cache when it has the sector, else
+    the snapshot's value); that number itself isn't shown.
 """
 
 import logging
@@ -152,11 +154,11 @@ def get_narratives(session):
             if r is None:
                 daily.append(None)
                 continue
-            prev = days.get(d - timedelta(days=1))
+            # day 1 has no previous day on the chart -> no changes
+            prev = None if i == 0 else days.get(d - timedelta(days=1))
             daily.append({"date": d.isoformat(), "mcap": r.market_cap, "volume": r.volume_24h,
-                          # day 1 has no previous day on the chart -> no %
-                          "vol_chg": None if i == 0 or prev is None
-                                     else _pct(r.volume_24h, prev.volume_24h)})
+                          "mcap_chg": None if prev is None else _pct(r.market_cap, prev.market_cap),
+                          "vol_chg": None if prev is None else _pct(r.volume_24h, prev.volume_24h)})
         chg_24h = live.get(now.category_name, now.market_cap_change_24h)
         out.append({"id": cid, "name": now.category_name,
                     "chg_24h": None if chg_24h is None else round(chg_24h, 2),

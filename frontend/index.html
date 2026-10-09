@@ -91,15 +91,17 @@
   #narr-body .chg.up { color: var(--good); } #narr-body .chg.down { color: var(--low); }
   #narr-body .muted, #narr-body small { color: var(--muted); font-weight: 400; }
 
-  /* Daily bars: height = that day's market cap; number under it = 24h volume vs the day before */
-  .dbars { display: flex; gap: 4px; min-width: 266px; }
-  .dday { flex: 1 1 0; min-width: 34px; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  /* Daily bars: one blue bar per day, height = that day's market cap; hover / tap for details */
+  .dbars { display: flex; gap: 4px; min-width: 196px; }
+  .dday { flex: 1 1 0; min-width: 24px; display: flex; justify-content: center; outline: none; }
   .dday .bx { width: 16px; height: 40px; display: flex; align-items: flex-end; }
   .dday .bx i { display: block; width: 100%; border-radius: 3px 3px 0 0; background: #5b8def; }
+  .dday:not(.none) { cursor: pointer; }
+  .dday:hover .bx i, .dday.on .bx i, .dday:focus-visible .bx i { filter: brightness(1.3); }
+  .dday:focus-visible .bx { outline: 2px solid var(--accent); outline-offset: 2px; }
   .dday.none .bx { border: 1px dashed #6e7681; border-radius: 3px; }
-  .dday .vc { font-size: 10px; line-height: 1; font-weight: 700; font-variant-numeric: tabular-nums;
-              white-space: nowrap; height: 10px; }
-  .dday .vc.up { color: var(--good); } .dday .vc.down { color: var(--low); } .dday .vc.flat { color: var(--muted); }
+  #narrtip { position: fixed; }
+  #narrtip .up { color: var(--good); } #narrtip .down { color: var(--low); } #narrtip .flat { color: var(--muted); }
   .card { overflow-x: auto; }       /* wide tables scroll sideways on phones */
   @media (max-width: 560px) {
     .tab { flex-basis: 100%; }      /* stack the buttons full-width on phones */
@@ -378,21 +380,21 @@
   <h2>Narratives</h2>
   <div class="sub" dir="rtl" lang="ar" style="text-align:right">أداء القطاعات — 24 ساعة من <bdi>CoinGecko</bdi>، و7 أيام محسوبة من بياناتنا اليومية. تُجمَّع البيانات يومياً.</div>
   <div class="sub" id="narr-meta"></div>
-  <div class="sub" dir="rtl" lang="ar" style="text-align:right">الأعمدة اليومية تمتلئ تدريجياً مع تراكم البيانات في قاعدة البيانات (حوالي أسبوع). ارتفاع العمود = القيمة السوقية للقطاع في ذلك اليوم؛ الرقم الملوّن تحته = تغيّر حجم التداول خلال 24 ساعة مقارنة باليوم السابق. العمود المنقّط = لا توجد بيانات بعد.</div>
+  <div class="sub" dir="rtl" lang="ar" style="text-align:right">الأعمدة اليومية تمتلئ تدريجياً مع تراكم البيانات في قاعدة البيانات (حوالي أسبوع). ارتفاع العمود = القيمة السوقية للقطاع في ذلك اليوم؛ مرّر المؤشر فوق العمود أو اضغط عليه لرؤية التفاصيل: القيمة السوقية، حجم التداول، وتغيّر كلٍّ منهما مقارنة باليوم السابق. العمود المنقّط = لا توجد بيانات بعد.</div>
   <div class="card">
     <table>
       <thead>
         <tr>
           <th>Narrative</th>
-          <th>Daily · 7 days <small style="font-weight:400;text-transform:none;letter-spacing:0">(bar = market cap · % = 24h volume vs previous day)</small></th>
-          <th class="num">24h %</th>
+          <th>Daily · 7 days <small style="font-weight:400;text-transform:none;letter-spacing:0">(bar = market cap · hover or tap a bar for details)</small></th>
           <th class="num">Market Cap</th>
           <th class="num">Volume 24h</th>
         </tr>
       </thead>
-      <tbody id="narr-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+      <tbody id="narr-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
     </table>
   </div>
+  <div class="tip" id="narrtip"></div>
   </section>
 
   <section class="view" id="view-coin" hidden>
@@ -625,34 +627,71 @@
     if (a >= 1e3) return "$" + Math.round(v / 1e3) + "K";
     return "$" + Math.round(v);
   }
-  function chgCell(v, note = "") {
-    if (v == null) return `<td class="num"><span class="muted">—</span>${note}</td>`;
-    const cls = v > 0 ? "up" : v < 0 ? "down" : "";
-    return `<td class="num"><span class="chg ${cls}">${v > 0 ? "+" : ""}${v.toFixed(2)}%</span>${note}</td>`;
-  }
-  // One bar per day (oldest left -> newest right). Bar height = that day's
-  // market cap, scaled to the sector's own 7-day range (lowest day 30%,
-  // highest 100%) so day-to-day moves are visible; hover shows exact values.
-  // Under each bar: that day's 24h volume vs the previous day's (day 1: none).
-  // Dashed empty slot = no snapshot that day yet.
-  function dayBars(daily, dates) {
+  // One bar per day (oldest left -> newest right), all the same blue. Bar
+  // height = that day's market cap, scaled to the sector's own 7-day range
+  // (lowest day 30%, highest 100%) so day-to-day moves are visible. Hover or
+  // tap a bar for that day's details (narrTip). Dashed slot = no data yet.
+  let narrRows = [];
+  function dayBars(daily, dates, r) {
     const caps = (daily || []).filter(x => x && x.mcap != null).map(x => x.mcap);
     const lo = Math.min(...caps), hi = Math.max(...caps);
-    const pctTxt = v => (v > 0 ? "+" : "") + (Math.abs(v) < 10 ? v.toFixed(1) : Math.round(v)) + "%";
     const days = (daily || []).map((x, i) => {
-      const day = shortDate(dates[i]);
       if (!x || x.mcap == null)
-        return `<span class="dday none" title="${esc(day)}: no data yet"><span class="bx"></span><span class="vc"></span></span>`;
+        return `<span class="dday none" title="${esc(shortDate(dates[i]))}: no data yet"><span class="bx"></span></span>`;
       const h = hi > lo ? 30 + (x.mcap - lo) / (hi - lo) * 70 : 70;
-      const v = x.vol_chg;
-      const cls = v == null ? "" : v > 0 ? "up" : v < 0 ? "down" : "flat";
-      const tip = `${day}: market cap ${fmtBig(x.mcap)} · 24h volume ${fmtBig(x.volume)}`
-        + (v == null ? (i === 0 ? " (day 1 - no previous day)" : " (no previous day saved)") : ` (${pctTxt(v)} vs previous day)`);
-      return `<span class="dday" title="${esc(tip)}"><span class="bx"><i style="height:${h.toFixed(0)}%"></i></span>`
-        + `<span class="vc ${cls}">${v == null ? "" : pctTxt(v)}</span></span>`;
+      return `<span class="dday" tabindex="0" data-r="${r}" data-i="${i}"
+                aria-label="${esc(longDate(x.date))}: market cap ${fmtBig(x.mcap)}"><span class="bx"><i style="height:${h.toFixed(0)}%"></i></span></span>`;
     }).join("");
-    return `<div class="dbars" role="img" aria-label="Daily market cap and volume change, last ${(daily || []).length} days">${days}</div>`;
+    return `<div class="dbars">${days}</div>`;
   }
+  // Tooltip, same behaviour as the Transactions chart: hover shows it, tap
+  // pins it (phones), tap elsewhere closes it.
+  let narrPinned = null;
+  function narrPct(v) {
+    if (v == null) return `<span class="flat">—</span>`;
+    const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
+    return `<span class="${cls}">${v > 0 ? "+" : ""}${v.toFixed(1)}%</span>`;
+  }
+  function narrShow(el) {
+    const tip = document.getElementById("narrtip");
+    const x = narrRows[+el.dataset.r].daily[+el.dataset.i];
+    document.querySelectorAll("#narr-body .dday.on").forEach(e => e.classList.remove("on"));
+    el.classList.add("on");
+    const first = +el.dataset.i === 0;
+    tip.innerHTML = `<b>${esc(narrRows[+el.dataset.r].name)} · ${esc(longDate(x.date))}</b>
+      <div class="row"><span>Market cap</span><span>${fmtMoney(x.mcap)}</span></div>
+      <div class="row"><span>Volume 24h</span><span>${fmtMoney(x.volume)}</span></div>
+      <div class="row"><span>MCap vs previous day</span><span>${narrPct(x.mcap_chg)}</span></div>
+      <div class="row"><span>Volume vs previous day</span><span>${narrPct(x.vol_chg)}</span></div>
+      ${x.mcap_chg == null ? `<div class="row"><span class="flat">${first ? "Day 1 - no previous day" : "No snapshot for the previous day"}</span></div>` : ""}`;
+    tip.style.display = "block";
+    const br = el.getBoundingClientRect(), w = tip.offsetWidth, hgt = tip.offsetHeight, gap = 8;
+    let left = br.right + gap;
+    if (left + w > window.innerWidth - 4) left = br.left - gap - w;
+    tip.style.left = Math.max(4, left) + "px";
+    tip.style.top = Math.max(4, Math.min(br.top, window.innerHeight - hgt - 4)) + "px";
+  }
+  function narrHide(force) {
+    if (narrPinned && !force) return;
+    narrPinned = null;
+    document.getElementById("narrtip").style.display = "none";
+    document.querySelectorAll("#narr-body .dday.on").forEach(e => e.classList.remove("on"));
+  }
+  (function wireNarrTip() {
+    const body = document.getElementById("narr-body");
+    body.addEventListener("mouseover", e => { const el = e.target.closest(".dday[data-i]"); if (el && !narrPinned) narrShow(el); });
+    body.addEventListener("mouseout", e => { const el = e.target.closest(".dday[data-i]"); if (el && !el.contains(e.relatedTarget)) narrHide(); });
+    body.addEventListener("focusin", e => { const el = e.target.closest(".dday[data-i]"); if (el) narrShow(el); });
+    body.addEventListener("focusout", () => narrHide(true));
+    body.addEventListener("click", e => {
+      const el = e.target.closest(".dday[data-i]");
+      if (!el) return;
+      e.stopPropagation();
+      if (narrPinned === el) narrHide(true); else { narrPinned = el; narrShow(el); }
+    });
+    document.addEventListener("click", () => { if (narrPinned) narrHide(true); });
+    window.addEventListener("scroll", () => narrHide(true), {passive: true});
+  })();
   let narrLoaded = 0;
   async function loadNarratives() {
     if (Date.now() - narrLoaded < 5 * 60 * 1000) return;     // the data changes once a day
@@ -663,20 +702,21 @@
       const d = await res.json();
       narrLoaded = Date.now();
       if (!d.rows.length) {
-        body.innerHTML = `<tr><td colspan="5" class="empty">No narrative snapshots yet — the daily run saves the first one.</td></tr>`;
+        body.innerHTML = `<tr><td colspan="4" class="empty">No narrative snapshots yet — the daily run saves the first one.</td></tr>`;
         meta.textContent = "";
         return;
       }
       meta.textContent = `${d.rows.length} narratives with a total market cap of at least ${fmtBig(d.min_mcap)} · snapshot of ${longDate(d.as_of)} · `
-        + (d.days_of_history >= 7 ? "7 days of history" : `${d.days_of_history} of 7 days collected so far`);
-      body.innerHTML = d.rows.map(r => `<tr>
+        + (d.days_of_history >= 7 ? "7 days of history" : `${d.days_of_history} of 7 days collected so far`)
+        + " · sorted by 24h market-cap change, hottest first";
+      narrRows = d.rows;
+      body.innerHTML = d.rows.map((r, i) => `<tr>
           <td>${esc(r.name)}</td>
-          <td>${dayBars(r.daily, d.bar_dates)}</td>
-          ${chgCell(r.chg_24h)}
+          <td>${dayBars(r.daily, d.bar_dates, i)}</td>
           <td class="num">${fmtBig(r.market_cap)}</td>
           <td class="num">${fmtBig(r.volume_24h)}</td></tr>`).join("");
     } catch (e) {
-      body.innerHTML = `<tr><td colspan="5" class="empty">Couldn't load narratives (${esc(e.message)}).</td></tr>`;
+      body.innerHTML = `<tr><td colspan="4" class="empty">Couldn't load narratives (${esc(e.message)}).</td></tr>`;
     }
   }
   document.querySelectorAll(".tab").forEach(b =>
