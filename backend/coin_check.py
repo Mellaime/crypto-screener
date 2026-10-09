@@ -178,6 +178,7 @@ def run_check(contract):
     from queue_view import narrative_from_tags
     from tx_bars import fetch_from_codex
     from revenue_detail import fetch as fetch_revenue
+    from price_range import from_market_data
 
     # Outside lookups run in PARALLEL (a check used to take 16-27 s one after
     # another): first CoinGecko + CMC together (name, market cap, tags)...
@@ -360,6 +361,9 @@ def run_check(contract):
                     "annual": revd.get("annual_revenue"), "protocol": revd.get("protocol"),
                     "filter_verdict": rev["verdict"]},
         "honeypot": sec["verdict"],
+        # Display only: from the CoinGecko response above (no extra call).
+        "price_range": from_market_data(md) if md else
+                       {"status": "unknown", "reason": "CoinGecko doesn't list this contract"},
         "tx_bars": (daily or {}).get("bars") or [],
         "tx_error": tx_err,
         "tx_window_days": 15,
@@ -427,7 +431,8 @@ def rules_signature():
     from age_check import MIN_AGE_DAYS
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
-    return f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
+    return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
+            "|pricerange")   # result layout: has the Price Range section
 
 
 def get_check(session, contract):

@@ -14,6 +14,7 @@ Endpoints:
                                 Liquidity, CoinGecko + CMC rank vs last week,
                                 Holders (total, weekly change, daily bars),
                                 Revenue (DefiLlama: daily bars, MCap/Revenue, TVL),
+                                Price Range (All-Time): CoinGecko ATH / ATL / current position,
                                 Supply (total, circulating %, max; burned + unlock placeholders)
     GET /             -> the dashboard web page (from the frontend/ folder)
 
@@ -192,11 +193,12 @@ def get_coin(contract: str):
         q = (session.query(CoinQueue.symbol)
              .filter_by(chain=(coin.chain or "").lower(), contract=coin.contract.lower())
              .first())
-        # The three outside lookups (Codex daily bars, Codex live stats,
-        # DefiLlama revenue) run AT THE SAME TIME - each in its own DB session
+        # The four outside lookups (Codex daily bars, Codex live stats,
+        # DefiLlama revenue, CoinGecko all-time price range) run AT THE SAME TIME - each in its own DB session
         # (a session can't be shared between threads) - so a first open waits
-        # for the slowest one, not the sum of all three.
+        # for the slowest one, not the sum of all four.
         from revenue_detail import get_revenue
+        from price_range import get_price_range
         from concurrent.futures import ThreadPoolExecutor
 
         def own_session(fn, *args):
@@ -206,11 +208,13 @@ def get_coin(contract: str):
             finally:
                 s2.close()
         snap_mcap = snap.mcap if snap else None
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        with ThreadPoolExecutor(max_workers=4) as pool:
             f_tx = pool.submit(own_session, get_tx_bars, coin.contract, coin.chain)
             f_live = pool.submit(own_session, get_live_volume, coin.contract, coin.chain)
             f_rev = pool.submit(own_session, get_revenue, coin.contract, coin.chain, snap_mcap)
+            f_pr = pool.submit(own_session, get_price_range, coin.contract, coin.chain)
             tx, live, revenue = f_tx.result(), f_live.result(), f_rev.result()
+            price_range = f_pr.result()
 
         # Volume / Market cap (%) and Volume / Liquidity (x) over 4 windows.
         # Market cap = the stored CoinGecko/CMC (global) one; liquidity = the
@@ -302,6 +306,7 @@ def get_coin(contract: str):
             "vol_liq_x": {k: ratio(v, liq, 1) for k, v in volumes.items()},
             "volume_error": live["error"] or tx["error"],
             "revenue": revenue,
+            "price_range": price_range,
             "supply": {
                 "total": coin.total_supply,
                 "circulating": coin.circulating_supply,
