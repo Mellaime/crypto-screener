@@ -36,6 +36,7 @@ from sqlalchemy import func
 from database import SessionLocal
 from models import Coin, DailySnapshot, DroppedCoin
 from scoring import score_snapshot
+from socials import x_url
 
 app = FastAPI(title="Crypto Screener API", version="0.1")
 
@@ -371,6 +372,8 @@ def get_coin(contract: str):
             "mcap": snap.mcap if snap else None,
             "score": b["total"] if b else None,
             "category": coin.category,
+            "twitter": x_url(coin.twitter_handle),  # https://x.com/<handle>, or None
+            "twitter_handle": coin.twitter_handle,
             "narrative": make_narrative(coin.chain, snap.mcap if snap else None,
                                         b["vol_liq_ratio"] if b else None, arabic=True),
             "security": coin.security_verdict,

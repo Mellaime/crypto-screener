@@ -144,6 +144,9 @@ _NEW_COLUMNS = [
     ("coins", "max_supply", "FLOAT", None),
     ("coins", "supply_uncapped", "BOOLEAN", None),
     ("coins", "supply_updated_at", "TIMESTAMP", None),
+    # Detail page / Check a Coin: X (Twitter) link from CoinGecko (socials.py).
+    ("coins", "twitter_handle", "VARCHAR", None),
+    ("coins", "twitter_checked_at", "TIMESTAMP", None),
 ]
 
 

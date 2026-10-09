@@ -95,9 +95,12 @@ def get_coingecko_rank(contract, chain):
         print(f"[WARN] CoinGecko rank status {r.status_code}")
         return None
     try:
-        rank = r.json().get("market_cap_rank")
+        data = r.json()
+        rank = data.get("market_cap_rank")
     except ValueError:
         return None
+    from socials import remember
+    remember(contract, data)  # X handle from the same response (no extra call)
     _memo[memo_key] = rank
     return rank
 

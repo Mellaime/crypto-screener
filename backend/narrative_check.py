@@ -199,6 +199,8 @@ def lookup_category(contract, chain):
         return None, False, True
 
     category = _pick_category(data.get("categories") or [])
+    from socials import remember
+    remember(contract, data)  # X handle from the same response (no extra call)
     _CACHE[key] = category  # cache the definitive result (tag or None)
     _save_cache()
     return category, True, True
