@@ -309,3 +309,20 @@ class PriceRangeCache(Base):
     contract = Column(String, nullable=False, index=True)   # stored lowercased
     day = Column(Date, nullable=False)                       # UTC day it was fetched
     data = Column(String, nullable=False)                    # JSON
+
+
+class RelStrengthCache(Base):
+    """
+    Dashboard detail page: a coin's "Relative Strength" section (its 24h
+    change vs Bitcoin's and its CoinGecko sector's; relative_strength.py) as
+    JSON, cached for one UTC day. Display only - the filter and drop_logic
+    never read it.
+    """
+    __tablename__ = "rel_strength_cache"
+    __table_args__ = (UniqueConstraint("chain", "contract"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chain = Column(String, nullable=False)
+    contract = Column(String, nullable=False, index=True)   # stored lowercased
+    day = Column(Date, nullable=False)                       # UTC day it was fetched
+    data = Column(String, nullable=False)                    # JSON
