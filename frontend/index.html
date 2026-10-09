@@ -219,6 +219,16 @@
   .supply .val small { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 6px; }
   .supply li.soon .val { color: var(--muted); font-weight: 600; }
 
+  /* Price Range (All-Time) section */
+  .prbar { position: relative; height: 10px; border-radius: 5px; margin: 26px 8px 6px;
+           background: linear-gradient(90deg, var(--low), #d29922, var(--good)); }
+  .prbar .mk { position: absolute; top: 50%; width: 16px; height: 16px; margin-left: -8px; margin-top: -8px;
+               border-radius: 50%; background: var(--text); border: 3px solid var(--card); box-shadow: 0 0 0 1px var(--border); }
+  .prbar .mk b { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); font-size: 12px;
+                 white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .prends { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted);
+            font-variant-numeric: tabular-nums; margin: 0 0 12px; }
+
   /* Liquidity section */
   .liqtotal { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0 12px; }
   .subhead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 12px 0 6px; }
@@ -615,6 +625,7 @@
       ${rankCard(c)}
       ${holdersCard(c)}
       ${revenueCard(c)}
+      ${priceRangeCard(c.price_range)}
       ${supplyCard(c)}
       ${smartMoneyCard()}`;
     wireHolders((c.holders || {}).bars || []);
@@ -801,6 +812,7 @@
           ${tile("Honeypot", r.honeypot === "safe" ? "✓ sellable" : r.honeypot === "unsafe" ? "✗ not sellable" : "unknown")}
         </div></div>
       <div style="margin-top:12px">${txChart(r, "ck")}</div>
+      ${priceRangeCard(r.price_range)}
       <div class="ratiocard"><h3>Filter steps</h3>
         <div class="note">Same order as the bot; the first ✗ is the reason above.</div>
         <ul class="supply steps">${steps}</ul></div>
@@ -1051,6 +1063,30 @@
         <li><span class="lbl">Max supply<small>the absolute cap${minting ? " · " + fmtSupply(sp.max - sp.total) + " above total supply" : ""}</small></span>${max}</li>
         <li class="soon"><span class="lbl">Burned<small>no free source yet</small></span><span class="val">—</span></li>
         <li class="soon"><span class="lbl">Upcoming unlock<small>needs an unlock-schedule source</small></span><span class="val">—</span></li>
+      </ul></div>`;
+  }
+  // Price Range (All-Time): CoinGecko ATH / ATL and where today's price sits
+  // between them (0% = at the all-time low, 100% = at the all-time high).
+  function priceRangeCard(pr) {
+    pr = pr || {status: "unknown", reason: "no data yet"};
+    const head = `<div class="ratiocard"><h3>Price Range (All-Time)</h3>
+      <div class="note">CoinGecko all-time high / low (USD). Updated once a day.</div>`;
+    if (pr.status !== "ok") return head + `<div class="empty" style="padding:8px 0">${esc(pr.reason || "No data")}</div></div>`;
+    const day = d => d ? longDate(d.slice(0, 10)) : "unknown date";
+    const pct = (v, plus) => v == null ? "—" : (v > 0 && plus ? "+" : "") + v.toFixed(1) + "%";
+    const pos = pr.position_pct;
+    const bar = pos == null ? "" : `
+      <div class="prbar" role="img" aria-label="Current price is at ${pos}% of its all-time range">
+        <div class="mk" style="left:${pos}%"><b style="${pos < 12 ? "left:-6px;transform:none" : pos > 88 ? "left:auto;right:-6px;transform:none" : ""}">${fmtPrice(pr.current)}</b></div></div>
+      <div class="prends"><span>ATL ${fmtPrice(pr.atl)}</span><span>ATH ${fmtPrice(pr.ath)}</span></div>`;
+    return head + bar + `
+      <ul class="supply">
+        <li><span class="lbl">All-Time High<small>on ${esc(day(pr.ath_date))} · now ${esc(pct(pr.ath_change_pct))} from peak</small></span>
+            <span class="val">${fmtPrice(pr.ath)}</span></li>
+        <li><span class="lbl">All-Time Low<small>on ${esc(day(pr.atl_date))} · now ${esc(pct(pr.atl_change_pct, true))} from bottom</small></span>
+            <span class="val">${fmtPrice(pr.atl)}</span></li>
+        <li><span class="lbl">Current price position<small>0% = at the all-time low · 100% = at the all-time high</small></span>
+            <span class="val">${pos == null ? "—" : pos > 0 && pos < 0.1 ? "&lt;0.1%" : pos.toFixed(1) + "%"}<small>${fmtPrice(pr.current)}</small></span></li>
       </ul></div>`;
   }
   // Smart Money: placeholder only (no data source yet) - same list style as

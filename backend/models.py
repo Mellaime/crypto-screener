@@ -293,3 +293,19 @@ class RunLog(Base):
     rejected = Column(Integer)         # failed one of steps 4-7
     retry = Column(Integer)            # CoinGecko hiccup -> next run
     waiting = Column(Integer)          # still in the queue after the run
+
+
+class PriceRangeCache(Base):
+    """
+    Dashboard detail page: a coin's all-time price range (CoinGecko ATH /
+    ATL / current price; price_range.py) as JSON, cached for one UTC day.
+    Display only - the filter and drop_logic never read it.
+    """
+    __tablename__ = "price_range_cache"
+    __table_args__ = (UniqueConstraint("chain", "contract"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chain = Column(String, nullable=False)
+    contract = Column(String, nullable=False, index=True)   # stored lowercased
+    day = Column(Date, nullable=False)                       # UTC day it was fetched
+    data = Column(String, nullable=False)                    # JSON
