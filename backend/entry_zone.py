@@ -28,8 +28,9 @@ change and for the real liquidity SIZE. Holders: our own daily snapshots
 (detail page only; Check a Coin has none -> "—").
 
 ZONES - checked in this order, first match wins:
-  1. RISK        real liquidity < MIN_LIQUIDITY_USD, OR liquidity fell more than
-                 LIQ_DROP_PCT, OR holders fell more than HOLDERS_DROP_PCT (15 days)
+  1. RISK        real liquidity < MIN_LIQUIDITY_USD, OR the LATEST 5-day liquidity
+                 group fell more than LIQ_DROP_PCT, OR the latest 5-day holders
+                 group fell more than HOLDERS_DROP_PCT
   2. WAIT        price position >= WAIT_MIN_PCT
   3. FALLING     volume falling strongly: latest group < -VOL_FLAT_PCT, or all
                  three groups below 0
@@ -59,8 +60,8 @@ WAIT_MIN_PCT = 70          # 35-70% ACCUMULATE band; 70-100% -> WAIT
 GROUP_DAYS = 5             # details: 3 groups of 5 days (15 days)
 VOL_FLAT_PCT = 10          # volume group within +/-10% = quiet / flat
 MIN_LIQUIDITY_USD = 5_000  # real liquidity under this -> RISK, whatever else
-LIQ_DROP_PCT = 5           # liquidity down more than this over 15 days -> RISK
-HOLDERS_DROP_PCT = 5       # holders down more than this over 15 days -> RISK
+LIQ_DROP_PCT = 10          # latest 5-day liquidity group down more than this -> RISK
+HOLDERS_DROP_PCT = 10      # latest 5-day holders group down more than this -> RISK
 CHANGE_LOOKBACK_DAYS = 3   # "zone change" line compares with this many days ago
 
 ZONES = {
@@ -180,7 +181,7 @@ def compute(bars, today, liq_series=None, holders=None, liq_usd=None, liq_source
     res["volume_groups"] = _volume_groups(bars, today)
     res["liquidity_groups"] = _level_groups(liq_series, today) if liq_series else [None] * 3
     res["holders_groups"] = _level_groups(holders, today) if holders else [None] * 3
-    # 15-day changes (for RISK): now vs ~15 days ago, or the oldest reading in the window.
+    # 15-day changes (shown for reference; RISK uses the latest 5-day group).
     def window_change(series):
         s = [(d, v) for d, v in (series or []) if v and d >= today - timedelta(days=3 * GROUP_DAYS)]
         return _pct(s[-1][1], s[0][1]) if len(s) >= 2 else None
@@ -209,8 +210,10 @@ def classify(r):
     groups = [g for g in r.get("volume_groups") or [] if g is not None]
     latest = groups[-1] if groups else None
     thin = r.get("liquidity_usd") is not None and r["liquidity_usd"] < MIN_LIQUIDITY_USD
-    liq_fell = r.get("liquidity_pct") is not None and r["liquidity_pct"] < -LIQ_DROP_PCT
-    hold_fell = r.get("holders_pct") is not None and r["holders_pct"] < -HOLDERS_DROP_PCT
+    liq_last = (r.get("liquidity_groups") or [None])[-1]
+    hold_last = (r.get("holders_groups") or [None])[-1]
+    liq_fell = liq_last is not None and liq_last < -LIQ_DROP_PCT
+    hold_fell = hold_last is not None and hold_last < -HOLDERS_DROP_PCT
     if thin or liq_fell or hold_fell:
         return "RISK"
     if pos >= WAIT_MIN_PCT:
@@ -250,11 +253,13 @@ def sentence(r):
             return (f"السيولة الفعلية {_ltr('$' + format(r['liquidity_usd'], ',.0f'))} فقط (أقل من {_ltr(f'${MIN_LIQUIDITY_USD:,}')})"
                     " — صعيب التداول عليها، ماشي منطقة دخول مهما كان السعر.")
         bits = []
-        if r.get("liquidity_pct") is not None and r["liquidity_pct"] < -LIQ_DROP_PCT:
-            bits.append(f"السيولة طاحت {p(r['liquidity_pct'])}")
-        if r.get("holders_pct") is not None and r["holders_pct"] < -HOLDERS_DROP_PCT:
-            bits.append(f"الحاملين طاحو {p(r['holders_pct'])}")
-        return f"إشارة خطر: {' و'.join(bits)} فآخر 15 يوم — تسنّى حتى تستقر قبل أي دخول."
+        liq_last = (r.get("liquidity_groups") or [None])[-1]
+        hold_last = (r.get("holders_groups") or [None])[-1]
+        if liq_last is not None and liq_last < -LIQ_DROP_PCT:
+            bits.append(f"السيولة طاحت {p(liq_last)}")
+        if hold_last is not None and hold_last < -HOLDERS_DROP_PCT:
+            bits.append(f"الحاملين طاحو {p(hold_last)}")
+        return f"إشارة خطر: {' و'.join(bits)} فآخر 5 أيام — تسنّى حتى تستقر قبل أي دخول."
     if z == "WAIT":
         return (f"السعر {now} قريب من القمة ({pos} من المدى) — دخول متأخر؛"
                 f" تسنّى السعر ينزل تحت {acc_top} لمنطقة {_ltr('ACCUMULATE')} أو تحت {best_top} لمنطقة {_ltr('BEST ENTRY')}.")
