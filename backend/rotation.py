@@ -42,7 +42,7 @@ from datetime import datetime, timedelta, timezone
 # one CoinGecko call per coin; CoinGecko's free (demo) tier allows 10,000
 # calls/month. Once the backlog of never-analyzed coins is cleared, a run only
 # analyzes the day's NEW coins, usually far fewer than this.
-ROTATION_BUDGET = 300
+ROTATION_BUDGET = 250       # lowered from 300 (Oct 10) to ease CoinGecko usage
 
 RECHECK_AFTER_DAYS = 15   # rejected / deleted / crashed -> eligible again after this
 MAX_ATTEMPTS = 2          # the first analysis + ONE second chance
