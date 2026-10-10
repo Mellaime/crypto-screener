@@ -124,6 +124,10 @@ def reason_ar(reason):
     m = re.fullmatch(r"Liquidity crash - liquidity down ([\d.]+)% in (\d+) days", r)
     if m:
         return f"انهيار في السيولة — السيولة انخفضت {pct(m.group(1))} خلال {_ltr(m.group(2))} أيام"
+    m = re.fullmatch(r"Volume falling \((\d+)-day average ([+-][\d.]+)% vs the previous \d+ days\)", r)
+    if m:
+        return (f"حجم التداول يتراجع (متوسط آخر {_ltr(m.group(1))} أيام {pct(m.group(2))}"
+                f" مقارنة بـ{_ltr(m.group(1))} أيام قبلها)")
     m = re.fullmatch(r"Volume falling \(last (\d+) daily readings\)", r)
     if m:
         return f"حجم التداول يتراجع (آخر {_ltr(m.group(1))} قراءات يومية)"

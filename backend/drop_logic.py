@@ -63,9 +63,17 @@ from models import Coin, DailySnapshot, DroppedCoin, RankHistory
 GRACE_DAYS = 5               # calendar days untouched after entering active
 RECOVERY_DAYS = 7            # daily recovery re-checks before permanent delete
 MAX_HOLDER_DROP_PCT = 10     # holders down more than this -> unhealthy
-MAX_LIQ_DROP_PCT = 5         # liquidity down more than this -> unhealthy
-VOLUME_READINGS = 5          # volume trend = last 5 daily readings
-VOLUME_FALL_PCT = 5          # "falling" = day5 more than 5% below day1;
+# VOLUME FALLING: the last VOLUME_AVG_DAYS complete days' AVERAGE volume vs
+# the VOLUME_AVG_DAYS days before it (each coin's stored daily history,
+# entry_zone_bars). Falling = more than VOLUME_AVG_FALL_PCT lower. Fewer than
+# 2 x VOLUME_AVG_DAYS days of history = unknown = healthy.
+VOLUME_AVG_DAYS = 5          # compare 5-day averages ...
+VOLUME_AVG_FALL_PCT = 20     # ... falling = the newer average more than 20% lower
+# LIQUIDITY DOWN SINCE ENTRY: unhealthy only when liquidity is more than this
+# below its level when the coin entered active (5-15% is normal movement).
+MAX_LIQ_DROP_PCT = 15        # was 5 until Oct 10
+VOLUME_READINGS = 5          # (old single-day rule - no longer used)
+VOLUME_FALL_PCT = 5          # (old single-day rule - no longer used)
                              # rising or flat (within 5%) stays healthy
 VOLUME_LOOKBACK_DAYS = 10    # ...taken from at most the last 10 days
 LIQ_WINDOW_DAYS = 30         # liquidity: vs up to 30 days back
@@ -272,6 +280,36 @@ def in_grace(coin, today):
 
 
 def codex_volume_trend(session, coin, today):
+    """'falling' if the last VOLUME_AVG_DAYS complete days' average volume is
+    more than VOLUME_AVG_FALL_PCT below the VOLUME_AVG_DAYS days before it
+    (stored daily history, entry_zone_bars); 'rising' / 'flat' otherwise;
+    'unknown' (healthy) without 2 x VOLUME_AVG_DAYS days of history."""
+    pct = volume_avg_change(session, coin, today)
+    if pct is None:
+        return "unknown"
+    if pct < -VOLUME_AVG_FALL_PCT:
+        return "falling"
+    return "rising" if pct > 0 else "flat"
+
+
+def volume_avg_change(session, coin, today):
+    """% change: last VOLUME_AVG_DAYS complete days' average volume vs the
+    VOLUME_AVG_DAYS before (stored daily history), or None."""
+    from entry_zone import load_bars
+    try:
+        bars, _ = load_bars(session, coin)
+    except Exception:
+        session.rollback()
+        return None
+    vols = [v for d, _, v, _ in (bars or []) if d < today and v is not None]
+    n = VOLUME_AVG_DAYS
+    if len(vols) < 2 * n:
+        return None
+    last, prev = sum(vols[-n:]) / n, sum(vols[-2 * n:-n]) / n
+    return (last / prev - 1) * 100 if prev else None
+
+
+def codex_volume_trend_single_day(session, coin, today):
     """From the last 5 daily Codex volume readings: 'falling' only if day5 is
     CLEARLY lower than day1 (more than VOLUME_FALL_PCT lower); otherwise
     'rising' (day5 > day1) or 'flat' - both healthy. 'unknown' if there
@@ -330,7 +368,8 @@ def unhealthy_reason(coin, session, today):
     from security_check import check_token_security
 
     if codex_volume_trend(session, coin, today) == "falling":
-        return f"Volume falling (last {VOLUME_READINGS} daily readings)"
+        pct = volume_avg_change(session, coin, today)
+        return f"Volume falling ({VOLUME_AVG_DAYS}-day average {pct:+.0f}% vs the previous {VOLUME_AVG_DAYS} days)"
 
     liq, pct, base_date = codex_liquidity_trend(session, coin, today)
     if liq == "drop":

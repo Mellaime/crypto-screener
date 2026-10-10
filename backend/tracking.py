@@ -298,12 +298,13 @@ def run_daily_tracking():
         stats["twitter_calls"] = refresh_twitter(session, coins, now, counts=stats)
         session.commit()
 
-        # Entry Zone history: today's row per ACTIVE coin from what was just
-        # stored (no per-coin Codex calls; one bulk request for extra chains;
-        # a never-seen coin gets its one-time Codex backfill).
+        # Daily history (Entry Zone + drop_logic's 5-day average volume): today's
+        # row per ACTIVE and DROPPED coin (dropped coins' recovery uses it) from
+        # what was just stored - no per-coin Codex calls; one bulk request for
+        # extra chains; a never-seen coin gets its one-time Codex backfill.
         from entry_zone import store_daily_bars
         try:
-            stats["entry_zone"] = store_daily_bars(session, [c for c in coins if c.status == "active"], today)
+            stats["entry_zone"] = store_daily_bars(session, coins, today)
         except Exception as e:
             session.rollback()
             print(f"[WARN] Entry Zone history not stored today: {str(e)[:120]}")
