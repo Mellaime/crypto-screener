@@ -4,39 +4,42 @@ entry_zone.py
 Detail page + Check a Coin: the "Entry Zone" section. DISPLAY ONLY - the
 filter and drop_logic never use it. Data, not financial advice.
 
-Two layers:
-  * LONG-TERM CONTEXT - where today's price sits in its last PRICE_DAYS (60)
-    days of daily closes: position 0% = at the low, 100% = at the high.
-    Fewer days available -> whatever history exists (labelled); fewer than
-    MIN_HISTORY_DAYS (15) -> "too new for long-term context".
-  * SHORT-TERM - the last 15 complete days of volume in 3 groups of 5
-    (oldest / middle / latest); each group = its 5-day average vs the 5 days
-    before it, as a signed %. Plus liquidity and holders: % change over the
-    last WINDOW_DAYS (15).
+What it shows (top to bottom on the page):
+  * the current ZONE (badge) and how it changed vs 3 days ago (from the saved
+    daily zone history, entry_zone_history);
+  * the coin's last PRICE_DAYS (60) days of daily closes: low, high, now and
+    where "now" sits in that range (0% = low, 100% = high). Fewer days ->
+    whatever history exists (labelled); fewer than MIN_HISTORY_DAYS (15) ->
+    "too new for long-term context";
+  * the ZONES TABLE: each zone's price band, cut from the 60-day low -> high
+    at BEST_MAX_PCT / GOOD_MAX_PCT / WAIT_MIN_PCT;
+  * an Arabic opinion sentence (where it is, and what price to wait for);
+  * the DETAILS TABLE: the last 15 days in 3 groups of 5 (oldest / middle /
+    latest) for volume, holders and liquidity, each a signed %:
+        volume    = the group's 5-day AVERAGE vs the previous 5 days' average
+        holders,  = the value at the END of the group vs 5 days earlier
+        liquidity   (levels, not daily flows)
 
 Sources: Codex daily bars (close, volume, liquidity) - one call; CoinGecko
-market_chart (60 days, daily) when Codex doesn't cover the coin. Liquidity
-uses DexScreener instead when Codex reports > 10x DexScreener (the same
-"liquidity source mismatch" rule as the rest of the bot) - both for the
-liquidity change and for the real liquidity SIZE (liquidity_check.best_liquidity:
-the higher of Codex / DexScreener, or DexScreener on a mismatch). Holders: our own
-daily snapshots (detail page only).
+market_chart (daily) when Codex has fewer than MIN_HISTORY_DAYS days.
+Liquidity uses DexScreener (our snapshots) when Codex reports > 10x
+DexScreener - the bot's "liquidity source mismatch" rule - both for the
+change and for the real liquidity SIZE. Holders: our own daily snapshots
+(detail page only; Check a Coin has none -> "—").
 
 ZONES - checked in this order, first match wins:
-  1. RISK        real liquidity under MIN_LIQUIDITY_USD (untradeable, whatever
-                 else)  OR  liquidity fell > LIQ_DROP_PCT  OR  holders fell > HOLDERS_DROP_PCT
-  2. WAIT        price position >= PRICE_HIGH_PCT (near the 60-day high)
-  3. FALLING     volume falling strongly (latest group < -VOL_FLAT_PCT, or all
-                 three groups below 0)  OR  holders fell > HOLDERS_DROP_PCT
-  4. BEST        price <= PRICE_LOW_PCT AND volume rising (latest group
-                 > VOL_FLAT_PCT) AND liquidity not down AND holders not down
-  5. GOOD        price <= PRICE_LOW_PCT AND volume quiet (latest within
-                 +/-VOL_FLAT_PCT) AND liquidity not down AND holders not down
-  6. ACCUMULATE  PRICE_LOW_PCT < price < PRICE_HIGH_PCT AND volume rising
-                 (latest > VOL_FLAT_PCT) AND liquidity not down AND holders not down
-  else NEUTRAL (no clear zone).  < MIN_HISTORY_DAYS of history -> TOO_NEW.
-"Not down" = not below -LIQ_DROP_PCT / -HOLDERS_DROP_PCT (flat is fine).
-Unknown liquidity / holders (no data) never blocks a zone - shown as "—".
+  1. RISK        real liquidity < MIN_LIQUIDITY_USD, OR liquidity fell more than
+                 LIQ_DROP_PCT, OR holders fell more than HOLDERS_DROP_PCT (15 days)
+  2. WAIT        price position >= WAIT_MIN_PCT
+  3. FALLING     volume falling strongly: latest group < -VOL_FLAT_PCT, or all
+                 three groups below 0
+  4. BEST        position <= BEST_MAX_PCT AND volume rising (latest > VOL_FLAT_PCT)
+  5. GOOD        BEST_MAX_PCT < position <= GOOD_MAX_PCT, or position <=
+                 BEST_MAX_PCT with volume quiet (within +/-VOL_FLAT_PCT)
+  6. ACCUMULATE  GOOD_MAX_PCT < position < WAIT_MIN_PCT AND volume rising
+  else NEUTRAL ("no clear zone"); < MIN_HISTORY_DAYS of history -> TOO_NEW.
+(Liquidity and holders "not down" is guaranteed for 4-6 by rule 1. Unknown
+liquidity / holders never blocks a zone.)
 """
 
 import json
@@ -48,23 +51,24 @@ import requests
 # ---------------------------------------------------------------------------
 # THRESHOLDS (tune here)
 # ---------------------------------------------------------------------------
-PRICE_DAYS = 60          # long-term window (daily closes)
-MIN_HISTORY_DAYS = 15    # fewer days -> "too new for long-term context"
-PRICE_LOW_PCT = 35       # position <= this -> price is cheap in its range
-PRICE_HIGH_PCT = 70      # position >= this -> near the high -> WAIT
-VOL_GROUP_DAYS = 5       # volume: 3 groups of 5 complete days ...
-VOL_FLAT_PCT = 10        # ... each vs the 5 days before; within +/-10% = flat
-VOL_STRONG_PCT = 30      # latest group >= +30% = "rising strongly" (sentence wording only)
-WINDOW_DAYS = 15         # liquidity / holders change measured over this
-LIQ_DROP_PCT = 5         # liquidity down more than this = fell (RISK)
-MIN_LIQUIDITY_USD = 5_000  # real liquidity under this = untradeable -> RISK, whatever else
-HOLDERS_DROP_PCT = 5     # holders down more than this = fell (RISK / FALLING)
+PRICE_DAYS = 60            # long-term window (daily closes)
+MIN_HISTORY_DAYS = 15      # fewer days -> "too new for long-term context"
+BEST_MAX_PCT = 20          # 0-20% of the range  -> BEST ENTRY band
+GOOD_MAX_PCT = 35          # 20-35%              -> GOOD band
+WAIT_MIN_PCT = 70          # 35-70% ACCUMULATE band; 70-100% -> WAIT
+GROUP_DAYS = 5             # details: 3 groups of 5 days (15 days)
+VOL_FLAT_PCT = 10          # volume group within +/-10% = quiet / flat
+MIN_LIQUIDITY_USD = 5_000  # real liquidity under this -> RISK, whatever else
+LIQ_DROP_PCT = 5           # liquidity down more than this over 15 days -> RISK
+HOLDERS_DROP_PCT = 5       # holders down more than this over 15 days -> RISK
+CHANGE_LOOKBACK_DAYS = 3   # "zone change" line compares with this many days ago
 
 ZONES = {
-    "RISK": "⚠️ RISK", "WAIT": "🟠 WAIT", "FALLING": "🔴 FALLING", "BEST": "🟢 BEST ENTRY",
-    "GOOD": "🔵 GOOD", "ACCUMULATE": "🟡 ACCUMULATE", "NEUTRAL": "⚪ NO CLEAR ZONE",
-    "TOO_NEW": "⚪ TOO NEW",
+    "BEST": "🟢 BEST ENTRY", "GOOD": "🔵 GOOD", "ACCUMULATE": "🟡 ACCUMULATE", "WAIT": "🟠 WAIT",
+    "FALLING": "🔴 FALLING", "RISK": "⚠️ RISK", "NEUTRAL": "⚪ NO CLEAR ZONE", "TOO_NEW": "⚪ TOO NEW",
 }
+# Better entry first - for "improved / declined" in the 3-day change line.
+ZONE_RANK = {"BEST": 6, "GOOD": 5, "ACCUMULATE": 4, "NEUTRAL": 3, "WAIT": 2, "FALLING": 1, "RISK": 0}
 
 BARS_QUERY = """query ($s: String!, $f: Int!, $t: Int!) { getBars(symbol: $s, from: $f, to: $t,
   resolution: "1D", removeLeadingNullValues: true) { t c volume liquidity } }"""
@@ -76,6 +80,12 @@ def _day(ts):
 
 def _pct(new, old):
     return round((new / old - 1) * 100, 1) if new is not None and old else None
+
+
+def _value_at(series, d, slack=2):
+    """Last value on or before day d (within `slack` days), from [(date, value)]."""
+    vals = [v for day, v in series if v is not None and d - timedelta(days=slack) <= day <= d]
+    return vals[-1] if vals else None
 
 
 # ---------------------------------------------------------------- data sources
@@ -107,7 +117,7 @@ def codex_daily(contract, chain):
 
 
 def coingecko_daily(contract, chain):
-    """Fallback: [(date, price, volume, None)] from CoinGecko (60 days, daily)."""
+    """Fallback: [(date, price, volume, None)] from CoinGecko (daily)."""
     from age_check import CHAIN_TO_CG_PLATFORM
     from discovery import CG_KEY
     plat = CHAIN_TO_CG_PLATFORM.get((chain or "").lower())
@@ -130,125 +140,145 @@ def coingecko_daily(contract, chain):
 
 
 # ---------------------------------------------------------------- the numbers
-def compute(bars, today, liq_override=None, holders=None, liq_usd=None):
-    """The section's numbers from daily bars. liq_override = (pct, label) to
-    use instead of the bars' liquidity; holders = [(date, count)] or None."""
+def _level_groups(series, today):
+    """3 point-to-point changes for a level series (holders, liquidity): value
+    at the end of each 5-day group vs 5 days earlier. [oldest, middle, latest]."""
+    ends = [today - timedelta(days=GROUP_DAYS * k) for k in (3, 2, 1, 0)]   # -15, -10, -5, now
+    vals = [_value_at(series, d) for d in ends]
+    return [_pct(vals[i], vals[i - 1]) for i in (1, 2, 3)]
+
+
+def _volume_groups(bars, today):
+    """3 changes: each 5-day volume average vs the previous 5 days' (complete days)."""
+    vols = [v for d, _, v, _ in bars if d < today and v is not None][-(4 * GROUP_DAYS):]
+    blocks = [vols[i:i + GROUP_DAYS] for i in range(len(vols) % GROUP_DAYS, len(vols), GROUP_DAYS)]
+    avgs = [sum(b) / len(b) for b in blocks if len(b) == GROUP_DAYS]
+    changes = [_pct(avgs[i], avgs[i - 1]) for i in range(1, len(avgs))]
+    return ([None] * (3 - len(changes)) + changes)[-3:]
+
+
+def zone_bands(low, high):
+    """Each zone's price band from the 60-day low -> high."""
+    span = high - low
+    at = lambda pct: low + span * pct / 100
+    return {"BEST": [low, at(BEST_MAX_PCT)], "GOOD": [at(BEST_MAX_PCT), at(GOOD_MAX_PCT)],
+            "ACCUMULATE": [at(GOOD_MAX_PCT), at(WAIT_MIN_PCT)], "WAIT": [at(WAIT_MIN_PCT), high]}
+
+
+def compute(bars, today, liq_series=None, holders=None, liq_usd=None, liq_source="Codex"):
+    """The section's numbers. liq_series / holders = [(date, value)] level series."""
     prices = [(d, c) for d, c, _, _ in bars][-PRICE_DAYS:]
-    days = len(prices)
-    res = {"history_days": days, "too_new": days < MIN_HISTORY_DAYS,
-           "chart": [{"date": d.isoformat(), "price": c} for d, c in prices]}
+    res = {"history_days": len(prices), "too_new": len(prices) < MIN_HISTORY_DAYS}
     if prices:
         closes = [c for _, c in prices]
         lo, hi, cur = min(closes), max(closes), closes[-1]
-        res.update(price=cur, low=lo, high=hi, above_low_pct=_pct(cur, lo), below_high_pct=_pct(cur, hi),
-                   position_pct=round((cur - lo) / (hi - lo) * 100, 1) if hi > lo else 50.0)
-
-    # Volume: complete days only, last 20 -> 4 blocks of 5 -> 3 group changes.
-    vols = [v for d, _, v, _ in bars if d < today and v is not None][-(4 * VOL_GROUP_DAYS):]
-    blocks = [vols[i:i + VOL_GROUP_DAYS] for i in range(len(vols) % VOL_GROUP_DAYS, len(vols), VOL_GROUP_DAYS)]
-    avgs = [sum(b) / len(b) for b in blocks if len(b) == VOL_GROUP_DAYS]
-    changes = [_pct(avgs[i], avgs[i - 1]) for i in range(1, len(avgs))]
-    res["volume_groups"] = ([None] * (3 - len(changes)) + changes)[-3:]   # oldest, middle, latest
-
-    # Liquidity over WINDOW_DAYS.
-    if liq_override is not None:
-        res["liquidity_pct"], res["liquidity_source"] = liq_override
-    else:
-        liq = [(d, l) for d, _, _, l in bars if l]
-        base = next((l for d, l in liq if d >= today - timedelta(days=WINDOW_DAYS)), None)
-        res["liquidity_pct"] = _pct(liq[-1][1], base) if liq and base else None
-        res["liquidity_source"] = "Codex"
-
-    # Holders over WINDOW_DAYS (our snapshots; may cover fewer days).
-    h = [(d, n) for d, n in (holders or []) if n and d >= today - timedelta(days=WINDOW_DAYS)]
-    res["holders_pct"] = _pct(h[-1][1], h[0][1]) if len(h) >= 2 else None
-    res["holders_since"] = h[0][0].isoformat() if len(h) >= 2 else None
-    res["liquidity_usd"] = liq_usd                  # real liquidity now (None = unknown)
+        res.update(price=cur, low=lo, high=hi, above_low_pct=_pct(cur, lo),
+                   position_pct=round((cur - lo) / (hi - lo) * 100, 1) if hi > lo else 50.0,
+                   bands=zone_bands(lo, hi))
+    if liq_series is None:
+        liq_series = [(d, l) for d, _, _, l in bars if l]
+    res["volume_groups"] = _volume_groups(bars, today)
+    res["liquidity_groups"] = _level_groups(liq_series, today) if liq_series else [None] * 3
+    res["holders_groups"] = _level_groups(holders, today) if holders else [None] * 3
+    # 15-day changes (for RISK): now vs ~15 days ago, or the oldest reading in the window.
+    def window_change(series):
+        s = [(d, v) for d, v in (series or []) if v and d >= today - timedelta(days=3 * GROUP_DAYS)]
+        return _pct(s[-1][1], s[0][1]) if len(s) >= 2 else None
+    res["liquidity_pct"] = window_change(liq_series)
+    res["holders_pct"] = window_change(holders)
+    res["liquidity_usd"], res["liquidity_source"] = liq_usd, liq_source
     res["zone"] = classify(res)
     res["zone_label"] = ZONES[res["zone"]]
+    res["band"] = band_of(res.get("position_pct"))
     res["line"] = sentence(res)
     return res
 
 
+def band_of(pos):
+    if pos is None:
+        return None
+    return ("BEST" if pos <= BEST_MAX_PCT else "GOOD" if pos <= GOOD_MAX_PCT
+            else "ACCUMULATE" if pos < WAIT_MIN_PCT else "WAIT")
+
+
 def classify(r):
-    """The 6 zones, in order (see the module docstring)."""
+    """The zones, in order (see the module docstring)."""
     if r.get("too_new") or r.get("position_pct") is None:
         return "TOO_NEW"
-    pos, liq, hold = r["position_pct"], r.get("liquidity_pct"), r.get("holders_pct")
+    pos = r["position_pct"]
     groups = [g for g in r.get("volume_groups") or [] if g is not None]
     latest = groups[-1] if groups else None
-    liq_fell = liq is not None and liq < -LIQ_DROP_PCT
-    hold_fell = hold is not None and hold < -HOLDERS_DROP_PCT
-    ok = not liq_fell and not hold_fell              # "not down" (flat is fine, unknown passes)
-
     thin = r.get("liquidity_usd") is not None and r["liquidity_usd"] < MIN_LIQUIDITY_USD
+    liq_fell = r.get("liquidity_pct") is not None and r["liquidity_pct"] < -LIQ_DROP_PCT
+    hold_fell = r.get("holders_pct") is not None and r["holders_pct"] < -HOLDERS_DROP_PCT
     if thin or liq_fell or hold_fell:
         return "RISK"
-    if pos >= PRICE_HIGH_PCT:
+    if pos >= WAIT_MIN_PCT:
         return "WAIT"
-    if (latest is not None and latest < -VOL_FLAT_PCT) or (len(groups) == 3 and all(g < 0 for g in groups)) or hold_fell:
+    if (latest is not None and latest < -VOL_FLAT_PCT) or (len(groups) == 3 and all(g < 0 for g in groups)):
         return "FALLING"
-    if latest is None:
-        return "NEUTRAL"
-    if pos <= PRICE_LOW_PCT and latest > VOL_FLAT_PCT and ok:
-        return "BEST"
-    if pos <= PRICE_LOW_PCT and abs(latest) <= VOL_FLAT_PCT and ok:
+    rising = latest is not None and latest > VOL_FLAT_PCT
+    if pos <= BEST_MAX_PCT:
+        return "BEST" if rising else "GOOD"
+    if pos <= GOOD_MAX_PCT:
         return "GOOD"
-    if PRICE_LOW_PCT < pos < PRICE_HIGH_PCT and latest > VOL_FLAT_PCT and ok:
-        return "ACCUMULATE"
-    return "NEUTRAL"
+    return "ACCUMULATE" if rising else "NEUTRAL"
 
 
 def sentence(r):
-    """One Arabic sentence (numbers / % stay left-to-right)."""
+    """The Arabic opinion: where the coin is now and what price to wait for."""
     from relative_strength import _ltr
+
+    def usd(v):
+        if v is None:
+            return "—"
+        return _ltr("$" + (f"{v:,.2f}" if v >= 1 else f"{v:.4g}"))
 
     def p(v):
         return _ltr(f"{v:+.0f}%") if v is not None else "—"
-    if r["zone"] == "TOO_NEW":
-        return f"العملة جديدة جداً ({_ltr(r['history_days'])} يوماً فقط من البيانات) — لا يوجد سياق طويل المدى بعد."
-    n = _ltr(r["history_days"])
-    pos = _ltr(f"{int(r['position_pct'] + 0.5)}%")          # round half up, like the page
+    z = r["zone"]
+    if z == "TOO_NEW":
+        return f"العملة جديدة ({_ltr(r['history_days'])} يوم فقط من البيانات) — ما كاينش سياق طويل المدى بعد."
+    pos = _ltr(f"{int(r['position_pct'] + 0.5)}%")
+    b = r["bands"]
+    best_top, good_top, acc_top = usd(b["BEST"][1]), usd(b["GOOD"][1]), usd(b["ACCUMULATE"][1])
+    now = usd(r["price"])
     groups = [g for g in r["volume_groups"] if g is not None]
     vol = p(groups[-1]) if groups else "—"
-    tail = " وصف للبيانات وليس نصيحة مالية."
-    z = r["zone"]
     if z == "RISK":
-        bits = []
         if r.get("liquidity_usd") is not None and r["liquidity_usd"] < MIN_LIQUIDITY_USD:
-            have = _ltr("$" + format(r["liquidity_usd"], ",.0f"))
-            need = _ltr("$" + format(MIN_LIQUIDITY_USD, ","))
-            return (f"إشارة خطر: السيولة الفعلية {have} فقط، أقل من {need}"
-                    " — يصعب التداول عليها مهما كانت باقي الإشارات." + tail)
+            return (f"السيولة الفعلية {_ltr('$' + format(r['liquidity_usd'], ',.0f'))} فقط (أقل من {_ltr(f'${MIN_LIQUIDITY_USD:,}')})"
+                    " — صعيب التداول عليها، ماشي منطقة دخول مهما كان السعر.")
+        bits = []
         if r.get("liquidity_pct") is not None and r["liquidity_pct"] < -LIQ_DROP_PCT:
-            bits.append(f"السيولة انخفضت {p(r['liquidity_pct'])}")
+            bits.append(f"السيولة طاحت {p(r['liquidity_pct'])}")
         if r.get("holders_pct") is not None and r["holders_pct"] < -HOLDERS_DROP_PCT:
-            bits.append(f"عدد الحاملين انخفض {p(r['holders_pct'])}")
-        return f"إشارة خطر: {' و'.join(bits)} خلال آخر {_ltr(WINDOW_DAYS)} يوماً — الأفضل الانتظار حتى تستقر." + tail
+            bits.append(f"الحاملين طاحو {p(r['holders_pct'])}")
+        return f"إشارة خطر: {' و'.join(bits)} فآخر 15 يوم — تسنّى حتى تستقر قبل أي دخول."
     if z == "WAIT":
-        return (f"السعر قرب أعلى مستوى في آخر {n} يوماً ({pos} من النطاق، {p(r['above_low_pct'])} فوق القاع)"
-                f" — دخول متأخر وعالي المخاطرة، الأفضل الانتظار." + tail)
+        return (f"السعر {now} قريب من القمة ({pos} من المدى) — دخول متأخر؛"
+                f" تسنّى السعر ينزل تحت {acc_top} لمنطقة {_ltr('ACCUMULATE')} أو تحت {best_top} لمنطقة {_ltr('BEST ENTRY')}.")
     if z == "FALLING":
-        return f"حجم التداول يتراجع ({vol} في آخر 5 أيام مقارنة بما قبلها) — الزخم يضعف." + tail
+        return (f"الفوليم كيطيح ({vol} فآخر 5 أيام) والسعر {now} ({pos} من المدى)"
+                f" — تسنّى حتى يرجع الفوليم يطلع؛ منطقة {_ltr('BEST ENTRY')} تحت {best_top}.")
     if z == "BEST":
-        strong = groups and groups[-1] >= VOL_STRONG_PCT
-        return (f"السعر في الجزء المنخفض من نطاق {n} يوماً ({pos}) مع ارتفاع {'قوي ' if strong else ''}في حجم التداول ({vol})"
-                f"، والسيولة والحاملون غير متراجعين — أفضل منطقة دخول حسب البيانات." + tail)
+        return (f"السعر {now} فمنطقة {_ltr('BEST ENTRY')} ({pos} من المدى) والفوليم طالع ({vol})"
+                " — أحسن منطقة دخول حسب البيانات.")
     if z == "GOOD":
-        return (f"السعر منخفض في نطاق {n} يوماً ({pos}) وحجم التداول هادئ ({vol})"
-                f"، والسيولة والحاملون غير متراجعين — منطقة دخول جيدة." + tail)
+        return (f"السعر {now} فمنطقة {_ltr('GOOD')} ({pos} من المدى) — دخول مقبول؛"
+                f" السعر الأحسن تحت {best_top} لمنطقة {_ltr('BEST ENTRY')}.")
     if z == "ACCUMULATE":
-        return (f"السعر في منتصف نطاق {n} يوماً ({pos}) وحجم التداول يرتفع ({vol})"
-                f"، والسيولة والحاملون غير متراجعين — منطقة تجميع." + tail)
-    return f"لا توجد منطقة واضحة الآن: السعر عند {pos} من نطاق {n} يوماً وحجم التداول {vol}." + tail
+        return (f"السعر {now} فالوسط ({pos} من المدى) والفوليم طالع ({vol}) — منطقة تجميع؛"
+                f" للدخول الأحسن تسنّى السعر ينزل تحت {good_top} ({_ltr('GOOD')}) أو {best_top} ({_ltr('BEST ENTRY')}).")
+    return (f"السعر {now} فالوسط ({pos} من المدى) والفوليم هادئ ({vol}) — ما كايناش منطقة واضحة؛"
+            f" تسنّى السعر ينزل تحت {good_top} لمنطقة {_ltr('GOOD')} أو حتى يطلع الفوليم.")
 
 
 # ---------------------------------------------------------------- entry points
 def build(contract, chain, today=None, dex_liq=None, holders=None, liq_history=None):
-    """Fetch + compute. dex_liq = current DexScreener liquidity (for the
-    source-mismatch rule); liq_history = [(date, DexScreener liquidity)] used
-    if Codex is unreliable for this coin."""
-    from liquidity_check import codex_unreliable
+    """Fetch + compute. dex_liq = current DexScreener liquidity; liq_history =
+    [(date, DexScreener liquidity)] (our snapshots) used when Codex is unreliable."""
+    from liquidity_check import codex_unreliable, best_liquidity
     today = today or datetime.now(timezone.utc).date()
     bars, source = codex_daily(contract, chain), "Codex"
     if len(bars) < MIN_HISTORY_DAYS:
@@ -257,47 +287,105 @@ def build(contract, chain, today=None, dex_liq=None, holders=None, liq_history=N
             bars, source = cg, "CoinGecko"
     if not bars:
         return {"status": "unknown", "reason": "No daily price history on Codex or CoinGecko"}
-    override = None
-    codex_liq = next((l for _, _, _, l in reversed(bars) if l), None)
-    if source == "Codex" and codex_unreliable(codex_liq, dex_liq):
-        h = [(d, l) for d, l in (liq_history or []) if l and d >= today - timedelta(days=WINDOW_DAYS)]
-        override = (_pct(h[-1][1], h[0][1]) if len(h) >= 2 else None, "DexScreener · Codex unreliable")
-    elif source == "CoinGecko":
-        override = (None, None)
-    from liquidity_check import best_liquidity
-    liq_usd = best_liquidity(codex_liq if source == "Codex" else None, dex_liq)[0]
-    res = compute(bars, today, override, holders, liq_usd)
+    codex_liq = next((l for _, _, _, l in reversed(bars) if l), None) if source == "Codex" else None
+    liq_series, liq_source = None, "Codex"
+    if source == "CoinGecko":
+        liq_series, liq_source = (liq_history or None), "DexScreener"
+    elif codex_unreliable(codex_liq, dex_liq):
+        liq_series, liq_source = (liq_history or []), "DexScreener · Codex unreliable"
+    liq_usd = best_liquidity(codex_liq, dex_liq)[0]
+    res = compute(bars, today, liq_series, holders, liq_usd, liq_source)
     res.update(status="ok", source=source)
     return res
 
 
-def get_entry_zone(session, coin):
-    """Detail page: build() with our holders + DexScreener history, cached
-    per coin per UTC day (entry_zone_cache). Never raises on a missing cache table."""
+def zone_change(session, coin, today, zone):
+    """The 3-day change line data from entry_zone_history, or None if there's no
+    record from ~CHANGE_LOOKBACK_DAYS days ago yet."""
+    from models import EntryZoneHistory
+    key = ((coin.chain or "").lower(), (coin.contract or "").lower())
+    target = today - timedelta(days=CHANGE_LOOKBACK_DAYS)
+    rows = (session.query(EntryZoneHistory)
+            .filter(EntryZoneHistory.chain == key[0], EntryZoneHistory.contract == key[1],
+                    EntryZoneHistory.day <= target, EntryZoneHistory.day >= target - timedelta(days=1))
+            .order_by(EntryZoneHistory.day.desc()).first())
+    if rows is None:
+        return None
+    old = rows.zone
+    out = {"from": old, "from_label": ZONES.get(old, old), "from_day": rows.day.isoformat(), "to": zone,
+           "changed": old != zone}
+    if old != zone and old in ZONE_RANK and zone in ZONE_RANK:
+        out["direction"] = "up" if ZONE_RANK[zone] > ZONE_RANK[old] else "down"
+    return out
+
+
+def save_zone(session, coin, today, res):
+    """Today's zone into entry_zone_history (one row per coin per day)."""
+    from models import EntryZoneHistory
+    key = ((coin.chain or "").lower(), (coin.contract or "").lower())
+    row = session.query(EntryZoneHistory).filter_by(chain=key[0], contract=key[1], day=today).first()
+    if row is None:
+        row = EntryZoneHistory(chain=key[0], contract=key[1], day=today)
+        session.add(row)
+    row.zone, row.position_pct = res["zone"], res.get("position_pct")
+
+
+def get_entry_zone(session, coin, refresh=False):
+    """Detail page (and the daily job with refresh=True): build() with our
+    holders + DexScreener history, cached per coin per UTC day
+    (entry_zone_cache); today's zone is saved to entry_zone_history. The
+    3-day change line is added fresh each time. Never raises on a missing table."""
     from models import DailySnapshot, EntryZoneCache
     today = datetime.now(timezone.utc).date()
     key = ((coin.chain or "").lower(), (coin.contract or "").lower())
-    row = None
+    res, row = None, None
     try:
         row = session.query(EntryZoneCache).filter_by(chain=key[0], contract=key[1]).first()
-        if row is not None and row.day == today:
-            return json.loads(row.data)
+        if row is not None and row.day == today and not refresh:
+            res = json.loads(row.data)
     except Exception:
         session.rollback()
-        row = False                              # table missing: don't try to save
-    snaps = (session.query(DailySnapshot.date, DailySnapshot.holders, DailySnapshot.liquidity)
-             .filter(DailySnapshot.coin_id == coin.id).order_by(DailySnapshot.date).all())
-    res = build(coin.contract, coin.chain, today,
-                dex_liq=snaps[-1][2] if snaps else None,
-                holders=[(d, h) for d, h, _ in snaps],
-                liq_history=[(d, l) for d, _, l in snaps])
-    if res.get("status") == "ok" and row is not False:
+        row = False                              # tables missing: compute, don't save
+    if res is None:
+        snaps = (session.query(DailySnapshot.date, DailySnapshot.holders, DailySnapshot.liquidity)
+                 .filter(DailySnapshot.coin_id == coin.id).order_by(DailySnapshot.date).all())
+        res = build(coin.contract, coin.chain, today,
+                    dex_liq=snaps[-1][2] if snaps else None,
+                    holders=[(d, h) for d, h, _ in snaps if h],
+                    liq_history=[(d, l) for d, _, l in snaps if l])
+        if res.get("status") == "ok" and row is not False:
+            try:
+                if row is None:
+                    row = EntryZoneCache(chain=key[0], contract=key[1])
+                    session.add(row)
+                row.day, row.data = today, json.dumps(res)
+                save_zone(session, coin, today, res)
+                session.commit()
+            except Exception:
+                session.rollback()
+    if res.get("status") == "ok":
         try:
-            if row is None:
-                row = EntryZoneCache(chain=key[0], contract=key[1])
-                session.add(row)
-            row.day, row.data = today, json.dumps(res)
-            session.commit()
+            res["change"] = zone_change(session, coin, today, res["zone"])
+            res["change_available"] = True
         except Exception:
             session.rollback()
+            res["change"], res["change_available"] = None, False
     return res
+
+
+def run_entry_zone_snapshot():
+    """Daily job: compute + save today's zone for every ACTIVE coin (one Codex
+    call each), so the 3-day change line has history. Display only."""
+    from database import SessionLocal
+    from models import Coin
+    session = SessionLocal()
+    stats = {"coins": 0, "saved": 0}
+    try:
+        for coin in session.query(Coin).filter_by(status="active").all():
+            stats["coins"] += 1
+            res = get_entry_zone(session, coin, refresh=True)
+            stats["saved"] += res.get("status") == "ok"
+    finally:
+        session.close()
+    print(f"[INFO] Entry Zone snapshot: {stats['saved']}/{stats['coins']} active coins' zones saved")
+    return stats
