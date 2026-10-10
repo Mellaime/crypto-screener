@@ -42,6 +42,7 @@ from rank_check import run_rank_update
 from holders_check import run_holders_update
 from scoring import score_all, print_ranking
 from narratives import run_narrative_snapshot
+from entry_zone import run_entry_zone_snapshot
 
 # How often the pipeline runs automatically.
 RUN_EVERY_HOURS = 24
@@ -122,6 +123,14 @@ def run_pipeline(raise_on_error=False):
             run_narrative_snapshot()
         except Exception:
             log.exception("Narrative snapshot failed - continuing.")
+
+        # Entry Zone: today's zone for every active coin (one Codex call each)
+        # so the detail page can show the 3-day zone change. Display only.
+        log.info("Saving Entry Zone snapshot...")
+        try:
+            run_entry_zone_snapshot()
+        except Exception:
+            log.exception("Entry Zone snapshot failed - continuing.")
 
         log.info("Scoring active coins...")
         results = score_all()

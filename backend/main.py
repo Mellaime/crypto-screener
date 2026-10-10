@@ -275,6 +275,7 @@ def get_coin(contract: str):
         from revenue_detail import get_revenue
         from price_range import get_price_range
         from relative_strength import get_rel_strength
+        from entry_zone import get_entry_zone
         from concurrent.futures import ThreadPoolExecutor
 
         def own_session(fn, *args):
@@ -284,7 +285,10 @@ def get_coin(contract: str):
             finally:
                 s2.close()
         snap_mcap = snap.mcap if snap else None
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            # Entry Zone reads the coin's snapshots, so it gets its own session too.
+            f_ez = pool.submit(lambda: own_session(lambda s2: get_entry_zone(
+                s2, s2.get(Coin, coin.id))))
             f_tx = pool.submit(own_session, get_tx_bars, coin.contract, coin.chain)
             f_live = pool.submit(own_session, get_live_volume, coin.contract, coin.chain)
             f_rev = pool.submit(own_session, get_revenue, coin.contract, coin.chain, snap_mcap)
@@ -293,6 +297,7 @@ def get_coin(contract: str):
             f_rs = pool.submit(own_session, get_rel_strength, coin.contract, coin.chain)
             price_range = f_pr.result()
             rel_strength = f_rs.result()
+            entry_zone = f_ez.result()
 
         # Volume / Market cap (%) and Volume / Liquidity (x) over 4 windows.
         # Market cap = the stored CoinGecko/CMC (global) one; liquidity = the
@@ -389,6 +394,7 @@ def get_coin(contract: str):
             "revenue": revenue,
             "price_range": price_range,
             "rel_strength": rel_strength,
+            "entry_zone": entry_zone,
             "supply": {
                 "total": coin.total_supply,
                 "circulating": coin.circulating_supply,
