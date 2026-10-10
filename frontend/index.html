@@ -1380,15 +1380,16 @@
       : `<span class="${v === 0 ? "flat" : v > 0 ? "up" : "down"}" dir="ltr">${v > 0 ? "+" : ""}${v.toFixed(1)}%</span>`;
     const volSig = v => v == null ? `<span class="na">—</span>`
       : `<span class="${Math.abs(v) <= 10 ? "flat" : v > 0 ? "up" : "down"}" dir="ltr">${v > 0 ? "+" : ""}${v.toFixed(1)}%</span>`;
-    // 2) 3-day zone change (hidden when there's no saved history - e.g. Check a Coin)
+    // 2) zone change, every 3 days per coin (hidden for Check a Coin: no saved history)
     let change = "";
     if (ez.change_available) {
       const c = ez.change;
       const lbl = z => (EZ_ORDER.find(x => x[0] === z) || [z, z === "NEUTRAL" ? "⚪ NO CLEAR ZONE" : z === "TOO_NEW" ? "⚪ TOO NEW" : z])[1];
-      change = !c ? `<div class="ezchange" dir="rtl" lang="ar">تغيّر المنطقة (كل 3 أيام): <span class="na">يتعمّر خلال 3 أيام</span></div>`
+      const when = ez.evaluated_day ? ` <small class="na">· آخر مراجعة <bdi>${esc(shortDate(ez.evaluated_day))}</bdi> · الجاية <bdi>${esc(shortDate(ez.next_check_day))}</bdi></small>` : "";
+      change = !c ? `<div class="ezchange" dir="rtl" lang="ar">تغيّر المنطقة (كل 3 أيام): <span class="na">يتعمّر خلال 3 أيام</span>${when}</div>`
         : c.changed ? `<div class="ezchange" dir="rtl" lang="ar">تغيّر المنطقة (كل 3 أيام): من <bdi>${esc(lbl(c.from))}</bdi> ← ولات <bdi>${esc(lbl(c.to))}</bdi>`
-            + (c.direction ? ` · <span class="${c.direction}">${c.direction === "up" ? "تحسّن" : "تراجع"}</span>` : "") + `</div>`
-        : `<div class="ezchange" dir="rtl" lang="ar">تغيّر المنطقة (كل 3 أيام): بقات نفسها: <bdi>${esc(lbl(c.to))}</bdi></div>`;
+            + (c.direction ? ` · <span class="${c.direction}">${c.direction === "up" ? "تحسّن" : "تراجع"}</span>` : "") + `${when}</div>`
+        : `<div class="ezchange" dir="rtl" lang="ar">تغيّر المنطقة (كل 3 أيام): بقات نفسها: <bdi>${esc(lbl(c.to))}</bdi>${when}</div>`;
     }
     if (ez.too_new) {
       return head(badge) + change + `<div class="opinion rtl" dir="rtl" lang="ar">${esc(ez.line || "")}</div>

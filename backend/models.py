@@ -351,9 +351,10 @@ class NarrativeSnapshot(Base):
 
 class EntryZoneCache(Base):
     """
-    Detail page: a coin's "Entry Zone" section (60-day price position, 15-day
-    volume groups, liquidity / holders change, zone; entry_zone.py) as JSON,
-    cached for one UTC day. Display only.
+    A tracked coin's latest Entry Zone evaluation (zone, price bands, details,
+    change vs the previous evaluation; entry_zone.py) as JSON. `day` = the day
+    it was evaluated; it is shown as-is until it is re-evaluated 3 days later.
+    Display only.
     """
     __tablename__ = "entry_zone_cache"
     __table_args__ = (UniqueConstraint("chain", "contract"),)
@@ -361,7 +362,7 @@ class EntryZoneCache(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     chain = Column(String, nullable=False)
     contract = Column(String, nullable=False, index=True)   # stored lowercased
-    day = Column(Date, nullable=False)                       # UTC day it was computed
+    day = Column(Date, nullable=False)                       # UTC day it was evaluated
     data = Column(String, nullable=False)                    # JSON
 
 
@@ -380,3 +381,21 @@ class EntryZoneHistory(Base):
     day = Column(Date, nullable=False, index=True)           # UTC day
     zone = Column(String, nullable=False)                    # BEST / GOOD / ... / RISK
     position_pct = Column(Float)                             # price position in its range
+
+
+class EntryZoneBars(Base):
+    """
+    A tracked coin's daily history for the Entry Zone (entry_zone.py) as JSON:
+    [date, close, volume, primary-chain liquidity, all-chains liquidity] per
+    day (last 90 days) + the coin's chains (DexScreener liquidity per chain).
+    Filled ONCE from Codex when the coin is first tracked, then extended daily
+    by the tracking step from stored readings. Display only.
+    """
+    __tablename__ = "entry_zone_bars"
+    __table_args__ = (UniqueConstraint("chain", "contract"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chain = Column(String, nullable=False)
+    contract = Column(String, nullable=False, index=True)   # stored lowercased
+    updated_day = Column(Date)                               # latest day stored
+    data = Column(String, nullable=False)                    # JSON
