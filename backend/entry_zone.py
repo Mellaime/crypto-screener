@@ -20,7 +20,10 @@ What it shows (top to bottom on the page):
         holders,  = the value at the END of the group vs 5 days earlier
         liquidity   (levels, not daily flows)
 
-Sources: Codex daily bars (close, volume, liquidity) - one call; CoinGecko
+Sources - ACTIVE coins: STORED data only (entry_zone_bars, filled once from
+Codex and then extended daily by the tracking step; see "STORED HISTORY"
+below) - no live Codex calls; the zone is re-evaluated every RECHECK_DAYS (3)
+days per coin. Check a Coin (untracked coins): live Codex daily bars, CoinGecko
 market_chart (daily) when Codex has fewer than MIN_HISTORY_DAYS days.
 LIQUIDITY is measured across ALL the coin's chains (DexScreener lists its
 pools per chain under the same contract): one Codex liquidity history per
@@ -376,28 +379,210 @@ def build(contract, chain, today=None, dex_liq=None, holders=None, liq_history=N
     return res
 
 
-def zone_change(session, coin, today, zone):
-    """The 3-day change line data from entry_zone_history, or None if there's no
-    record from ~CHANGE_LOOKBACK_DAYS days ago yet."""
-    from models import EntryZoneHistory
-    key = ((coin.chain or "").lower(), (coin.contract or "").lower())
-    target = today - timedelta(days=CHANGE_LOOKBACK_DAYS)
-    rows = (session.query(EntryZoneHistory)
-            .filter(EntryZoneHistory.chain == key[0], EntryZoneHistory.contract == key[1],
-                    EntryZoneHistory.day <= target, EntryZoneHistory.day >= target - timedelta(days=1))
-            .order_by(EntryZoneHistory.day.desc()).first())
-    if rows is None:
-        return None
-    old = rows.zone
-    out = {"from": old, "from_label": ZONES.get(old, old), "from_day": rows.day.isoformat(), "to": zone,
-           "changed": old != zone}
-    if old != zone and old in ZONE_RANK and zone in ZONE_RANK:
-        out["direction"] = "up" if ZONE_RANK[zone] > ZONE_RANK[old] else "down"
-    return out
+# ===========================================================================
+# STORED HISTORY (active coins): the Entry Zone of a tracked coin is computed
+# from entry_zone_bars - its daily (close, volume, primary-chain liquidity,
+# all-chains liquidity) - never from live Codex calls. Codex is used ONCE per
+# coin, the first time it is tracked (backfill: that history doesn't exist in
+# our database). After that the daily tracking step appends one row per day
+# from what it already stores (price, Codex 24h volume, liquidity), plus ONE
+# bulk Codex request for the extra chains of every multi-chain coin.
+# ===========================================================================
+RECHECK_DAYS = 3           # a coin's zone is re-evaluated every 3 days
+BARS_KEEP_DAYS = 90        # stored daily history per coin
+CHAINS_REFRESH_DAYS = 7    # re-list a coin's chains (DexScreener) after this
 
 
+def _bars_row(session, coin):
+    from models import EntryZoneBars
+    return (session.query(EntryZoneBars)
+            .filter_by(chain=(coin.chain or "").lower(), contract=(coin.contract or "").lower()).first())
+
+
+def load_bars(session, coin):
+    """(bars, meta) from entry_zone_bars: bars = [(date, close, volume, liq_all)]."""
+    row = _bars_row(session, coin)
+    if row is None:
+        return None, None
+    data = json.loads(row.data)
+    # liq_all only: never fall back to the raw main-chain Codex number (it may be
+    # the unreliable reading the mismatch rule rejected).
+    bars = [(datetime.fromisoformat(d).date(), c, v, la) for d, c, v, lp, la in data["bars"]]
+    return bars, data
+
+
+def _save_bars(session, coin, bars5, chains, chains_day):
+    """bars5 = [(date, close, volume, liq_primary, liq_all)] -> entry_zone_bars."""
+    from models import EntryZoneBars
+    row = _bars_row(session, coin)
+    if row is None:
+        row = EntryZoneBars(chain=(coin.chain or "").lower(), contract=(coin.contract or "").lower())
+        session.add(row)
+    bars5 = sorted({b[0]: b for b in bars5}.values())[-BARS_KEEP_DAYS:]
+    row.data = json.dumps({"bars": [[d.isoformat(), c, v, lp, la] for d, c, v, lp, la in bars5],
+                           "chains": chains, "chains_day": chains_day.isoformat() if chains_day else None})
+    row.updated_day = bars5[-1][0] if bars5 else None
+
+
+def backfill_bars(session, coin, today, dex_liq=None):
+    """ONE-TIME Codex fetch of a coin's daily history (the data doesn't exist
+    in our database yet): primary chain bars + each extra chain's liquidity,
+    summed (source-mismatch rule per chain). Returns the number of Codex calls."""
+    from liquidity_check import codex_unreliable, CHAIN_TO_NETWORK
+    chain = (coin.chain or "").lower()
+    bars, calls = codex_daily(coin.contract, chain), 1
+    if len(bars) < MIN_HISTORY_DAYS:
+        cg = coingecko_daily(coin.contract, chain)
+        if len(cg) > len(bars):
+            bars = cg
+    if not bars:
+        return calls
+    ds = dex_chains(coin.contract)
+    if dex_liq is not None:
+        ds[chain] = max(ds.get(chain, 0) or 0, dex_liq)
+    ds.setdefault(chain, dex_liq)
+    extra = {}
+    for ch, ds_now in ds.items():
+        if ch == chain or ch not in CHAIN_TO_NETWORK:
+            continue
+        s = [(d, l) for d, _, _, l in codex_daily(coin.contract, ch) if l]
+        calls += 1
+        if s and not codex_unreliable(s[-1][1], ds_now):
+            extra[ch] = s
+    primary_ok = not codex_unreliable(next((l for *_, l in reversed(bars) if l), None), ds.get(chain))
+    # Codex unreliable on the main chain -> our stored DexScreener readings for it
+    # (only exist since the coin was first tracked; older days stay unknown).
+    from models import DailySnapshot
+    ds_hist = [(d, l) for d, l in session.query(DailySnapshot.date, DailySnapshot.liquidity)
+               .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.liquidity.isnot(None))
+               .order_by(DailySnapshot.date)]
+    if ds.get(chain) is not None and not any(d == today for d, _ in ds_hist):
+        ds_hist.append((today, ds[chain]))
+    out = []
+    for d, c, v, lp in bars:
+        main_liq = lp if (primary_ok and lp is not None) else _value_at(ds_hist, d)
+        parts = [main_liq] + [_value_at(s, d) for s in extra.values()]
+        known = [x for x in parts if x is not None]
+        out.append((d, c, v, lp, sum(known) if len(known) == len(parts) else None))
+    _save_bars(session, coin, out, {k: v for k, v in ds.items() if v is not None}, today)
+    return calls
+
+
+def codex_bulk_liquidity(tokens):
+    """{(contract_lower, networkId): liquidity} for [(contract, chain)] via ONE
+    bulk Codex filterTokens request per 200 tokens."""
+    from liquidity_check import CHAIN_TO_NETWORK, CODEX_KEY, CODEX_URL
+    ids = [f"{ct}:{CHAIN_TO_NETWORK[ch]}" for ct, ch in tokens if ch in CHAIN_TO_NETWORK]
+    q = """query ($tokens: [String]) { filterTokens(tokens: $tokens, limit: 200) {
+      results { liquidity token { address networkId } } } }"""
+    out, calls = {}, 0
+    for i in range(0, len(ids), 200):
+        calls += 1
+        try:
+            body = requests.post(CODEX_URL, json={"query": q, "variables": {"tokens": ids[i:i + 200]}},
+                                 headers={"Authorization": CODEX_KEY}, timeout=60).json()
+        except (requests.exceptions.RequestException, ValueError):
+            continue
+        for r in ((body.get("data") or {}).get("filterTokens") or {}).get("results") or []:
+            t = r.get("token") or {}
+            try:
+                out[((t.get("address") or "").lower(), int(t.get("networkId")))] = float(r.get("liquidity"))
+            except (TypeError, ValueError):
+                pass
+    return out, calls
+
+
+def store_daily_bars(session, coins, today):
+    """Daily tracking step: append today's row to every tracked coin's stored
+    history from today's snapshot (price, Codex 24h volume, liquidity) - no
+    per-coin Codex calls - plus one bulk Codex request for all extra chains.
+    New coins (no stored history yet) get the one-time backfill.
+    Returns {"appended", "backfilled", "codex_calls"}."""
+    from liquidity_check import codex_unreliable, best_liquidity, CHAIN_TO_NETWORK
+    from models import DailySnapshot
+    stats = {"appended": 0, "backfilled": 0, "codex_calls": 0}
+    have, need_extra = {}, []
+    for coin in coins:
+        bars, meta = load_bars(session, coin)
+        have[coin.id] = meta
+        for ch in (meta or {}).get("chains", {}):
+            if ch != (coin.chain or "").lower() and ch in CHAIN_TO_NETWORK:
+                need_extra.append((coin.contract, ch))
+    bulk, calls = codex_bulk_liquidity(need_extra) if need_extra else ({}, 0)
+    stats["codex_calls"] += calls
+    for coin in coins:
+        snap = (session.query(DailySnapshot).filter_by(coin_id=coin.id, date=today).first())
+        meta = have[coin.id]
+        if meta is None:                                   # new coin -> one-time backfill
+            stats["codex_calls"] += backfill_bars(session, coin, today, snap.liquidity if snap else None)
+            stats["backfilled"] += 1
+            continue
+        if snap is None or not snap.price_usd:
+            continue
+        chain = (coin.chain or "").lower()
+        chains = meta.get("chains") or {}
+        lp = snap.codex_liquidity
+        primary = (snap.liquidity if codex_unreliable(lp, snap.liquidity)
+                   else best_liquidity(lp, snap.liquidity)[0])
+        parts = [primary]
+        for ch, ds_now in chains.items():
+            if ch == chain or ch not in CHAIN_TO_NETWORK:
+                continue
+            cx = bulk.get(((coin.contract or "").lower(), CHAIN_TO_NETWORK[ch]))
+            parts.append(ds_now if codex_unreliable(cx, ds_now) else best_liquidity(cx, ds_now)[0])
+        known = [x for x in parts if x is not None]
+        la = sum(known) if known else None
+        vol = snap.codex_volume24 if snap.codex_volume24 is not None else snap.volume
+        bars5 = [(datetime.fromisoformat(d).date(), c, v, l1, l2) for d, c, v, l1, l2 in meta["bars"]]
+        bars5.append((today, snap.price_usd, vol, lp, la))
+        chains_day = datetime.fromisoformat(meta["chains_day"]).date() if meta.get("chains_day") else None
+        if chains_day is None or (today - chains_day).days >= CHAINS_REFRESH_DAYS:
+            fresh = dex_chains(coin.contract)              # DexScreener only (no Codex)
+            if fresh:
+                chains, chains_day = fresh, today
+        _save_bars(session, coin, bars5, chains, chains_day)
+        stats["appended"] += 1
+    session.commit()
+    return stats
+
+
+def compute_stored(session, coin, today):
+    """The Entry Zone of a tracked coin from STORED data only (no Codex)."""
+    from models import DailySnapshot
+    bars, meta = load_bars(session, coin)
+    if not bars:
+        return {"status": "unknown", "reason": "No stored daily history yet - filled by the next daily run"}
+    snaps = (session.query(DailySnapshot.date, DailySnapshot.holders, DailySnapshot.mcap,
+                           DailySnapshot.liquidity)
+             .filter(DailySnapshot.coin_id == coin.id).order_by(DailySnapshot.date).all())
+    four = [(d, c, v, la) for d, c, v, la in bars]
+    liq_series = [(d, la) for d, _, _, la in bars if la]
+    chains = (meta or {}).get("chains") or {}
+    # Real liquidity SIZE, as the rest of the bot: the higher of Codex (stored
+    # all-chains figure) and DexScreener (today's main-chain reading + the other
+    # chains' DexScreener liquidity) - Codex under-reports many coins.
+    main = (coin.chain or "").lower()
+    ds_now = next((l for *_, l in reversed(snaps) if l), None)
+    ds_total = (ds_now or 0) + sum(v or 0 for ch, v in chains.items() if ch != main)
+    stored_now = liq_series[-1][1] if liq_series else None
+    size = max(stored_now or 0, ds_total) or None
+    res = compute(four, today, liq_series, [(d, h) for d, h, _, _ in snaps if h],
+                  size,
+                  "all chains" if len(chains) > 1 else "stored",
+                  next((m for _, _, m, _ in reversed(snaps) if m), None),
+                  [{"chain": ch, "liquidity": v} for ch, v in chains.items()])
+    res.update(status="ok", source="stored")
+    return res
+
+
+# ===========================================================================
+# 3-DAY CYCLE (per coin): a coin's zone is evaluated once, kept as-is for
+# RECHECK_DAYS - 1 days, then re-evaluated. The re-check is what produces the
+# change line ("من X ← ولات Y" / "بقات نفسها"). entry_zone_cache holds the
+# coin's last evaluation (day = the day it was evaluated); entry_zone_history
+# gets one row per evaluation.
+# ===========================================================================
 def save_zone(session, coin, today, res):
-    """Today's zone into entry_zone_history (one row per coin per day)."""
     from models import EntryZoneHistory
     key = ((coin.chain or "").lower(), (coin.contract or "").lower())
     row = session.query(EntryZoneHistory).filter_by(chain=key[0], contract=key[1], day=today).first()
@@ -407,64 +592,73 @@ def save_zone(session, coin, today, res):
     row.zone, row.position_pct = res["zone"], res.get("position_pct")
 
 
-def get_entry_zone(session, coin, refresh=False):
-    """Detail page (and the daily job with refresh=True): build() with our
-    holders + DexScreener history, cached per coin per UTC day
-    (entry_zone_cache); today's zone is saved to entry_zone_history. The
-    3-day change line is added fresh each time. Never raises on a missing table."""
-    from models import DailySnapshot, EntryZoneCache
-    today = datetime.now(timezone.utc).date()
+def evaluate(session, coin, today=None, force=False):
+    """Re-evaluate the coin's zone if it was never evaluated or its last
+    evaluation is RECHECK_DAYS or more old (or force). Returns (result, evaluated_now)."""
+    from models import EntryZoneCache
+    today = today or datetime.now(timezone.utc).date()
     key = ((coin.chain or "").lower(), (coin.contract or "").lower())
-    res, row = None, None
+    row = session.query(EntryZoneCache).filter_by(chain=key[0], contract=key[1]).first()
+    prev = json.loads(row.data) if row is not None else None
+    if prev and prev.get("status") == "ok" and not force and (today - row.day).days < RECHECK_DAYS:
+        return prev, False                                  # days 1-2: keep the saved zone
+    res = compute_stored(session, coin, today)
+    if res.get("status") != "ok":
+        return (prev or res), False
+    if prev and prev.get("status") == "ok" and prev.get("zone") in ZONE_RANK | {"TOO_NEW": 0}:
+        old, new = prev["zone"], res["zone"]
+        res["change"] = {"from": old, "to": new, "from_day": row.day.isoformat(), "changed": old != new}
+        if old != new and old in ZONE_RANK and new in ZONE_RANK:
+            res["change"]["direction"] = "up" if ZONE_RANK[new] > ZONE_RANK[old] else "down"
+    else:
+        res["change"] = None                                # first evaluation
+    res["evaluated_day"] = today.isoformat()
+    res["next_check_day"] = (today + timedelta(days=RECHECK_DAYS)).isoformat()
+    if row is None:
+        row = EntryZoneCache(chain=key[0], contract=key[1])
+        session.add(row)
+    row.day, row.data = today, json.dumps(res)
+    save_zone(session, coin, today, res)
+    session.commit()
+    return res, True
+
+
+def get_entry_zone(session, coin, refresh=False):
+    """Detail page: the coin's saved zone (evaluated every RECHECK_DAYS by
+    the daily job); evaluated now from stored data if it has none yet.
+    No Codex calls. Never raises on missing tables."""
     try:
-        row = session.query(EntryZoneCache).filter_by(chain=key[0], contract=key[1]).first()
-        if row is not None and row.day == today and not refresh:
-            res = json.loads(row.data)
+        res, _ = evaluate(session, coin, force=refresh)
     except Exception:
         session.rollback()
-        row = False                              # tables missing: compute, don't save
-    if res is None:
-        snaps = (session.query(DailySnapshot.date, DailySnapshot.holders, DailySnapshot.liquidity,
-                               DailySnapshot.mcap)
-                 .filter(DailySnapshot.coin_id == coin.id).order_by(DailySnapshot.date).all())
-        res = build(coin.contract, coin.chain, today,
-                    dex_liq=snaps[-1][2] if snaps else None,
-                    holders=[(d, h) for d, h, _, _ in snaps if h],
-                    liq_history=[(d, l) for d, _, l, _ in snaps if l],
-                    mcap=next((m for *_, m in reversed(snaps) if m), None))
-        if res.get("status") == "ok" and row is not False:
-            try:
-                if row is None:
-                    row = EntryZoneCache(chain=key[0], contract=key[1])
-                    session.add(row)
-                row.day, row.data = today, json.dumps(res)
-                save_zone(session, coin, today, res)
-                session.commit()
-            except Exception:
-                session.rollback()
-    if res.get("status") == "ok":
-        try:
-            res["change"] = zone_change(session, coin, today, res["zone"])
-            res["change_available"] = True
-        except Exception:
-            session.rollback()
-            res["change"], res["change_available"] = None, False
+        return {"status": "unknown", "reason": "Entry Zone data not available yet"}
+    res = dict(res)
+    res["change_available"] = True
     return res
 
 
 def run_entry_zone_snapshot():
-    """Daily job: compute + save today's zone for every ACTIVE coin (one Codex
-    call each), so the 3-day change line has history. Display only."""
+    """Daily job: re-evaluate every ACTIVE coin whose zone is due (last
+    evaluated RECHECK_DAYS or more ago, or never) - from stored data only."""
     from database import SessionLocal
     from models import Coin
     session = SessionLocal()
-    stats = {"coins": 0, "saved": 0}
+    stats = {"coins": 0, "evaluated": 0, "kept": 0, "changed": 0}
     try:
         for coin in session.query(Coin).filter_by(status="active").all():
             stats["coins"] += 1
-            res = get_entry_zone(session, coin, refresh=True)
-            stats["saved"] += res.get("status") == "ok"
+            try:
+                res, now = evaluate(session, coin)
+            except Exception:
+                session.rollback()
+                continue
+            if now:
+                stats["evaluated"] += 1
+                stats["changed"] += bool((res.get("change") or {}).get("changed"))
+            else:
+                stats["kept"] += 1
     finally:
         session.close()
-    print(f"[INFO] Entry Zone snapshot: {stats['saved']}/{stats['coins']} active coins' zones saved")
+    print(f"[INFO] Entry Zone: {stats['evaluated']} re-evaluated ({stats['changed']} changed zone), "
+          f"{stats['kept']} kept (re-check every {RECHECK_DAYS} days) - no Codex calls")
     return stats

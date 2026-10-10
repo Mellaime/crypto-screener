@@ -297,6 +297,16 @@ def run_daily_tracking():
         from socials import refresh_twitter
         stats["twitter_calls"] = refresh_twitter(session, coins, now, counts=stats)
         session.commit()
+
+        # Entry Zone history: today's row per ACTIVE coin from what was just
+        # stored (no per-coin Codex calls; one bulk request for extra chains;
+        # a never-seen coin gets its one-time Codex backfill).
+        from entry_zone import store_daily_bars
+        try:
+            stats["entry_zone"] = store_daily_bars(session, [c for c in coins if c.status == "active"], today)
+        except Exception as e:
+            session.rollback()
+            print(f"[WARN] Entry Zone history not stored today: {str(e)[:120]}")
     except Exception:
         session.rollback()
         raise
@@ -320,6 +330,9 @@ def run_daily_tracking():
     print(f"  today's snapshots created ....... {stats['snapshots_created']:>5}")
     print(f"  category catch-up (CG calls) .... {stats.get('category_lookups', 0):>5}")
     print(f"  supply refreshed (CG / CMC) ..... {stats.get('supply', 0):>5}")
+    ez = stats.get("entry_zone") or {}
+    print(f"  Entry Zone history ............... {ez.get('appended', 0):>5}   appended "
+          f"(new coins backfilled: {ez.get('backfilled', 0)}, Codex calls: {ez.get('codex_calls', 0)})")
     print(f"  X handle lookups (CG calls) ..... {stats.get('twitter_calls', 0):>5}"
           f"   (CMC fallback calls: {stats.get('cmc_calls', 0)}, handles found there: {stats.get('from_cmc', 0)})")
     if stats["codex_failed_batches"]:
