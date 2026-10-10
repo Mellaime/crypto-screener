@@ -1413,7 +1413,8 @@
     // 6) details table
     const g = (k) => ez[k] || [null, null, null];
     const liqNote = ez.liquidity_usd != null
-      ? ` <small class="${ez.liquidity_usd < 5000 ? "down" : "na"}">(الآن <bdi>${fmtMoney(ez.liquidity_usd)}</bdi>${ez.liquidity_source && ez.liquidity_source !== "Codex" ? " · " + esc(ez.liquidity_source) : ""})</small>` : "";
+      ? ` <small class="${ez.liquidity_usd < 5000 ? "down" : "na"}">(الآن <bdi>${fmtMoney(ez.liquidity_usd)}</bdi>${(ez.liquidity_chains || []).length > 1 ? ` · كل السلاسل <bdi>${ez.liquidity_chains.length}</bdi>` : ""})</small>`
+        + (ez.big_coin ? ` <small class="na">· عملة كبيرة (&gt; <bdi>$100M</bdi>): انخفاض السيولة لا يُحتسب خطراً</small>` : "") : "";
     const details = `<table class="eztable" dir="rtl" lang="ar">
         <thead><tr><th>آخر 15 يوم</th><th>الأقدم (5d)</th><th>الوسط (5d)</th><th>الأحدث (5d)</th></tr></thead>
         <tbody>

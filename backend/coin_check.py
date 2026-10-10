@@ -221,7 +221,8 @@ def run_check(contract):
     f_liq = pool.submit(check_liquidity_trend, contract, chain)
     f_tx = pool.submit(fetch_from_codex, contract, chain)
     from entry_zone import build as entry_zone_build
-    f_ez = pool.submit(entry_zone_build, contract, chain, None, dex_rec.get("liquidity_usd"))
+    f_ez = pool.submit(entry_zone_build, contract, chain, None, dex_rec.get("liquidity_usd"),
+                       None, None, mcap)
     f_rev = pool.submit(revenue_both)
     pool.shutdown(wait=False)
 
@@ -462,7 +463,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone")   # result layout: has these display sections
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2")   # result layout: has these display sections
 
 
 def get_check(session, contract):

@@ -22,9 +22,13 @@ What it shows (top to bottom on the page):
 
 Sources: Codex daily bars (close, volume, liquidity) - one call; CoinGecko
 market_chart (daily) when Codex has fewer than MIN_HISTORY_DAYS days.
-Liquidity uses DexScreener (our snapshots) when Codex reports > 10x
-DexScreener - the bot's "liquidity source mismatch" rule - both for the
-change and for the real liquidity SIZE. Holders: our own daily snapshots
+LIQUIDITY is measured across ALL the coin's chains (DexScreener lists its
+pools per chain under the same contract): one Codex liquidity history per
+chain, summed day by day for the 5-day / 15-day trend; the real liquidity
+SIZE is the sum of each chain's liquidity (the higher of Codex / DexScreener).
+On a chain where Codex reports > 10x DexScreener (the bot's "liquidity source
+mismatch" rule) Codex is left out of the trend and DexScreener's reading
+counts for the size. Holders: our own daily snapshots
 (detail page only; Check a Coin has none -> "—").
 
 ZONES - checked in this order, first match wins:
@@ -32,6 +36,9 @@ ZONES - checked in this order, first match wins:
                  LATEST 5-day group fell more than LIQ_DROP_PCT AND its 15-day
                  change is negative, OR the same for holders (HOLDERS_DROP_PCT).
                  A recent dip in a coin still up over 15 days is not RISK.
+                 The liquidity-DROP trigger is skipped for big coins (market cap
+                 above BIG_COIN_MCAP): their DEX liquidity is a tiny, noisy part
+                 of their trading. The $5K size and holders triggers still apply.
   2. WAIT        price position >= WAIT_MIN_PCT
   3. FALLING     volume falling strongly: latest group < -VOL_FLAT_PCT, or all
                  three groups below 0
@@ -61,6 +68,7 @@ WAIT_MIN_PCT = 70          # 35-70% ACCUMULATE band; 70-100% -> WAIT
 GROUP_DAYS = 5             # details: 3 groups of 5 days (15 days)
 VOL_FLAT_PCT = 10          # volume group within +/-10% = quiet / flat
 MIN_LIQUIDITY_USD = 5_000  # real liquidity under this -> RISK, whatever else
+BIG_COIN_MCAP = 100_000_000  # above this market cap the liquidity-DROP trigger is skipped
 LIQ_DROP_PCT = 10          # latest 5-day liquidity group down more than this -> RISK
 HOLDERS_DROP_PCT = 10      # latest 5-day holders group down more than this -> RISK
 CHANGE_LOOKBACK_DAYS = 3   # "zone change" line compares with this many days ago
@@ -167,7 +175,8 @@ def zone_bands(low, high):
             "ACCUMULATE": [at(GOOD_MAX_PCT), at(WAIT_MIN_PCT)], "WAIT": [at(WAIT_MIN_PCT), high]}
 
 
-def compute(bars, today, liq_series=None, holders=None, liq_usd=None, liq_source="Codex"):
+def compute(bars, today, liq_series=None, holders=None, liq_usd=None, liq_source="Codex",
+            mcap=None, liq_chains=None):
     """The section's numbers. liq_series / holders = [(date, value)] level series."""
     prices = [(d, c) for d, c, _, _ in bars][-PRICE_DAYS:]
     res = {"history_days": len(prices), "too_new": len(prices) < MIN_HISTORY_DAYS}
@@ -189,6 +198,9 @@ def compute(bars, today, liq_series=None, holders=None, liq_usd=None, liq_source
     res["liquidity_pct"] = window_change(liq_series)
     res["holders_pct"] = window_change(holders)
     res["liquidity_usd"], res["liquidity_source"] = liq_usd, liq_source
+    res["liquidity_chains"] = liq_chains or []
+    res["mcap"] = mcap
+    res["big_coin"] = mcap is not None and mcap > BIG_COIN_MCAP
     res["zone"] = classify(res)
     res["zone_label"] = ZONES[res["zone"]]
     res["band"] = band_of(res.get("position_pct"))
@@ -214,7 +226,8 @@ def classify(r):
     liq_last = (r.get("liquidity_groups") or [None])[-1]
     hold_last = (r.get("holders_groups") or [None])[-1]
     # latest 5 days down > threshold AND the whole 15 days negative
-    liq_fell = (liq_last is not None and liq_last < -LIQ_DROP_PCT
+    big = r.get("mcap") is not None and r["mcap"] > BIG_COIN_MCAP
+    liq_fell = (not big and liq_last is not None and liq_last < -LIQ_DROP_PCT
                 and r.get("liquidity_pct") is not None and r["liquidity_pct"] < 0)
     hold_fell = (hold_last is not None and hold_last < -HOLDERS_DROP_PCT
                  and r.get("holders_pct") is not None and r["holders_pct"] < 0)
@@ -284,11 +297,41 @@ def sentence(r):
 
 
 # ---------------------------------------------------------------- entry points
-def build(contract, chain, today=None, dex_liq=None, holders=None, liq_history=None):
-    """Fetch + compute. dex_liq = current DexScreener liquidity; liq_history =
-    [(date, DexScreener liquidity)] (our snapshots) used when Codex is unreliable."""
-    from liquidity_check import codex_unreliable, best_liquidity
+def dex_chains(contract):
+    """{chain: DexScreener liquidity} of every chain where DexScreener lists
+    pools for this exact contract (1 call), or {} if it can't say."""
+    try:
+        pairs = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{contract}", timeout=20).json().get("pairs") or []
+    except (requests.exceptions.RequestException, ValueError):
+        return {}
+    out = {}
+    for p in pairs:
+        if ((p.get("baseToken") or {}).get("address") or "").lower() != (contract or "").lower():
+            continue
+        ch = (p.get("chainId") or "").lower()
+        out[ch] = out.get(ch, 0) + ((p.get("liquidity") or {}).get("usd") or 0)
+    return out
+
+
+def _sum_series(series_list, today):
+    """Day-by-day sum of several [(date, value)] series (a day counts only when
+    every series has a reading within 2 days of it)."""
+    out = []
+    for k in range(3 * GROUP_DAYS + 3, -1, -1):
+        d = today - timedelta(days=k)
+        vals = [_value_at(s, d) for s in series_list]
+        if vals and all(v is not None for v in vals):
+            out.append((d, sum(vals)))
+    return out
+
+
+def build(contract, chain, today=None, dex_liq=None, holders=None, liq_history=None, mcap=None):
+    """Fetch + compute. dex_liq = current DexScreener liquidity on `chain`;
+    liq_history = [(date, DexScreener liquidity)] on `chain` (our snapshots)
+    used when Codex is unreliable there; mcap = market cap (big-coin exemption)."""
+    from liquidity_check import codex_unreliable, best_liquidity, CHAIN_TO_NETWORK
     today = today or datetime.now(timezone.utc).date()
+    chain = (chain or "").lower()
     bars, source = codex_daily(contract, chain), "Codex"
     if len(bars) < MIN_HISTORY_DAYS:
         cg = coingecko_daily(contract, chain)
@@ -296,14 +339,39 @@ def build(contract, chain, today=None, dex_liq=None, holders=None, liq_history=N
             bars, source = cg, "CoinGecko"
     if not bars:
         return {"status": "unknown", "reason": "No daily price history on Codex or CoinGecko"}
-    codex_liq = next((l for _, _, _, l in reversed(bars) if l), None) if source == "Codex" else None
-    liq_series, liq_source = None, "Codex"
-    if source == "CoinGecko":
-        liq_series, liq_source = (liq_history or None), "DexScreener"
-    elif codex_unreliable(codex_liq, dex_liq):
-        liq_series, liq_source = (liq_history or []), "DexScreener · Codex unreliable"
-    liq_usd = best_liquidity(codex_liq, dex_liq)[0]
-    res = compute(bars, today, liq_series, holders, liq_usd, liq_source)
+
+    # Liquidity across ALL chains (same contract), source rules per chain.
+    ds = dex_chains(contract)
+    if dex_liq is not None:
+        ds[chain] = max(ds.get(chain, 0), dex_liq)
+    ds.setdefault(chain, dex_liq)
+    trend_series, size, per_chain, unreliable = [], 0.0, [], False
+    for ch, ds_now in sorted(ds.items(), key=lambda kv: -(kv[1] or 0)):
+        if ch == chain and source == "Codex":
+            series = [(d, l) for d, _, _, l in bars if l]
+        elif ch in CHAIN_TO_NETWORK:
+            series = [(d, l) for d, _, _, l in codex_daily(contract, ch) if l]
+        else:
+            series = []
+        codex_now = series[-1][1] if series else None
+        if codex_unreliable(codex_now, ds_now):
+            unreliable = True
+            series = (liq_history or []) if ch == chain else []      # our DexScreener snapshots, if any
+            part = ds_now
+            src = "DexScreener (Codex unreliable)"
+        else:
+            part = best_liquidity(codex_now, ds_now)[0]
+            src = "Codex" if series else "DexScreener"
+        if series:
+            trend_series.append(series)
+        if part:
+            size += part
+            per_chain.append({"chain": ch, "liquidity": part, "source": src})
+    if source == "CoinGecko" and not trend_series and liq_history:
+        trend_series = [liq_history]
+    liq_series = _sum_series(trend_series, today) if trend_series else []
+    liq_source = ("all chains" if len(per_chain) > 1 else "Codex") + (" · Codex unreliable on some" if unreliable else "")
+    res = compute(bars, today, liq_series, holders, size or None, liq_source, mcap, per_chain)
     res.update(status="ok", source=source)
     return res
 
@@ -356,12 +424,14 @@ def get_entry_zone(session, coin, refresh=False):
         session.rollback()
         row = False                              # tables missing: compute, don't save
     if res is None:
-        snaps = (session.query(DailySnapshot.date, DailySnapshot.holders, DailySnapshot.liquidity)
+        snaps = (session.query(DailySnapshot.date, DailySnapshot.holders, DailySnapshot.liquidity,
+                               DailySnapshot.mcap)
                  .filter(DailySnapshot.coin_id == coin.id).order_by(DailySnapshot.date).all())
         res = build(coin.contract, coin.chain, today,
                     dex_liq=snaps[-1][2] if snaps else None,
-                    holders=[(d, h) for d, h, _ in snaps if h],
-                    liq_history=[(d, l) for d, _, l in snaps if l])
+                    holders=[(d, h) for d, h, _, _ in snaps if h],
+                    liq_history=[(d, l) for d, _, l, _ in snaps if l],
+                    mcap=next((m for *_, m in reversed(snaps) if m), None))
         if res.get("status") == "ok" and row is not False:
             try:
                 if row is None:
