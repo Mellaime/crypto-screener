@@ -28,9 +28,10 @@ change and for the real liquidity SIZE. Holders: our own daily snapshots
 (detail page only; Check a Coin has none -> "—").
 
 ZONES - checked in this order, first match wins:
-  1. RISK        real liquidity < MIN_LIQUIDITY_USD, OR the LATEST 5-day liquidity
-                 group fell more than LIQ_DROP_PCT, OR the latest 5-day holders
-                 group fell more than HOLDERS_DROP_PCT
+  1. RISK        real liquidity < MIN_LIQUIDITY_USD (on its own), OR liquidity's
+                 LATEST 5-day group fell more than LIQ_DROP_PCT AND its 15-day
+                 change is negative, OR the same for holders (HOLDERS_DROP_PCT).
+                 A recent dip in a coin still up over 15 days is not RISK.
   2. WAIT        price position >= WAIT_MIN_PCT
   3. FALLING     volume falling strongly: latest group < -VOL_FLAT_PCT, or all
                  three groups below 0
@@ -181,7 +182,7 @@ def compute(bars, today, liq_series=None, holders=None, liq_usd=None, liq_source
     res["volume_groups"] = _volume_groups(bars, today)
     res["liquidity_groups"] = _level_groups(liq_series, today) if liq_series else [None] * 3
     res["holders_groups"] = _level_groups(holders, today) if holders else [None] * 3
-    # 15-day changes (shown for reference; RISK uses the latest 5-day group).
+    # 15-day changes: RISK needs these negative too (with a > 10% drop in the latest 5 days).
     def window_change(series):
         s = [(d, v) for d, v in (series or []) if v and d >= today - timedelta(days=3 * GROUP_DAYS)]
         return _pct(s[-1][1], s[0][1]) if len(s) >= 2 else None
@@ -212,8 +213,11 @@ def classify(r):
     thin = r.get("liquidity_usd") is not None and r["liquidity_usd"] < MIN_LIQUIDITY_USD
     liq_last = (r.get("liquidity_groups") or [None])[-1]
     hold_last = (r.get("holders_groups") or [None])[-1]
-    liq_fell = liq_last is not None and liq_last < -LIQ_DROP_PCT
-    hold_fell = hold_last is not None and hold_last < -HOLDERS_DROP_PCT
+    # latest 5 days down > threshold AND the whole 15 days negative
+    liq_fell = (liq_last is not None and liq_last < -LIQ_DROP_PCT
+                and r.get("liquidity_pct") is not None and r["liquidity_pct"] < 0)
+    hold_fell = (hold_last is not None and hold_last < -HOLDERS_DROP_PCT
+                 and r.get("holders_pct") is not None and r["holders_pct"] < 0)
     if thin or liq_fell or hold_fell:
         return "RISK"
     if pos >= WAIT_MIN_PCT:
@@ -255,11 +259,11 @@ def sentence(r):
         bits = []
         liq_last = (r.get("liquidity_groups") or [None])[-1]
         hold_last = (r.get("holders_groups") or [None])[-1]
-        if liq_last is not None and liq_last < -LIQ_DROP_PCT:
-            bits.append(f"السيولة طاحت {p(liq_last)}")
-        if hold_last is not None and hold_last < -HOLDERS_DROP_PCT:
-            bits.append(f"الحاملين طاحو {p(hold_last)}")
-        return f"إشارة خطر: {' و'.join(bits)} فآخر 5 أيام — تسنّى حتى تستقر قبل أي دخول."
+        if liq_last is not None and liq_last < -LIQ_DROP_PCT and (r.get("liquidity_pct") or 0) < 0:
+            bits.append(f"السيولة طاحت {p(liq_last)} فآخر 5 أيام ({p(r['liquidity_pct'])} ف15 يوم)")
+        if hold_last is not None and hold_last < -HOLDERS_DROP_PCT and (r.get("holders_pct") or 0) < 0:
+            bits.append(f"الحاملين طاحو {p(hold_last)} فآخر 5 أيام ({p(r['holders_pct'])} ف15 يوم)")
+        return f"إشارة خطر: {' و'.join(bits)} — تسنّى حتى تستقر قبل أي دخول."
     if z == "WAIT":
         return (f"السعر {now} قريب من القمة ({pos} من المدى) — دخول متأخر؛"
                 f" تسنّى السعر ينزل تحت {acc_top} لمنطقة {_ltr('ACCUMULATE')} أو تحت {best_top} لمنطقة {_ltr('BEST ENTRY')}.")
