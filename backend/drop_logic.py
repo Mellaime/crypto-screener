@@ -63,13 +63,15 @@ from models import Coin, DailySnapshot, DroppedCoin, RankHistory
 GRACE_DAYS = 5               # calendar days untouched after entering active
 RECOVERY_DAYS = 7            # daily recovery re-checks before permanent delete
 MAX_HOLDER_DROP_PCT = 10     # holders down more than this -> unhealthy
-MAX_LIQ_DROP_PCT = 5         # liquidity down more than this -> unhealthy
 # VOLUME FALLING: the last VOLUME_AVG_DAYS complete days' AVERAGE volume vs
 # the VOLUME_AVG_DAYS days before it (each coin's stored daily history,
 # entry_zone_bars). Falling = more than VOLUME_AVG_FALL_PCT lower. Fewer than
 # 2 x VOLUME_AVG_DAYS days of history = unknown = healthy.
 VOLUME_AVG_DAYS = 5          # compare 5-day averages ...
 VOLUME_AVG_FALL_PCT = 20     # ... falling = the newer average more than 20% lower
+# LIQUIDITY DOWN SINCE ENTRY: unhealthy only when liquidity is more than this
+# below its level when the coin entered active (5-15% is normal movement).
+MAX_LIQ_DROP_PCT = 15        # was 5 until Oct 10
 VOLUME_READINGS = 5          # (old single-day rule - no longer used)
 VOLUME_FALL_PCT = 5          # (old single-day rule - no longer used)
                              # rising or flat (within 5%) stays healthy
