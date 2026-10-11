@@ -35,7 +35,7 @@ from sqlalchemy import func
 
 from database import SessionLocal
 from models import Coin, DailySnapshot, DroppedCoin
-from scoring import score_snapshot, liquidity_growth
+from scoring import score_snapshot, score_inputs
 from socials import x_url
 
 app = FastAPI(title="Crypto Screener API", version="0.1")
@@ -174,14 +174,14 @@ def get_coins():
             new_from, new_to = last_run[0] - timedelta(hours=3), last_run[0] + timedelta(minutes=5)
 
         rows = []
-        growth = liquidity_growth(session, coins)   # 7-day liquidity change (stored data)
+        inputs = score_inputs(session, coins)   # stored-data score inputs (no API calls)
         for coin in coins:
             snap = latest_snapshot(session, coin.id)
             if snap is None:
                 continue
 
             # fresh score + ratios
-            b = score_snapshot(snap, coin, growth.get(coin.id, (None, None))[0])
+            b = score_snapshot(snap, coin, inputs.get(coin.id))
 
             # A single rank to display = average of the sources we have.
             rank_vals = [x for x in (coin.cg_rank, coin.cmc_rank) if x is not None]
@@ -269,8 +269,7 @@ def get_coin(contract: str):
         if coin is None:
             raise HTTPException(status_code=404, detail="coin not found")
         snap = latest_snapshot(session, coin.id)
-        b = (score_snapshot(snap, coin, liquidity_growth(session, [coin]).get(coin.id, (None, None))[0])
-             if snap else None)
+        b = score_snapshot(snap, coin, score_inputs(session, [coin]).get(coin.id)) if snap else None
         q = (session.query(CoinQueue.symbol)
              .filter_by(chain=(coin.chain or "").lower(), contract=coin.contract.lower())
              .first())

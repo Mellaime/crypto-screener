@@ -68,7 +68,8 @@ PRICE_SANITY_PCT = 50          # DexScreener price may differ this much from a r
 BULK_QUERY = """
 query ($tokens: [String]) {
   filterTokens(tokens: $tokens, limit: %d) {
-    results { liquidity volume24 priceUSD token { address networkId } }
+    results { liquidity volume24 priceUSD buyVolume24 sellVolume24 buyCount24 sellCount24
+              token { address networkId } }
   }
 }""" % CODEX_BATCH
 
@@ -80,11 +81,13 @@ def _to_float(v):
         return None
 
 
-def codex_bulk_readings(coins, stats, prices=None):
+def codex_bulk_readings(coins, stats, prices=None, flows=None):
     """
     {contract_lower: (liquidity, volume24)} for the given coins, via bulk
     filterTokens requests (200 coins each). Coins on chains Codex doesn't
-    cover get no reading. If `prices` (a dict) is given, it is filled with
+    cover get no reading. If `flows` (a dict) is given, it is filled with
+    {contract_lower: (buyVolume24, sellVolume24, buyCount24, sellCount24)}
+    from the same requests (the score's buyers component). If `prices` (a dict) is given, it is filled with
     {contract_lower: Codex USD price} from the same requests. Never raises.
     """
     from liquidity_check import CHAIN_TO_NETWORK
@@ -129,6 +132,9 @@ def codex_bulk_readings(coins, stats, prices=None):
                 out[addr] = (_to_float(r.get("liquidity")), _to_float(r.get("volume24")))
                 if prices is not None and _to_float(r.get("priceUSD")):
                     prices[addr] = _to_float(r.get("priceUSD"))
+                if flows is not None:
+                    flows[addr] = (_to_float(r.get("buyVolume24")), _to_float(r.get("sellVolume24")),
+                                   r.get("buyCount24"), r.get("sellCount24"))
     return out
 
 
@@ -155,6 +161,35 @@ def sane_price(dex_price, refs):
     lbl, p = refs[0]
     others = ", ".join(f"{l} ${v:.6g}" for l, v in refs)
     return p, f"DexScreener price ${dex_price:.6g} disagrees with {others} by > {PRICE_SANITY_PCT}% - using {lbl}"
+
+
+TRADE_FLOW_KEEP_DAYS = 30
+
+
+def _store_trade_flows(session, coins, flows, today):
+    """Today's Codex buy / sell volume per tracked coin -> trade_flows (the
+    score's buyers component). From the bulk request above - no extra calls.
+    Rows older than TRADE_FLOW_KEEP_DAYS are pruned. Returns rows written."""
+    from datetime import timedelta
+    from models import TradeFlow
+
+    have = {(r.chain, r.contract): r for r in
+            session.query(TradeFlow).filter(TradeFlow.day == today)}
+    n = 0
+    for coin in coins:
+        key = ((coin.chain or "").lower(), (coin.contract or "").lower())
+        f = flows.get(key[1])
+        if not f or f[0] is None or f[1] is None:
+            continue
+        row = have.get(key)
+        if row is None:
+            row = TradeFlow(chain=key[0], contract=key[1], day=today)
+            session.add(row)
+        row.buy_volume, row.sell_volume, row.buy_count, row.sell_count = f
+        n += 1
+    session.query(TradeFlow).filter(
+        TradeFlow.day < today - timedelta(days=TRADE_FLOW_KEEP_DAYS)).delete(synchronize_session=False)
+    return n
 
 
 def _catch_up_categories(coins):
@@ -198,8 +233,8 @@ def run_daily_tracking():
             return stats
 
         # 1. Codex: today's liquidity + 24h volume (trend history).
-        codex_prices = {}
-        codex = codex_bulk_readings(coins, stats, codex_prices)
+        codex_prices, codex_flows = {}, {}
+        codex = codex_bulk_readings(coins, stats, codex_prices, codex_flows)
         stats["dust_refetched"] = stats["price_replaced"] = 0
 
         # 2. DexScreener: today's dashboard numbers (price, mcap, vol, liq).
@@ -293,6 +328,14 @@ def run_daily_tracking():
                 coin.supply_updated_at = now
                 stats["supply"] += 1
 
+        # Score data only - its own savepoint, so a problem here never undoes
+        # the day's tracking.
+        try:
+            with session.begin_nested():
+                stats["trade_flows"] = _store_trade_flows(session, coins, codex_flows, today)
+        except Exception as e:
+            stats["trade_flows"] = 0
+            print(f"[WARN] buy / sell volume not stored today: {str(e)[:120]}")
         stats["category_lookups"] = _catch_up_categories(coins)
         from socials import refresh_twitter
         stats["twitter_calls"] = refresh_twitter(session, coins, now, counts=stats)
@@ -330,6 +373,7 @@ def run_daily_tracking():
           f"   (moved with price: {stats.get('mcap_scaled', 0)})")
     print(f"  today's snapshots created ....... {stats['snapshots_created']:>5}")
     print(f"  category catch-up (CG calls) .... {stats.get('category_lookups', 0):>5}")
+    print(f"  buy / sell volume stored ........ {stats.get('trade_flows', 0):>5}   (same Codex requests)")
     print(f"  supply refreshed (CG / CMC) ..... {stats.get('supply', 0):>5}")
     ez = stats.get("entry_zone") or {}
     print(f"  Entry Zone history ............... {ez.get('appended', 0):>5}   appended "
