@@ -5,15 +5,21 @@ Phase 2 - the SCORING system. It ranks the coins we've saved, 0-100,
 highest first, and stores each coin's score back into its latest snapshot.
 
 THE SCORE (max 100 when everything is implemented):
-    Vol/Liq ratio ....... max 25 pts   [ACTIVE today]
-    Vol/MCap ratio ...... max 20 pts   [ACTIVE today]
+    Vol/Liq ratio ....... max 25 pts   [ACTIVE]
+    Vol/MCap ratio ...... max 20 pts   [ACTIVE]
     Revenue ............. max 20 pts   [TODO - needs revenue data]
-    Liquidity growth .... max 15 pts   [TODO - needs history]
-    Holder growth ....... max 15 pts   [TODO - needs holders data + history]
-    Rank change ......... max  5 pts   [TODO - needs CoinGecko/CMC]
+    Liquidity growth .... max 15 pts   [ACTIVE - 7-day liquidity change]
+    Holder growth ....... max 15 pts   [ACTIVE - by holder count size for now]
+    Rank change ......... max  5 pts   [ACTIVE]
 
-Right now only the first two compute, so today's maximum is 45 points.
-The rest are wired in as 0 with clear TODOs, ready to fill in later.
+Today's maximum is 80 points (everything except revenue).
+
+LIQUIDITY GROWTH = today's liquidity vs 7 days ago, in % - the same figure as
+the detail page's "Liquidity growth 7d" tile (Codex daily liquidity on the
+coin's chain). Read from STORED history only (entry_zone_bars, the Codex
+column; filled by the daily tracking step) - no API calls. Fix 4: when Codex
+is unreliable for the coin (> 10x DexScreener, today or 7 days ago), the
+DexScreener readings stored on our daily snapshots are used instead.
 
 Run it:
     python scoring.py
@@ -32,7 +38,11 @@ MAX_HOLDER_GROWTH = 15
 MAX_RANK_CHANGE = 5
 
 # Today's achievable maximum (Vol/Liq + Vol/MCap + Rank change + Holders).
-MAX_TODAY = MAX_VOL_LIQ + MAX_VOL_MCAP + MAX_RANK_CHANGE + MAX_HOLDER_GROWTH  # = 65
+MAX_TODAY = (MAX_VOL_LIQ + MAX_VOL_MCAP + MAX_RANK_CHANGE + MAX_HOLDER_GROWTH
+             + MAX_LIQ_GROWTH)  # = 80
+
+LIQ_GROWTH_DAYS = 7       # liquidity growth: today vs this many days ago
+LIQ_GROWTH_SLACK = 2      # "7 days ago" = the latest reading 7-9 days back
 
 
 # ---------------------------------------------------------------------------
@@ -88,10 +98,99 @@ def score_revenue(snapshot):
     return 0
 
 
-def score_liquidity_growth(coin):
-    # TODO: score how much liquidity has grown (max 15 pts). Needs several
-    # days of snapshot history to measure a trend. Fill in once history exists.
+# ---------------------------------------------------------------------------
+# Component: Liquidity growth  (max 15 pts)
+#   7-day change: >+30%=15, +15-30%=11, +5-15%=7, 0-5%=3, falling=0
+#   (unknown - not enough history - = 0, like the other components)
+# ---------------------------------------------------------------------------
+def score_liquidity_growth(pct):
+    """Points for a 7-day liquidity change in % (None = unknown -> 0)."""
+    if pct is None:
+        return 0
+    if pct > 30:
+        return 15
+    if pct >= 15:
+        return 11
+    if pct >= 5:
+        return 7
+    if pct >= 0:
+        return 3
     return 0
+
+
+def _change_over(series):
+    """% change of the latest reading vs the one LIQ_GROWTH_DAYS earlier (the
+    latest reading within LIQ_GROWTH_SLACK days before that), or None.
+    series = [(date, value)] oldest first."""
+    from datetime import timedelta
+    vals = [(d, v) for d, v in series if v]
+    if not vals:
+        return None
+    last_day, now = vals[-1]
+    target = last_day - timedelta(days=LIQ_GROWTH_DAYS)
+    base = [v for d, v in vals if target - timedelta(days=LIQ_GROWTH_SLACK) <= d <= target]
+    return (now / base[-1] - 1) * 100 if base else None
+
+
+def liquidity_growth(session, coins):
+    """{coin.id: (pct or None, source)} - each coin's 7-day liquidity change,
+    from stored data only (2 queries for any number of coins, no API calls).
+    A reading is only ever compared with one of the SAME kind - Codex's bulk
+    filterTokens figure and its getBars daily bars differ a lot for a few coins
+    (e.g. Orca $1.29M vs $537K the same day):
+      "Codex daily"   - the daily tracking readings (daily_snapshots.
+                        codex_liquidity, filterTokens): today vs 7 days ago.
+      "Codex history" - until a coin has 7 days of those: the getBars days in
+                        entry_zone_bars (the detail page tile's own series),
+                        leaving out the days the tracking step appended.
+      "DexScreener"   - fix 4: Codex > 10x DexScreener today or ~7 days ago ->
+                        our daily snapshots' DexScreener readings.
+      None            - not enough history (0 points)."""
+    import json
+    from datetime import date as _date, timedelta
+    from models import EntryZoneBars
+    from liquidity_check import codex_unreliable
+
+    if not coins:
+        return {}
+    keys = {((c.chain or "").lower(), (c.contract or "").lower()): c.id for c in coins}
+    codex = {}
+    for row in (session.query(EntryZoneBars)
+                .filter(EntryZoneBars.contract.in_([k[1] for k in keys]))):
+        cid = keys.get((row.chain, row.contract))
+        if cid is not None:
+            codex[cid] = [(_date.fromisoformat(b[0]), b[3]) for b in json.loads(row.data)["bars"]]
+    since = _date.today() - timedelta(days=LIQ_GROWTH_DAYS + LIQ_GROWTH_SLACK + 3)
+    snaps = {}
+    for cid, d, cx, dx in (session.query(DailySnapshot.coin_id, DailySnapshot.date,
+                                         DailySnapshot.codex_liquidity, DailySnapshot.liquidity)
+                           .filter(DailySnapshot.coin_id.in_(list(keys.values())),
+                                   DailySnapshot.date >= since)
+                           .order_by(DailySnapshot.date)):
+        snaps.setdefault(cid, []).append((d, cx, dx))
+
+    out = {}
+    for cid in keys.values():
+        rows = snaps.get(cid, [])
+        # Fix 4: Codex unreliable on the latest day or around 7 days before it.
+        recent = rows[-1:] + [r for r in rows if rows and
+                              rows[-1][0] - timedelta(days=LIQ_GROWTH_DAYS + LIQ_GROWTH_SLACK)
+                              <= r[0] <= rows[-1][0] - timedelta(days=LIQ_GROWTH_DAYS)]
+        if any(codex_unreliable(cx, dx) for _, cx, dx in recent):
+            out[cid] = (_change_over([(d, dx) for d, _, dx in rows]), "DexScreener")
+            continue
+        pct = _change_over([(d, cx) for d, cx, _ in rows])
+        if pct is not None:
+            out[cid] = (pct, "Codex daily")
+            continue
+        # The tracking step appends today's codex_liquidity to entry_zone_bars
+        # as-is, so a stored day equal to that day's snapshot reading is an
+        # appended filterTokens day - leave those out, keep the getBars days.
+        appended = {d: cx for d, cx, _ in rows if cx is not None}
+        bars = [(d, v) for d, v in codex.get(cid, []) if v and appended.get(d) != v]
+        pct = _change_over(bars)
+        out[cid] = (pct, "Codex history" if pct is not None else None)
+    return out
 
 
 def score_holder_growth(snapshot):
@@ -133,16 +232,17 @@ def score_rank_change(coin):
 # ---------------------------------------------------------------------------
 # Combine everything into one total score for a snapshot.
 # ---------------------------------------------------------------------------
-def score_snapshot(snapshot, coin):
+def score_snapshot(snapshot, coin, liq_growth_pct=None):
     """
     Compute the full breakdown + total (0-100 scale) for one snapshot.
-    Returns a dict so the caller can both save and display the details.
+    liq_growth_pct = the coin's 7-day liquidity change (liquidity_growth()),
+    None if unknown. Returns a dict so the caller can save and display it.
     """
     vol_liq_pts, vol_liq_ratio = score_vol_liq(snapshot.volume, snapshot.liquidity)
     vol_mcap_pts, vol_mcap_pct = score_vol_mcap(snapshot.volume, snapshot.mcap)
 
     revenue_pts = score_revenue(snapshot)              # 0 (TODO)
-    liq_growth_pts = score_liquidity_growth(coin)      # 0 (TODO)
+    liq_growth_pts = score_liquidity_growth(liq_growth_pct)   # up to 15
     holder_growth_pts = score_holder_growth(snapshot)  # partial (by count size)
     rank_change_pts = score_rank_change(coin)          # up to 5
 
@@ -157,6 +257,8 @@ def score_snapshot(snapshot, coin):
         "vol_liq_ratio": vol_liq_ratio,
         "vol_mcap_pts": vol_mcap_pts,
         "vol_mcap_pct": vol_mcap_pct,
+        "liq_growth_pct": liq_growth_pct,
+        "liq_growth_pts": liq_growth_pts,
     }
 
 
@@ -169,6 +271,7 @@ def score_all():
     try:
         # Only score ACTIVE coins - dropped coins aren't ranked or shown.
         coins = session.query(Coin).filter_by(status="active").all()
+        growth = liquidity_growth(session, coins)
         for coin in coins:
             # The most recent snapshot for this coin (latest date).
             snap = (
@@ -180,7 +283,7 @@ def score_all():
             if snap is None:
                 continue  # coin has no snapshot yet - skip
 
-            breakdown = score_snapshot(snap, coin)
+            breakdown = score_snapshot(snap, coin, growth.get(coin.id, (None, None))[0])
 
             # Save the score back into the snapshot.
             snap.score = float(breakdown["total"])
@@ -196,6 +299,8 @@ def score_all():
                 "vol_liq_pts": breakdown["vol_liq_pts"],
                 "vol_mcap_pct": breakdown["vol_mcap_pct"],
                 "vol_mcap_pts": breakdown["vol_mcap_pts"],
+                "liq_growth_pct": breakdown["liq_growth_pct"],
+                "liq_growth_pts": breakdown["liq_growth_pts"],
             })
 
         session.commit()  # persist all the scores at once
@@ -217,7 +322,7 @@ def print_ranking(results):
 
     header = (
         f"{'#':>2}  {'NAME':<16} {'CHAIN':<9} {'MCAP':>10}  "
-        f"{'VOL/LIQ':>13}  {'VOL/MCAP':>13}  {'SCORE':>9}"
+        f"{'VOL/LIQ':>13}  {'VOL/MCAP':>13}  {'LIQ 7D':>12}  {'SCORE':>9}"
     )
     print("=" * len(header))
     print("  CRYPTO SCREENER - RANKED BY SCORE (highest first)")
@@ -235,10 +340,14 @@ def print_ranking(results):
             vol_mcap = "n/a"
         else:
             vol_mcap = f"{r['vol_mcap_pct']:.1f}% ({r['vol_mcap_pts']})"
+        if r.get("liq_growth_pct") is None:
+            liq7 = "n/a"
+        else:
+            liq7 = f"{r['liq_growth_pct']:+.0f}% ({r['liq_growth_pts']})"
 
         print(
             f"{rank:>2}  {(r['name'] or '')[:16]:<16} {r['chain']:<9} "
-            f"{fmt_money(r['mcap']):>10}  {vol_liq:>13}  {vol_mcap:>13}  "
+            f"{fmt_money(r['mcap']):>10}  {vol_liq:>13}  {vol_mcap:>13}  {liq7:>12}  "
             f"{r['score']:>6.1f}/100"
         )
 
@@ -246,8 +355,8 @@ def print_ranking(results):
     print(f"Scored {len(results)} coins. "
           f"Today's max possible = {MAX_TODAY}/100 "
           f"(Vol/Liq {MAX_VOL_LIQ} + Vol/MCap {MAX_VOL_MCAP} + "
-          f"Rank {MAX_RANK_CHANGE} + Holders {MAX_HOLDER_GROWTH}); "
-          f"the other {100 - MAX_TODAY} pts (revenue, liq-growth) are TODO.")
+          f"Rank {MAX_RANK_CHANGE} + Holders {MAX_HOLDER_GROWTH} + "
+          f"Liquidity growth {MAX_LIQ_GROWTH}); the other {100 - MAX_TODAY} pts (revenue) are TODO.")
     print("=" * len(header))
 
 
