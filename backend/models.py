@@ -399,3 +399,23 @@ class EntryZoneBars(Base):
     contract = Column(String, nullable=False, index=True)   # stored lowercased
     updated_day = Column(Date)                               # latest day stored
     data = Column(String, nullable=False)                    # JSON
+
+
+class TradeFlow(Base):
+    """
+    One row per tracked coin per day: Codex's rolling-24h BUY and SELL volume
+    (and counts) at the daily run - from the bulk filterTokens request the
+    tracking step already makes (no extra calls). The score's "Buyers volume
+    (15-day)" component sums the last 15 days. Kept 30 days.
+    """
+    __tablename__ = "trade_flows"
+    __table_args__ = (UniqueConstraint("chain", "contract", "day"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chain = Column(String, nullable=False)
+    contract = Column(String, nullable=False, index=True)   # stored lowercased
+    day = Column(Date, nullable=False, index=True)           # UTC day of the run
+    buy_volume = Column(Float)        # Codex buyVolume24 (USD)
+    sell_volume = Column(Float)       # Codex sellVolume24 (USD)
+    buy_count = Column(Integer)       # Codex buyCount24
+    sell_count = Column(Integer)      # Codex sellCount24

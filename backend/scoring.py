@@ -1,25 +1,27 @@
 """
 scoring.py
 ----------
-Phase 2 - the SCORING system. It ranks the coins we've saved, 0-100,
-highest first, and stores each coin's score back into its latest snapshot.
+Phase 2 - the SCORING system. It ranks the active coins 0-100, highest
+first, and stores each coin's score back into its latest snapshot.
 
-THE SCORE (max 100 when everything is implemented):
-    Vol/Liq ratio ....... max 25 pts   [ACTIVE]
-    Vol/MCap ratio ...... max 20 pts   [ACTIVE]
-    Revenue ............. max 20 pts   [TODO - needs revenue data]
-    Liquidity growth .... max 15 pts   [ACTIVE - 7-day liquidity change]
-    Holder growth ....... max 15 pts   [ACTIVE - by holder count size for now]
-    Rank change ......... max  5 pts   [ACTIVE]
+THE SCORE (max 100):
+    Vol/Liq ratio ................ max 25 pts   (24h volume / liquidity)
+    Vol/MCap ratio ............... max 15 pts   (24h volume / market cap)
+    Liquidity growth (7d) ........ max 15 pts   (today vs 7 days ago)
+    Price cheapness (2 months) ... max 20 pts   (position in the 60-day range)
+    Buyers volume (15 days) ...... max 20 pts   (buy / sell volume ratio)
+    Rank change .................. max  5 pts   (weekly, CoinGecko + CMC)
 
-Today's maximum is 80 points (everything except revenue).
-
-LIQUIDITY GROWTH = today's liquidity vs 7 days ago, in % - the same figure as
-the detail page's "Liquidity growth 7d" tile (Codex daily liquidity on the
-coin's chain). Read from STORED history only (entry_zone_bars, the Codex
-column; filled by the daily tracking step) - no API calls. Fix 4: when Codex
-is unreliable for the coin (> 10x DexScreener, today or 7 days ago), the
-DexScreener readings stored on our daily snapshots are used instead.
+Every input comes from STORED data - no API calls here:
+  * LIQUIDITY GROWTH - the detail page's "Liquidity growth 7d" figure, from
+    the Codex daily readings (daily_snapshots) or the Codex history in
+    entry_zone_bars; fix 4 -> DexScreener readings (see liquidity_growth()).
+  * PRICE CHEAPNESS - the same 60 days of daily closes the Entry Zone uses
+    (entry_zone_bars): 0% = at the 60-day low, 100% = at the high.
+  * BUYERS VOLUME - Codex's daily 24h buy / sell volume, stored by the
+    tracking step from its bulk request (trade_flows), summed over 15 days.
+    Not counted when Codex is unreliable for the coin (fix 4).
+Unknown (not enough history) = 0 points, like every component.
 
 Run it:
     python scoring.py
@@ -31,18 +33,18 @@ from fetch_dexscreener import fmt_money
 
 # Point ceilings for each component (documents the design in one place).
 MAX_VOL_LIQ = 25
-MAX_VOL_MCAP = 20
-MAX_REVENUE = 20
+MAX_VOL_MCAP = 15
 MAX_LIQ_GROWTH = 15
-MAX_HOLDER_GROWTH = 15
+MAX_CHEAPNESS = 20
+MAX_BUYERS = 20
 MAX_RANK_CHANGE = 5
-
-# Today's achievable maximum (Vol/Liq + Vol/MCap + Rank change + Holders).
-MAX_TODAY = (MAX_VOL_LIQ + MAX_VOL_MCAP + MAX_RANK_CHANGE + MAX_HOLDER_GROWTH
-             + MAX_LIQ_GROWTH)  # = 80
+MAX_TOTAL = (MAX_VOL_LIQ + MAX_VOL_MCAP + MAX_LIQ_GROWTH + MAX_CHEAPNESS
+             + MAX_BUYERS + MAX_RANK_CHANGE)  # = 100
 
 LIQ_GROWTH_DAYS = 7       # liquidity growth: today vs this many days ago
 LIQ_GROWTH_SLACK = 2      # "7 days ago" = the latest reading 7-9 days back
+BUYERS_DAYS = 15          # buyers volume: the last 15 daily readings ...
+BUYERS_MIN_DAYS = 3       # ... at least this many, else unknown
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +70,8 @@ def score_vol_liq(volume, liquidity):
 
 
 # ---------------------------------------------------------------------------
-# Component 2: Volume / Market Cap ratio  (max 20 pts)
-#   >60%=20, 40-60%=16, 25-40%=12, 10-25%=8, <10%=4
+# Component 2: Volume / Market Cap ratio  (max 15 pts)
+#   >60%=15, 40-60%=12, 25-40%=9, 10-25%=6, <10%=3
 # ---------------------------------------------------------------------------
 def score_vol_mcap(volume, mcap):
     """Return (points, percent). percent is None if it can't be computed."""
@@ -77,31 +79,21 @@ def score_vol_mcap(volume, mcap):
         return 0, None
     percent = (volume / mcap) * 100
     if percent > 60:
-        pts = 20
+        pts = 15
     elif percent >= 40:   # 40% - 60%
-        pts = 16
-    elif percent >= 25:   # 25% - 40%
         pts = 12
+    elif percent >= 25:   # 25% - 40%
+        pts = 9
     elif percent >= 10:   # 10% - 25%
-        pts = 8
+        pts = 6
     else:                 # < 10%
-        pts = 4
+        pts = 3
     return pts, percent
 
 
 # ---------------------------------------------------------------------------
-# Future components - wired as 0 for now, ready to implement later.
-# ---------------------------------------------------------------------------
-def score_revenue(snapshot):
-    # TODO: score protocol/token revenue (max 20 pts). Revenue data isn't
-    # collected yet - we'll add a source for it later, then score it here.
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# Component: Liquidity growth  (max 15 pts)
+# Component 3: Liquidity growth  (max 15 pts)
 #   7-day change: >+30%=15, +15-30%=11, +5-15%=7, 0-5%=3, falling=0
-#   (unknown - not enough history - = 0, like the other components)
 # ---------------------------------------------------------------------------
 def score_liquidity_growth(pct):
     """Points for a 7-day liquidity change in % (None = unknown -> 0)."""
@@ -118,104 +110,51 @@ def score_liquidity_growth(pct):
     return 0
 
 
-def _change_over(series):
-    """% change of the latest reading vs the one LIQ_GROWTH_DAYS earlier (the
-    latest reading within LIQ_GROWTH_SLACK days before that), or None.
-    series = [(date, value)] oldest first."""
-    from datetime import timedelta
-    vals = [(d, v) for d, v in series if v]
-    if not vals:
-        return None
-    last_day, now = vals[-1]
-    target = last_day - timedelta(days=LIQ_GROWTH_DAYS)
-    base = [v for d, v in vals if target - timedelta(days=LIQ_GROWTH_SLACK) <= d <= target]
-    return (now / base[-1] - 1) * 100 if base else None
-
-
-def liquidity_growth(session, coins):
-    """{coin.id: (pct or None, source)} - each coin's 7-day liquidity change,
-    from stored data only (2 queries for any number of coins, no API calls).
-    A reading is only ever compared with one of the SAME kind - Codex's bulk
-    filterTokens figure and its getBars daily bars differ a lot for a few coins
-    (e.g. Orca $1.29M vs $537K the same day):
-      "Codex daily"   - the daily tracking readings (daily_snapshots.
-                        codex_liquidity, filterTokens): today vs 7 days ago.
-      "Codex history" - until a coin has 7 days of those: the getBars days in
-                        entry_zone_bars (the detail page tile's own series),
-                        leaving out the days the tracking step appended.
-      "DexScreener"   - fix 4: Codex > 10x DexScreener today or ~7 days ago ->
-                        our daily snapshots' DexScreener readings.
-      None            - not enough history (0 points)."""
-    import json
-    from datetime import date as _date, timedelta
-    from models import EntryZoneBars
-    from liquidity_check import codex_unreliable
-
-    if not coins:
-        return {}
-    keys = {((c.chain or "").lower(), (c.contract or "").lower()): c.id for c in coins}
-    codex = {}
-    for row in (session.query(EntryZoneBars)
-                .filter(EntryZoneBars.contract.in_([k[1] for k in keys]))):
-        cid = keys.get((row.chain, row.contract))
-        if cid is not None:
-            codex[cid] = [(_date.fromisoformat(b[0]), b[3]) for b in json.loads(row.data)["bars"]]
-    since = _date.today() - timedelta(days=LIQ_GROWTH_DAYS + LIQ_GROWTH_SLACK + 3)
-    snaps = {}
-    for cid, d, cx, dx in (session.query(DailySnapshot.coin_id, DailySnapshot.date,
-                                         DailySnapshot.codex_liquidity, DailySnapshot.liquidity)
-                           .filter(DailySnapshot.coin_id.in_(list(keys.values())),
-                                   DailySnapshot.date >= since)
-                           .order_by(DailySnapshot.date)):
-        snaps.setdefault(cid, []).append((d, cx, dx))
-
-    out = {}
-    for cid in keys.values():
-        rows = snaps.get(cid, [])
-        # Fix 4: Codex unreliable on the latest day or around 7 days before it.
-        recent = rows[-1:] + [r for r in rows if rows and
-                              rows[-1][0] - timedelta(days=LIQ_GROWTH_DAYS + LIQ_GROWTH_SLACK)
-                              <= r[0] <= rows[-1][0] - timedelta(days=LIQ_GROWTH_DAYS)]
-        if any(codex_unreliable(cx, dx) for _, cx, dx in recent):
-            out[cid] = (_change_over([(d, dx) for d, _, dx in rows]), "DexScreener")
-            continue
-        pct = _change_over([(d, cx) for d, cx, _ in rows])
-        if pct is not None:
-            out[cid] = (pct, "Codex daily")
-            continue
-        # The tracking step appends today's codex_liquidity to entry_zone_bars
-        # as-is, so a stored day equal to that day's snapshot reading is an
-        # appended filterTokens day - leave those out, keep the getBars days.
-        appended = {d: cx for d, cx, _ in rows if cx is not None}
-        bars = [(d, v) for d, v in codex.get(cid, []) if v and appended.get(d) != v]
-        pct = _change_over(bars)
-        out[cid] = (pct, "Codex history" if pct is not None else None)
-    return out
-
-
-def score_holder_growth(snapshot):
-    # Max 15 pts. TEMPORARY: until we have several days of holder history to
-    # measure real GROWTH, award partial points by holder-count SIZE (a larger,
-    # more distributed holder base is a positive sign). Switch to a growth-based
-    # score (see holders_check.is_holders_rising / % change) once history exists.
-    holders = getattr(snapshot, "holders", None)
-    if holders is None:
+# ---------------------------------------------------------------------------
+# Component 4: Price cheapness, 2 months  (max 20 pts)
+#   position in the 60-day range: <=20%=20, 20-35%=15, 35-50%=10, 50-70%=5,
+#   >=70%=0 (the Entry Zone's BEST / GOOD / ACCUMULATE / WAIT cut-offs, with
+#   ACCUMULATE split at 50%)
+# ---------------------------------------------------------------------------
+def score_cheapness(position_pct):
+    """Points for the price's position in its 60-day range (None -> 0)."""
+    if position_pct is None:
         return 0
-    if holders >= 20000:
+    if position_pct <= 20:
+        return 20
+    if position_pct <= 35:
         return 15
-    if holders >= 10000:
-        return 12
-    if holders >= 5000:
-        return 9
-    if holders >= 1000:
-        return 6
-    if holders >= 500:
-        return 3
-    if holders >= 100:
-        return 1
+    if position_pct <= 50:
+        return 10
+    if position_pct < 70:
+        return 5
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Component 5: Buyers volume, 15 days  (max 20 pts)
+#   buy volume / sell volume: >1.15=20, 1.08-1.15=15, 1.03-1.08=10,
+#   1.00-1.03=5, <1 (more selling)=0. Over 15 days the two stay close: real
+#   coins sat between 0.76 and 1.14 (Oct 2026), so a 2x scale would never pay.
+# ---------------------------------------------------------------------------
+def score_buyers(ratio):
+    """Points for the 15-day buy / sell volume ratio (None -> 0)."""
+    if ratio is None:
+        return 0
+    if ratio > 1.15:
+        return 20
+    if ratio >= 1.08:
+        return 15
+    if ratio >= 1.03:
+        return 10
+    if ratio >= 1.0:
+        return 5
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Component 6: Rank change  (max 5 pts)
+# ---------------------------------------------------------------------------
 def score_rank_change(coin):
     # Max 5 pts based on how the coin's market rank moved vs last week
     # (averaged across CoinGecko + CoinMarketCap; see rank_check.py).
@@ -230,26 +169,148 @@ def score_rank_change(coin):
 
 
 # ---------------------------------------------------------------------------
+# The stored-data inputs (liquidity growth, price position, buy / sell ratio)
+# ---------------------------------------------------------------------------
+def _change_over(series):
+    """% change of the latest reading vs the one LIQ_GROWTH_DAYS earlier (the
+    latest reading within LIQ_GROWTH_SLACK days before that), or None.
+    series = [(date, value)] oldest first."""
+    from datetime import timedelta
+    vals = [(d, v) for d, v in series if v]
+    if not vals:
+        return None
+    last_day, now = vals[-1]
+    target = last_day - timedelta(days=LIQ_GROWTH_DAYS)
+    base = [v for d, v in vals if target - timedelta(days=LIQ_GROWTH_SLACK) <= d <= target]
+    return (now / base[-1] - 1) * 100 if base else None
+
+
+def _price_position(closes):
+    """Latest close's position in the last PRICE_DAYS closes, in % (0 = the
+    low, 100 = the high), or None with fewer than MIN_HISTORY_DAYS closes -
+    the Entry Zone's own rule."""
+    from entry_zone import PRICE_DAYS, MIN_HISTORY_DAYS
+    closes = [c for c in closes if c][-PRICE_DAYS:]
+    if len(closes) < MIN_HISTORY_DAYS:
+        return None
+    lo, hi, cur = min(closes), max(closes), closes[-1]
+    return (cur - lo) / (hi - lo) * 100 if hi > lo else 50.0
+
+
+def score_inputs(session, coins):
+    """{coin.id: {...}} - each coin's stored-data score inputs, read with a
+    few queries for any number of coins (no API calls):
+      liq_growth / liq_source - 7-day liquidity change (see below)
+      price_pos               - position in the 60-day price range, %
+      buy_sell / buy_sell_days- 15-day buy / sell volume ratio, readings used
+    LIQUIDITY GROWTH compares a reading only with one of the SAME kind -
+    Codex's bulk filterTokens figure and its getBars daily bars differ a lot
+    for a few coins (e.g. Orca $1.29M vs $537K the same day):
+      "Codex daily"   - the daily tracking readings (daily_snapshots.
+                        codex_liquidity, filterTokens): today vs 7 days ago.
+      "Codex history" - until a coin has 7 days of those: the getBars days in
+                        entry_zone_bars (the detail page tile's own series),
+                        leaving out the days the tracking step appended.
+      "DexScreener"   - fix 4: Codex > 10x DexScreener today or ~7 days ago ->
+                        our daily snapshots' DexScreener readings.
+    Unknown values are None (0 points)."""
+    import json
+    from datetime import date as _date, timedelta
+    from models import EntryZoneBars, TradeFlow
+    from liquidity_check import codex_unreliable
+
+    if not coins:
+        return {}
+    keys = {((c.chain or "").lower(), (c.contract or "").lower()): c.id for c in coins}
+    contracts = [k[1] for k in keys]
+    bars = {}
+    for row in session.query(EntryZoneBars).filter(EntryZoneBars.contract.in_(contracts)):
+        cid = keys.get((row.chain, row.contract))
+        if cid is not None:
+            bars[cid] = [(_date.fromisoformat(b[0]), b[1], b[3]) for b in json.loads(row.data)["bars"]]
+    since = _date.today() - timedelta(days=LIQ_GROWTH_DAYS + LIQ_GROWTH_SLACK + 3)
+    snaps = {}
+    for cid, d, cx, dx in (session.query(DailySnapshot.coin_id, DailySnapshot.date,
+                                         DailySnapshot.codex_liquidity, DailySnapshot.liquidity)
+                           .filter(DailySnapshot.coin_id.in_(list(keys.values())),
+                                   DailySnapshot.date >= since)
+                           .order_by(DailySnapshot.date)):
+        snaps.setdefault(cid, []).append((d, cx, dx))
+    flows = {}
+    try:      # trade_flows is created by the daily job; before that: unknown
+        for r in (session.query(TradeFlow)
+                  .filter(TradeFlow.contract.in_(contracts),
+                          TradeFlow.day >= _date.today() - timedelta(days=BUYERS_DAYS + 3))
+                  .order_by(TradeFlow.day)):
+            cid = keys.get((r.chain, r.contract))
+            if cid is not None:
+                flows.setdefault(cid, []).append((r.day, r.buy_volume, r.sell_volume))
+    except Exception:
+        session.rollback()
+
+    out = {}
+    for cid in keys.values():
+        rows = snaps.get(cid, [])
+        res = {"liq_growth": None, "liq_source": None, "price_pos": None,
+               "buy_sell": None, "buy_sell_days": 0}
+        # --- liquidity growth (fix 4: Codex unreliable today or ~7 days ago)
+        recent = rows[-1:] + [r for r in rows if rows and
+                              rows[-1][0] - timedelta(days=LIQ_GROWTH_DAYS + LIQ_GROWTH_SLACK)
+                              <= r[0] <= rows[-1][0] - timedelta(days=LIQ_GROWTH_DAYS)]
+        unreliable = any(codex_unreliable(cx, dx) for _, cx, dx in recent)
+        if unreliable:
+            res["liq_growth"], res["liq_source"] = _change_over([(d, dx) for d, _, dx in rows]), "DexScreener"
+        else:
+            pct = _change_over([(d, cx) for d, cx, _ in rows])
+            if pct is not None:
+                res["liq_growth"], res["liq_source"] = pct, "Codex daily"
+            else:
+                # The tracking step appends today's codex_liquidity to
+                # entry_zone_bars as-is, so a stored day equal to that day's
+                # snapshot reading is an appended filterTokens day - leave
+                # those out, keep the getBars days.
+                appended = {d: cx for d, cx, _ in rows if cx is not None}
+                hist = [(d, v) for d, _, v in bars.get(cid, []) if v and appended.get(d) != v]
+                pct = _change_over(hist)
+                if pct is not None:
+                    res["liq_growth"], res["liq_source"] = pct, "Codex history"
+        # --- price position in the 60-day range
+        res["price_pos"] = _price_position([c for _, c, _ in bars.get(cid, [])])
+        # --- buy / sell volume, last BUYERS_DAYS readings (not when Codex is
+        #     unreliable for the coin: its trades may be the phantom pool's)
+        fl = [(b, s) for _, b, s in flows.get(cid, []) if b is not None and s is not None][-BUYERS_DAYS:]
+        latest_unreliable = bool(rows) and codex_unreliable(rows[-1][1], rows[-1][2])
+        if len(fl) >= BUYERS_MIN_DAYS and not latest_unreliable:
+            buy, sell = sum(b for b, _ in fl), sum(s for _, s in fl)
+            res["buy_sell"], res["buy_sell_days"] = (buy / sell if sell else None), len(fl)
+        out[cid] = res
+    return out
+
+
+def liquidity_growth(session, coins):
+    """{coin.id: (pct or None, source)} - the 7-day liquidity change alone."""
+    return {cid: (r["liq_growth"], r["liq_source"]) for cid, r in score_inputs(session, coins).items()}
+
+
+# ---------------------------------------------------------------------------
 # Combine everything into one total score for a snapshot.
 # ---------------------------------------------------------------------------
-def score_snapshot(snapshot, coin, liq_growth_pct=None):
+def score_snapshot(snapshot, coin, inputs=None):
     """
-    Compute the full breakdown + total (0-100 scale) for one snapshot.
-    liq_growth_pct = the coin's 7-day liquidity change (liquidity_growth()),
-    None if unknown. Returns a dict so the caller can save and display it.
+    Compute the full breakdown + total (0-100) for one snapshot.
+    inputs = the coin's entry from score_inputs() (None -> those three
+    components count as unknown). Returns a dict to save and display.
     """
+    inputs = inputs or {}
     vol_liq_pts, vol_liq_ratio = score_vol_liq(snapshot.volume, snapshot.liquidity)
     vol_mcap_pts, vol_mcap_pct = score_vol_mcap(snapshot.volume, snapshot.mcap)
+    liq_growth_pts = score_liquidity_growth(inputs.get("liq_growth"))
+    cheap_pts = score_cheapness(inputs.get("price_pos"))
+    buyers_pts = score_buyers(inputs.get("buy_sell"))
+    rank_change_pts = score_rank_change(coin)
 
-    revenue_pts = score_revenue(snapshot)              # 0 (TODO)
-    liq_growth_pts = score_liquidity_growth(liq_growth_pct)   # up to 15
-    holder_growth_pts = score_holder_growth(snapshot)  # partial (by count size)
-    rank_change_pts = score_rank_change(coin)          # up to 5
-
-    total = (
-        vol_liq_pts + vol_mcap_pts + revenue_pts
-        + liq_growth_pts + holder_growth_pts + rank_change_pts
-    )
+    total = (vol_liq_pts + vol_mcap_pts + liq_growth_pts + cheap_pts
+             + buyers_pts + rank_change_pts)
 
     return {
         "total": total,
@@ -257,8 +318,13 @@ def score_snapshot(snapshot, coin, liq_growth_pct=None):
         "vol_liq_ratio": vol_liq_ratio,
         "vol_mcap_pts": vol_mcap_pts,
         "vol_mcap_pct": vol_mcap_pct,
-        "liq_growth_pct": liq_growth_pct,
+        "liq_growth_pct": inputs.get("liq_growth"),
         "liq_growth_pts": liq_growth_pts,
+        "price_pos": inputs.get("price_pos"),
+        "cheap_pts": cheap_pts,
+        "buy_sell": inputs.get("buy_sell"),
+        "buyers_pts": buyers_pts,
+        "rank_pts": rank_change_pts,
     }
 
 
@@ -271,7 +337,7 @@ def score_all():
     try:
         # Only score ACTIVE coins - dropped coins aren't ranked or shown.
         coins = session.query(Coin).filter_by(status="active").all()
-        growth = liquidity_growth(session, coins)
+        inputs = score_inputs(session, coins)
         for coin in coins:
             # The most recent snapshot for this coin (latest date).
             snap = (
@@ -283,25 +349,15 @@ def score_all():
             if snap is None:
                 continue  # coin has no snapshot yet - skip
 
-            breakdown = score_snapshot(snap, coin, growth.get(coin.id, (None, None))[0])
+            breakdown = score_snapshot(snap, coin, inputs.get(coin.id))
 
             # Save the score back into the snapshot.
             snap.score = float(breakdown["total"])
 
             # Capture plain values NOW, while the session is still open, so the
             # printing step later doesn't touch detached ORM objects.
-            results.append({
-                "name": coin.name,
-                "chain": coin.chain,
-                "mcap": snap.mcap,
-                "score": snap.score,
-                "vol_liq_ratio": breakdown["vol_liq_ratio"],
-                "vol_liq_pts": breakdown["vol_liq_pts"],
-                "vol_mcap_pct": breakdown["vol_mcap_pct"],
-                "vol_mcap_pts": breakdown["vol_mcap_pts"],
-                "liq_growth_pct": breakdown["liq_growth_pct"],
-                "liq_growth_pts": breakdown["liq_growth_pts"],
-            })
+            results.append({"name": coin.name, "chain": coin.chain, "mcap": snap.mcap,
+                            "score": snap.score, **breakdown})
 
         session.commit()  # persist all the scores at once
     except Exception:
@@ -322,7 +378,8 @@ def print_ranking(results):
 
     header = (
         f"{'#':>2}  {'NAME':<16} {'CHAIN':<9} {'MCAP':>10}  "
-        f"{'VOL/LIQ':>13}  {'VOL/MCAP':>13}  {'LIQ 7D':>12}  {'SCORE':>9}"
+        f"{'VOL/LIQ':>12}  {'VOL/MCAP':>12}  {'LIQ 7D':>10}  {'60D POS':>9}  "
+        f"{'BUY/SELL':>10}  {'RANK':>4}  {'SCORE':>9}"
     )
     print("=" * len(header))
     print("  CRYPTO SCREENER - RANKED BY SCORE (highest first)")
@@ -330,33 +387,25 @@ def print_ranking(results):
     print(header)
     print("-" * len(header))
 
-    for rank, r in enumerate(results, start=1):
-        # e.g. "4.10x (25)" or "n/a" if it couldn't be computed.
-        if r["vol_liq_ratio"] is None:
-            vol_liq = "n/a"
-        else:
-            vol_liq = f"{r['vol_liq_ratio']:.2f}x ({r['vol_liq_pts']})"
-        if r["vol_mcap_pct"] is None:
-            vol_mcap = "n/a"
-        else:
-            vol_mcap = f"{r['vol_mcap_pct']:.1f}% ({r['vol_mcap_pts']})"
-        if r.get("liq_growth_pct") is None:
-            liq7 = "n/a"
-        else:
-            liq7 = f"{r['liq_growth_pct']:+.0f}% ({r['liq_growth_pts']})"
+    def cell(v, fmt, pts):
+        return "n/a" if v is None else f"{format(v, fmt)} ({pts})"
 
+    for rank, r in enumerate(results, start=1):
         print(
             f"{rank:>2}  {(r['name'] or '')[:16]:<16} {r['chain']:<9} "
-            f"{fmt_money(r['mcap']):>10}  {vol_liq:>13}  {vol_mcap:>13}  {liq7:>12}  "
-            f"{r['score']:>6.1f}/100"
+            f"{fmt_money(r['mcap']):>10}  "
+            f"{cell(r['vol_liq_ratio'], '.2f', r['vol_liq_pts']):>12}  "
+            f"{cell(r['vol_mcap_pct'], '.1f', r['vol_mcap_pts']):>12}  "
+            f"{cell(r['liq_growth_pct'], '+.0f', r['liq_growth_pts']):>10}  "
+            f"{cell(r['price_pos'], '.0f', r['cheap_pts']):>9}  "
+            f"{cell(r['buy_sell'], '.2f', r['buyers_pts']):>10}  "
+            f"{r['rank_pts']:>4}  {r['score']:>6.1f}/100"
         )
 
     print("-" * len(header))
-    print(f"Scored {len(results)} coins. "
-          f"Today's max possible = {MAX_TODAY}/100 "
-          f"(Vol/Liq {MAX_VOL_LIQ} + Vol/MCap {MAX_VOL_MCAP} + "
-          f"Rank {MAX_RANK_CHANGE} + Holders {MAX_HOLDER_GROWTH} + "
-          f"Liquidity growth {MAX_LIQ_GROWTH}); the other {100 - MAX_TODAY} pts (revenue) are TODO.")
+    print(f"Scored {len(results)} coins. Max {MAX_TOTAL}/100 = Vol/Liq {MAX_VOL_LIQ} + "
+          f"Vol/MCap {MAX_VOL_MCAP} + Liquidity growth {MAX_LIQ_GROWTH} + "
+          f"Price cheapness {MAX_CHEAPNESS} + Buyers volume {MAX_BUYERS} + Rank {MAX_RANK_CHANGE}.")
     print("=" * len(header))
 
 
