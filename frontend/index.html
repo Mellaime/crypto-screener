@@ -1311,7 +1311,8 @@
     });
   }
   // Supply: total, circulating (+ % of total), max (or "No cap"), and two
-  // placeholders (burned, upcoming unlock) that show "—" until we have a source.
+  // placeholder (burned) that shows "—" until we have a source. Unlocks have
+  // their own section (Upcoming Unlocks).
   function fmtSupply(v) {
     if (v == null) return "—";
     const a = Math.abs(v);
@@ -1343,7 +1344,6 @@
             <span class="val"${exact(sp.circulating)}>${fmtSupply(sp.circulating)}${pct}</span></li>
         <li><span class="lbl">Max supply<small>the absolute cap${minting ? " · " + fmtSupply(sp.max - sp.total) + " above total supply" : ""}</small></span>${max}</li>
         <li class="soon"><span class="lbl">Burned<small>no free source yet</small></span><span class="val">—</span></li>
-        <li class="soon"><span class="lbl">Upcoming unlock<small>needs an unlock-schedule source</small></span><span class="val">—</span></li>
       </ul></div>`;
   }
   // Price Range (All-Time): CoinGecko ATH / ATL and where today's price sits
