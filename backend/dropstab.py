@@ -54,6 +54,24 @@ def _key():
     return os.getenv("DROPSTAB_API_KEY")
 
 
+class DropstabKeyRejected(RuntimeError):
+    """DropsTab refused the API key (HTTP 401 / 403)."""
+
+
+def _check_auth(status, body, what):
+    """Stop LOUDLY when DropsTab rejects the key. The two endpoints the bot
+    uses (/coins/contract, /tokenUnlocks) are on our plan, so a 401 / 403
+    there means a bad DROPSTAB_API_KEY - not something to retry quietly.
+    The exception reaches scheduler.py, which logs it and flags the step in
+    the Telegram report. The key itself is never logged."""
+    if status in (401, 403):
+        detail = ((body or {}).get("failureDetails") or "")[:120]
+        log.error("DropsTab REJECTED the API key on %s (HTTP %s: %s) - check the "
+                  "DROPSTAB_API_KEY secret (only the key, no name / quotes / spaces)",
+                  what, status, detail)
+        raise DropstabKeyRejected(f"DropsTab rejected DROPSTAB_API_KEY (HTTP {status}: {detail})")
+
+
 def _get(path, **params):
     """(status, json or None). Never raises; the key is never logged."""
     global REMAINING
@@ -87,11 +105,14 @@ def map_coins(session, coins, now):
             break
         calls += 1
         st, body = _get(f"/coins/contract/{coin.contract}")
+        _check_auth(st, body, "/coins/contract")
         if st == 404 or (st == 200 and not (body or {}).get("data")):
             found = None                              # DropsTab doesn't know it
         elif st == 200:
             found = body["data"][0]
         else:
+            log.warning("DropsTab lookup for %s failed (HTTP %s) - retried next run",
+                        coin.contract, st)
             continue                                  # transient -> next run
         if row is None:
             row = DropstabCoin(chain=key[0], contract=key[1])
@@ -113,6 +134,7 @@ def fetch_overview():
     while True:
         calls += 1
         st, body = _get("/tokenUnlocks", page=page, pageSize=PAGE_SIZE)
+        _check_auth(st, body, "/tokenUnlocks")
         data = (body or {}).get("data") if st == 200 else None
         if not data:
             log.warning("DropsTab unlock overview page %d failed (HTTP %s)", page, st)
