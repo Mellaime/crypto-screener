@@ -434,3 +434,41 @@ class ApiUsage(Base):
     day = Column(Date, nullable=False, index=True)
     source = Column(String, nullable=False)       # "Codex" / "CoinGecko" / "CoinMarketCap" / ...
     calls = Column(Integer, nullable=False, default=0)
+
+
+class DropstabCoin(Base):
+    """
+    Our coin (chain + contract) -> its DropsTab coin id, looked up ONCE via
+    DropsTab's /coins/contract/{contract} (dropstab.py) and reused forever.
+    dropstab_id NULL = DropsTab doesn't know this contract (asked again after
+    dropstab.RECHECK_DAYS).
+    """
+    __tablename__ = "dropstab_coins"
+    __table_args__ = (UniqueConstraint("chain", "contract"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chain = Column(String, nullable=False)
+    contract = Column(String, nullable=False, index=True)   # stored lowercased
+    dropstab_id = Column(Integer, index=True)                # NULL = not on DropsTab
+    slug = Column(String)
+    symbol = Column(String)
+    checked_at = Column(DateTime, nullable=False)
+
+
+class UnlockSnapshot(Base):
+    """
+    One row per DropsTab coin we track that has token-unlock data: its entry
+    from DropsTab's /tokenUnlocks overview (JSON, as returned), refreshed by
+    the daily run. prev_next = each allocation's nextTokenUnlockDate from the
+    PREVIOUS day's entry (detects daily / linear vesting). The detail page's
+    "Upcoming Unlocks" section is computed from this - no DropsTab call on a
+    page view.
+    """
+    __tablename__ = "unlock_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dropstab_id = Column(Integer, nullable=False, unique=True, index=True)
+    day = Column(Date, nullable=False)                        # UTC day fetched
+    data = Column(Text, nullable=False)                       # JSON overview entry
+    prev_next = Column(Text)                                  # JSON {allocation id: date}
+    updated_at = Column(DateTime, nullable=False)

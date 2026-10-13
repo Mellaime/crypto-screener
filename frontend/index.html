@@ -250,6 +250,30 @@
   .supply .val { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
   .supply .val small { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 6px; }
   .supply li.soon .val { color: var(--muted); font-weight: 600; }
+  /* Upcoming Unlocks (DropsTab) */
+  .unlgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 720px) { .unlgrid { grid-template-columns: 1fr; } }
+  .unlbox { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; background: var(--bg); min-width: 0; }
+  .unlbox h4 { margin: 0 0 8px; font-size: 13px; font-weight: 700; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .unlbox h4 small { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .unlbar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; margin: 2px 0 10px; display: flex; }
+  .unlbar span { display: block; height: 100%; }
+  .unlrow { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  .unlrow .lbl { display: flex; align-items: center; gap: 7px; color: var(--muted); }
+  .unlrow .val { text-align: right; font-variant-numeric: tabular-nums; }
+  .unlrow .val small { display: block; color: var(--muted); font-size: 11px; }
+  .udot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+  .udot.g { background: var(--good); } .udot.r { background: var(--low); } .udot.n { background: var(--muted); }
+  .unlhead { font-size: 15px; font-weight: 700; line-height: 1.35; }
+  .unlsub { color: var(--muted); font-size: 13px; margin: 2px 0 8px; }
+  .unlwhen { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .unlcount { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 4px 0 10px; text-align: center; }
+  .unlcount div { border: 1px solid var(--border); border-radius: 6px; padding: 6px 0; background: var(--card); }
+  .unlcount b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .unlcount span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .unldaily { display: inline-block; font-size: 11px; font-weight: 700; color: var(--accent); border: 1px solid rgba(88,166,255,0.45);
+              background: rgba(88,166,255,0.12); border-radius: 999px; padding: 1px 8px; margin-left: 6px; }
+  .unlunknown { color: var(--muted); font-size: 14px; padding: 6px 0 2px; }
 
   /* Price Range (All-Time) section */
   .prbar { position: relative; height: 10px; border-radius: 5px; margin: 26px 8px 6px;
@@ -879,11 +903,13 @@
       ${relStrengthCard(c.rel_strength)}
       ${entryZoneCard(c.entry_zone)}
       ${supplyCard(c)}
+      ${unlocksCard(c.unlocks)}
       ${smartMoneyCard()}`;
     wireHolders((c.holders || {}).bars || []);
     wireBars("rplot", "rtip", ((c.revenue || {}).bars) || [],
              b => `<b>${esc(longDate(b.date))}</b><br>Revenue ${fmtUsd(b.revenue)}`);
     wireChart(c.tx_bars || []);
+    startUnlockCountdown();
   }
 
   // Transactions chart: one bar per COMPLETE day. Height = total
@@ -1429,6 +1455,63 @@
   }
   // Smart Money: placeholder only (no data source yet) - same list style as
   // the Supply section; no data is fetched for it.
+  // Upcoming Unlocks: DropsTab's unlock overview, stored by the daily run (the
+  // page makes no DropsTab call). Next-event amounts are computed from each
+  // allocation's locked tokens and remaining unlock dates (dropstab.py).
+  function fmtTok(v) {
+    if (v == null) return "—";
+    const a = Math.abs(v);
+    if (a >= 1e9) return (v / 1e9).toFixed(2) + "B";
+    if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
+    if (a >= 1e3) return (v / 1e3).toFixed(2) + "K";
+    return v.toFixed(2);
+  }
+  function fmtPctU(v) { return v == null ? "—" : (v < 0.01 && v > 0 ? "<0.01" : v.toFixed(2)) + "%"; }
+  function unlocksCard(u) {
+    const head = `<div class="ratiocard"><h3>Upcoming Unlocks</h3>
+      <div class="note">DropsTab token-unlock data, refreshed by the daily run.</div>`;
+    if (!u || u.status !== "ok") {
+      return head + `<div class="unlunknown">Unknown</div>
+        <div class="note" style="margin:2px 0 0">${esc((u && u.reason) || "No unlock data")}</div></div>`;
+    }
+    const v = u.vesting, n = u.next, sym = esc(u.symbol || "");
+    const vrow = (cls, label, r) => `<div class="unlrow"><span class="lbl"><span class="udot ${cls}"></span>${label}</span>
+      <span class="val">${fmtTok(r.tokens)} ${sym}<small>${fmtMoney(r.usd)} · ${fmtPctU(r.fdv_pct)} of FDV</small></span></div>`;
+    const bar = `<div class="unlbar"><span style="width:${v.unlocked.pct}%;background:var(--good)"></span>
+      <span style="width:${v.locked.pct}%;background:var(--low)"></span><span style="width:${v.untracked.pct}%;background:var(--muted)"></span></div>`;
+    const when = new Date(n.at);
+    const whenTxt = when.toLocaleString("en-GB", {timeZone: "UTC", day: "numeric", month: "short", year: "numeric",
+                                                   hour: "2-digit", minute: "2-digit"}) + " UTC";
+    const rounds = n.rounds.map(r => `<div class="unlrow"><span class="lbl">${esc(r.name || "—")}</span>
+      <span class="val">${fmtTok(r.amount)} ${sym}<small>${fmtPctU(r.supply_pct)} of Total Supply</small></span></div>`).join("");
+    const daily = n.daily ? `<span class="unldaily" title="Linear vesting: unlocks every day">daily · ${fmtTok(n.daily.amount)} ${sym} (${fmtMoney(n.daily.usd)})</span>` : "";
+    return head + `<div class="unlgrid">
+      <div class="unlbox"><h4>${sym} Vesting <small>${v.progress_pct.toFixed(2)}% · ${v.days_left == null ? "—" : v.days_left + " days left"}</small></h4>
+        ${bar}${vrow("g", "Unlocked", v.unlocked)}${vrow("r", "Locked", v.locked)}${vrow("n", "Untracked", v.untracked)}</div>
+      <div class="unlbox"><h4>Next Unlocking Event ${daily}</h4>
+        <div class="unlhead">Unlock of ${fmtTok(n.amount)} ${sym} — ${fmtPctU(n.supply_pct)} of Total Supply</div>
+        <div class="unlsub">~${fmtMoney(n.usd)} (${fmtPctU(n.mcap_pct)} of M.Cap)</div>
+        <div class="unlwhen">${esc(whenTxt)}</div>
+        <div class="unlcount" data-unlock-at="${esc(n.at)}"><div><b>—</b><span>Days</span></div><div><b>—</b><span>Hrs</span></div>
+          <div><b>—</b><span>Min</span></div><div><b>—</b><span>Sec</span></div></div>
+        <h4 style="margin:4px 0 0">${n.rounds.length} ${n.rounds.length === 1 ? "Round" : "Rounds"}</h4>${rounds}</div>
+    </div></div>`;
+  }
+  let unlockTimer = null;
+  function startUnlockCountdown() {
+    if (unlockTimer) clearInterval(unlockTimer);
+    const box = document.querySelector("[data-unlock-at]");
+    if (!box) return;
+    const at = new Date(box.dataset.unlockAt).getTime(), cells = box.querySelectorAll("b");
+    const tick = () => {
+      if (!document.body.contains(box)) { clearInterval(unlockTimer); return; }
+      let s = Math.max(0, Math.floor((at - Date.now()) / 1000));
+      const parts = [Math.floor(s / 86400), Math.floor(s % 86400 / 3600), Math.floor(s % 3600 / 60), s % 60];
+      parts.forEach((p, i) => { cells[i].textContent = i ? String(p).padStart(2, "0") : p; });
+    };
+    tick();
+    unlockTimer = setInterval(tick, 1000);
+  }
   function smartMoneyCard() {
     return `<div class="ratiocard"><h3>Smart Money</h3>
       <div class="note">Coming soon - we haven't found a free data source yet.</div>
