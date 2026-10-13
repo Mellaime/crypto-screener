@@ -38,9 +38,9 @@ MAX_LEN = 4000              # Telegram's limit is 4096 characters
 MAX_NAMES = 15              # names listed per section, then "+N"
 
 # Monthly free-tier limits (CMC's comes from its own counter).
-LIMITS = {"Codex": 10_000, "CoinGecko": 10_000, "CoinMarketCap": 15_000}
+LIMITS = {"Codex": 10_000, "CoinGecko": 10_000, "CoinMarketCap": 15_000, "DropsTab": 500_000}
 NEAR_LIMIT_SHARE = 0.8      # warn when the month is projected past 80% of a limit
-HOSTS = {"graph.codex.io": "Codex", "api.coingecko.com": "CoinGecko",
+HOSTS = {"graph.codex.io": "Codex", "api.coingecko.com": "CoinGecko", "public-api.dropstab.com": "DropsTab",
          "pro-api.coinmarketcap.com": "CoinMarketCap", "api.dexscreener.com": "DexScreener",
          "api.llama.fi": "DefiLlama", "api.gopluslabs.io": "GoPlus"}
 MASS_DROP_SHARE = 0.5       # more than half of the checked coins dropped -> flag
@@ -138,7 +138,7 @@ def _api_usage(session, today):
     days = dict(session.query(ApiUsage.source, func.count(func.distinct(ApiUsage.day)))
                 .filter(ApiUsage.day >= month_start).group_by(ApiUsage.source).all())
     out = []
-    for source in ("Codex", "CoinGecko"):
+    for source in ("Codex", "CoinGecko", "DropsTab"):
         used = int(month.get(source) or 0)
         out.append((source, CALLS.get(source, 0), used, LIMITS[source], int(days.get(source) or 1)))
     # CoinMarketCap: its own exact credit counter (free).

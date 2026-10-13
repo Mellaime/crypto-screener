@@ -141,6 +141,16 @@ def run_pipeline(raise_on_error=False):
             log.exception("Entry Zone snapshot failed - continuing.")
             report.step_errors.append("Entry Zone")
 
+        # Upcoming Unlocks (detail page): DropsTab unlock overview, stored for
+        # the website (~11 requests + one lookup per new coin). Display only.
+        log.info("Updating upcoming unlocks (DropsTab)...")
+        try:
+            from dropstab import run_unlock_update
+            run_unlock_update()
+        except Exception:
+            log.exception("Upcoming unlocks update failed - continuing.")
+            report.step_errors.append("Unlocks")
+
         log.info("Scoring active coins...")
         results = score_all()
         report.scored = len(results)

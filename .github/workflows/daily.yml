@@ -39,4 +39,6 @@ jobs:
           # Daily Telegram report (daily_report.py); missing -> report skipped.
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Upcoming Unlocks (dropstab.py); missing -> that step is skipped.
+          DROPSTAB_API_KEY: ${{ secrets.DROPSTAB_API_KEY }}
         run: python scheduler.py --once
