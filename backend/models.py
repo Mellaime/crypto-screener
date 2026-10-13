@@ -419,3 +419,18 @@ class TradeFlow(Base):
     sell_volume = Column(Float)       # Codex sellVolume24 (USD)
     buy_count = Column(Integer)       # Codex buyCount24
     sell_count = Column(Integer)      # Codex sellCount24
+
+
+class ApiUsage(Base):
+    """
+    Requests the DAILY JOB made to each outside API, per UTC day (counted by
+    daily_report.py). Month-to-date usage in the Telegram report is the sum of
+    these rows - it covers the daily job only, not website page views.
+    """
+    __tablename__ = "api_usage"
+    __table_args__ = (UniqueConstraint("day", "source"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    day = Column(Date, nullable=False, index=True)
+    source = Column(String, nullable=False)       # "Codex" / "CoinGecko" / "CoinMarketCap" / ...
+    calls = Column(Integer, nullable=False, default=0)

@@ -564,6 +564,10 @@ def run_drop_logic():
     for name, cx, dx in MISMATCHES[mismatch_start:]:
         mismatches.setdefault(name, (cx, dx))
     stats["liq_source_mismatch"] = len(mismatches)
+    # Names + reasons for the daily Telegram report (daily_report.py).
+    stats["details"] = {"dropped": dropped_details, "recovered": recovered_details,
+                        "deleted": removed_details, "blocked": blocked_details,
+                        "suspects": crash_suspects}
     _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects,
                    blocked_details, held_details, mismatches)
     return stats

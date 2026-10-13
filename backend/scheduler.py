@@ -76,10 +76,16 @@ def run_pipeline(raise_on_error=False):
     """
     log.info("=" * 55)
     log.info("PIPELINE RUN START")
+    # Daily Telegram report: count the run's API requests and collect its
+    # results; sent at the very end (finally), even if the run fails.
+    from daily_report import RunReport, count_requests, send_report
+    count_requests()
+    report = RunReport()
     try:
         tokens = discover_tokens()
         if tokens:
             stats = save_tokens(tokens)
+            report.save = stats
             from discovery import LAST_COUNTS
             log.info(
                 "FUNNEL  discovery=%s | meme+stable+tokenized+wrapped=%s | age=%d | queue picked=%d "
@@ -105,10 +111,11 @@ def run_pipeline(raise_on_error=False):
         # (drop_logic's volume + liquidity history) and refreshes price / mcap /
         # volume / liquidity for every active + dropped coin. No CoinGecko.
         log.info("Daily tracking (Codex readings + prices, active + dropped)...")
-        run_daily_tracking()
+        report.tracking = run_daily_tracking()
 
         log.info("Running drop/recovery/cleanup pass...")
         drop_stats = run_drop_logic()
+        report.drop = drop_stats
 
         log.info("Updating market ranks (CoinGecko + CoinMarketCap)...")
         run_rank_update()
@@ -123,6 +130,7 @@ def run_pipeline(raise_on_error=False):
             run_narrative_snapshot()
         except Exception:
             log.exception("Narrative snapshot failed - continuing.")
+            report.step_errors.append("Narratives")
 
         # Entry Zone: today's zone for every active coin (one Codex call each)
         # so the detail page can show the 3-day zone change. Display only.
@@ -131,9 +139,11 @@ def run_pipeline(raise_on_error=False):
             run_entry_zone_snapshot()
         except Exception:
             log.exception("Entry Zone snapshot failed - continuing.")
+            report.step_errors.append("Entry Zone")
 
         log.info("Scoring active coins...")
         results = score_all()
+        report.scored = len(results)
         print_ranking(results)
 
         # Consolidated pipeline summary.
@@ -146,10 +156,15 @@ def run_pipeline(raise_on_error=False):
         log.info("=" * 55)
 
         log.info("PIPELINE RUN OK")
-    except Exception:
+    except Exception as e:
         log.exception("PIPELINE RUN FAILED.")
+        report.failed = f"{type(e).__name__}: {str(e)[:150]}"
         if raise_on_error:
             raise   # let CI (--once) see a non-zero exit -> red Actions run
+    finally:
+        # Telegram report - its own protection: it never raises, so it can't
+        # fail the run (or hide the run's real error).
+        send_report(report)
 
 
 def main():
