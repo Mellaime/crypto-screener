@@ -36,4 +36,7 @@ jobs:
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
           COINMARKETCAP_API_KEY: ${{ secrets.COINMARKETCAP_API_KEY }}
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}   # step 7 liquidity trend
+          # Daily Telegram report (daily_report.py); missing -> report skipped.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scheduler.py --once
