@@ -5,19 +5,23 @@ The DROP LOGIC. Completely separate from the 7-step filter: the filter is a
 one-time ENTRY gate for new coins; drop_logic only watches coins ALREADY in
 active / dropped. It runs daily after discover -> filter -> save -> tracking.
 
-It uses ONE set of 4 health criteria, both for dropping and for recovery:
-    * volume falling      - last 5 daily Codex readings, day5 more than 5%
-                            below day1 (rising or flat = healthy)
-    * liquidity down > 5% - today's Codex reading vs the one up to 30 days
-                            ago (or since it entered active, if shorter)
+It uses ONE set of 5 health criteria, both for dropping and for recovery:
+    * volume falling      - the last 5 complete days' average volume more
+                            than 20% below the 5 days before (stored daily
+                            history); both averages under $2,000/day = too
+                            little trading to judge = healthy
+    * liquidity down >15% - vs the reading up to 30 days ago (or since it
+                            entered active, if shorter), on BOTH Codex and
+                            DexScreener (two sources must agree; fix 4 ->
+                            DexScreener alone)
     * liquidity under $5K - today's reading is under $5,000 on BOTH Codex and
                             DexScreener (the higher one counts; no reading
                             from either = unknown = healthy)
     * holders down > 10%  - vs the count when it entered active
                             (coins.holders_at_entry; no baseline -> skipped)
     * honeypot unsafe     - GoPlus
-Volume + liquidity come ONLY from the daily Codex readings that tracking.py
-stores on each day's snapshot (~3 bulk Codex requests/day for all coins).
+Volume + liquidity come ONLY from the daily readings that tracking.py stores
+(~2-3 bulk Codex requests/day for all coins, plus DexScreener).
 NO CoinGecko here - CoinGecko is only the one-time entry check.
 "Unknown" (not enough readings yet, no data) counts as healthy - never drop,
 or keep out, on missing data. Revenue is NOT part of this.
@@ -69,8 +73,18 @@ MAX_HOLDER_DROP_PCT = 10     # holders down more than this -> unhealthy
 # 2 x VOLUME_AVG_DAYS days of history = unknown = healthy.
 VOLUME_AVG_DAYS = 5          # compare 5-day averages ...
 VOLUME_AVG_FALL_PCT = 20     # ... falling = the newer average more than 20% lower
+# VOLUME FLOOR: when BOTH 5-day averages are under this (USD / day), the coin
+# trades too little on-chain for its trend to mean anything (e.g. EarthMeta,
+# ~$1-5K a day, swung -87% / back in a day) -> unknown = healthy. A coin that
+# collapses from above the floor to below it is still caught.
+VOLUME_MIN_AVG_USD = 2_000
 # LIQUIDITY DOWN SINCE ENTRY: unhealthy only when liquidity is more than this
 # below its level when the coin entered active (5-15% is normal movement).
+# TWO SOURCES must agree (like the crash check): Codex AND DexScreener each
+# down more than this vs their own reading at the start of the window. One
+# bad Codex day can't drop a coin (VitaDAO: Codex $121K -> $25K -> $106K
+# while DexScreener held ~$200K). Only one source has readings -> that one
+# decides; Codex unreliable (fix 4) -> DexScreener alone.
 MAX_LIQ_DROP_PCT = 15        # was 5 until Oct 10
 VOLUME_READINGS = 5          # (old single-day rule - no longer used)
 VOLUME_FALL_PCT = 5          # (old single-day rule - no longer used)
@@ -284,6 +298,9 @@ def codex_volume_trend(session, coin, today):
     more than VOLUME_AVG_FALL_PCT below the VOLUME_AVG_DAYS days before it
     (stored daily history, entry_zone_bars); 'rising' / 'flat' otherwise;
     'unknown' (healthy) without 2 x VOLUME_AVG_DAYS days of history."""
+    avgs = volume_avgs(session, coin, today)
+    if avgs is None or max(avgs) < VOLUME_MIN_AVG_USD:
+        return "unknown"                  # no history, or too little trading to judge
     pct = volume_avg_change(session, coin, today)
     if pct is None:
         return "unknown"
@@ -292,9 +309,9 @@ def codex_volume_trend(session, coin, today):
     return "rising" if pct > 0 else "flat"
 
 
-def volume_avg_change(session, coin, today):
-    """% change: last VOLUME_AVG_DAYS complete days' average volume vs the
-    VOLUME_AVG_DAYS before (stored daily history), or None."""
+def volume_avgs(session, coin, today):
+    """(last, previous): the last VOLUME_AVG_DAYS complete days' average
+    volume and the VOLUME_AVG_DAYS before (stored daily history), or None."""
     from entry_zone import load_bars
     try:
         bars, _ = load_bars(session, coin)
@@ -305,7 +322,16 @@ def volume_avg_change(session, coin, today):
     n = VOLUME_AVG_DAYS
     if len(vols) < 2 * n:
         return None
-    last, prev = sum(vols[-n:]) / n, sum(vols[-2 * n:-n]) / n
+    return sum(vols[-n:]) / n, sum(vols[-2 * n:-n]) / n
+
+
+def volume_avg_change(session, coin, today):
+    """% change: last VOLUME_AVG_DAYS complete days' average volume vs the
+    VOLUME_AVG_DAYS before (stored daily history), or None."""
+    avgs = volume_avgs(session, coin, today)
+    if avgs is None:
+        return None
+    last, prev = avgs
     return (last / prev - 1) * 100 if prev else None
 
 
@@ -329,22 +355,9 @@ def codex_volume_trend_single_day(session, coin, today):
     return "rising" if day5 > day1 else "flat"     # rising or flat -> healthy
 
 
-def codex_liquidity_trend(session, coin, today):
-    """(verdict, pct, base_date): today's Codex liquidity vs the reading from up
-    to 30 days ago, or since the coin entered active if that's shorter.
-    verdict 'drop' if down > 5%, 'keep' otherwise, 'unknown' if < 2 readings.
-    On a source mismatch today (Codex > 10x DexScreener) the trend uses the
-    DexScreener readings instead."""
-    from liquidity_check import codex_unreliable
-    last = (session.query(DailySnapshot)
-            .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date <= today)
-            .order_by(DailySnapshot.date.desc()).first())
-    col = (DailySnapshot.liquidity if last is not None
-           and codex_unreliable(last.codex_liquidity, last.liquidity) else DailySnapshot.codex_liquidity)
-    since = coin.active_since or coin.first_seen
-    start = today - timedelta(days=LIQ_WINDOW_DAYS)
-    if since is not None and since.date() > start:
-        start = since.date()
+def _liq_change(session, coin, col, start, today):
+    """(pct, base_date) for one liquidity column: the latest reading vs the
+    first one from `start` on, or (None, None) with fewer than 2 readings."""
     rows = (session.query(DailySnapshot.date, col)
             .filter(DailySnapshot.coin_id == coin.id,
                     DailySnapshot.date >= start,
@@ -352,10 +365,40 @@ def codex_liquidity_trend(session, coin, today):
                     col.isnot(None))
             .order_by(DailySnapshot.date).all())
     if len(rows) < 2 or not rows[0][1]:
-        return "unknown", None, None
+        return None, None
     (base_date, base), (_, latest) = rows[0], rows[-1]
-    pct = (latest - base) / base * 100
-    return ("drop" if pct < -MAX_LIQ_DROP_PCT else "keep"), pct, base_date
+    return (latest - base) / base * 100, base_date
+
+
+def codex_liquidity_trend(session, coin, today):
+    """(verdict, pct, base_date): liquidity now vs the reading from up to 30
+    days ago, or since the coin entered active if that's shorter - on BOTH
+    sources (Codex and DexScreener, each vs its own first reading).
+    'drop' only when both are down more than MAX_LIQ_DROP_PCT (pct = the
+    smaller fall); 'keep' otherwise; 'unknown' without Codex readings.
+    No DexScreener readings -> Codex alone decides. On a source mismatch today
+    (Codex > 10x DexScreener) DexScreener alone decides (fix 4)."""
+    from liquidity_check import codex_unreliable
+    last = (session.query(DailySnapshot)
+            .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date <= today)
+            .order_by(DailySnapshot.date.desc()).first())
+    since = coin.active_since or coin.first_seen
+    start = today - timedelta(days=LIQ_WINDOW_DAYS)
+    if since is not None and since.date() > start:
+        start = since.date()
+    dex, dex_base = _liq_change(session, coin, DailySnapshot.liquidity, start, today)
+    if last is not None and codex_unreliable(last.codex_liquidity, last.liquidity):
+        if dex is None:
+            return "unknown", None, None
+        return ("drop" if dex < -MAX_LIQ_DROP_PCT else "keep"), dex, dex_base
+    codex, base_date = _liq_change(session, coin, DailySnapshot.codex_liquidity, start, today)
+    if codex is None:
+        return "unknown", None, None
+    if dex is None:                       # no DexScreener history -> Codex alone
+        return ("drop" if codex < -MAX_LIQ_DROP_PCT else "keep"), codex, base_date
+    if codex < -MAX_LIQ_DROP_PCT and dex < -MAX_LIQ_DROP_PCT:
+        return "drop", max(codex, dex), base_date      # the smaller fall
+    return "keep", codex, base_date
 
 
 def unhealthy_reason(coin, session, today):
