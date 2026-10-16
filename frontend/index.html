@@ -261,6 +261,11 @@
   .supply .val { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
   .supply .val small { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 6px; }
   .supply li.soon .val { color: var(--muted); font-weight: 600; }
+  .sbig { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 6px; }
+  .sbig small { font-size: 14px; font-weight: 500; color: var(--muted); }
+  .sbar { display: inline-block; width: 70px; height: 6px; border-radius: 3px; background: var(--border);
+          margin-left: 10px; vertical-align: middle; overflow: hidden; }
+  .sbar span { display: block; height: 100%; }
   /* Upcoming Unlocks (DropsTab) */
   .unlgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 720px) { .unlgrid { grid-template-columns: 1fr; } }
@@ -1088,10 +1093,12 @@
                  rv.status === "ok" ? "last 30 days" + (rv.all_time != null ? " · " + fmtMoney(rv.all_time) + " total" : "") : esc(rv.reason || ""))}
           ${tile("Honeypot", r.honeypot === "safe" ? "✓ sellable" : r.honeypot === "unsafe" ? "✗ not sellable" : "unknown")}
         </div></div>
+      ${checkScoreCard(r.score)}
       <div style="margin-top:12px">${txChart(r, "ck")}</div>
       ${priceRangeCard(r.price_range)}
       ${relStrengthCard(r.rel_strength)}
       ${entryZoneCard(r.entry_zone)}
+      ${supplyCard(r)}
       ${futuresCard(r.futures)}
       <div class="ratiocard"><h3>Filter steps</h3>
         <div class="note">Same order as the bot; the first ✗ is the reason above.</div>
@@ -1584,6 +1591,24 @@
       <div class="scorewrap"><table class="scoretable"><thead><tr><th class="rowlbl"></th>${dates}</tr></thead><tbody>
         <tr><td class="rowlbl">OI</td>${oi}</tr><tr><td class="rowlbl">Funding</td>${fr}</tr><tr><td class="rowlbl">L/S</td>${ls}</tr>
       </tbody></table></div></div>`;
+  }
+  // Check a Coin: score estimate from the 3 parts that need no history.
+  function checkScoreCard(s) {
+    if (!s) return "";
+    const pctOf = s.max_computable ? Math.round(s.total / s.max_computable * 100) : 0;
+    const rows = s.parts.map(p => {
+      if (!p.available) return `<li class="soon"><span class="lbl">${esc(p.label)}<small>max ${p.max}</small></span>
+        <span class="val">— <small>needs tracking</small></span></li>`;
+      const share = p.max ? p.pts / p.max : 0;
+      const col = share >= 0.7 ? "var(--good)" : share >= 0.4 ? "var(--mid)" : "var(--low)";
+      return `<li><span class="lbl">${esc(p.label)}<small>${esc(p.detail || "")}</small></span>
+        <span class="val">${p.pts} / ${p.max}<span class="sbar"><span style="width:${Math.round(share * 100)}%;background:${col}"></span></span></span></li>`;
+    }).join("");
+    return `<div class="ratiocard"><h3>Score estimate</h3>
+      <div class="sbig">${s.total} <small>/ ${s.max_computable} available</small></div>
+      <div class="note" style="margin:2px 0 4px">${pctOf}% of computable (full max: ${s.full_max})</div>
+      <div class="note">3 of 6 components need daily tracking — add this coin for a full score.</div>
+      <ul class="supply">${rows}</ul></div>`;
   }
   function smartMoneyCard() {
     return `<div class="ratiocard"><h3>Smart Money</h3>
