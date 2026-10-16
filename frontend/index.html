@@ -89,7 +89,25 @@
 
   /* View switcher: one table at a time */
   .tabs { display: flex; gap: 8px; margin: 4px 0 6px; flex-wrap: wrap; }
-  .tab { flex: 1 1 0; min-width: 0; min-height: 44px; padding: 10px 14px;
+  .unlsearch { width: 100%; box-sizing: border-box; padding: 12px 14px; margin: 6px 0 4px; font: inherit; font-size: 15px;
+               background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 10px; }
+  .unlsearch:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  #unl-table thead th { position: sticky; top: 0; z-index: 1; }
+  #unl-body tr { cursor: pointer; }
+  #unl-body tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+  .uprog { display: flex; align-items: center; gap: 8px; min-width: 130px; }
+  .uprog .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+  .uprog .bar span { display: block; height: 100%; }
+  .uprog b { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
+  .usub { display: block; font-size: 11px; color: var(--muted); }
+  .udate.far { color: var(--good); } .udate.mid { color: var(--mid); } .udate.near { color: var(--low); }
+  .bpill { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 999px; padding: 1px 8px; margin: 1px 4px 1px 0;
+           border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+  .bpill.team { color: #bc8cff; border-color: rgba(188,140,255,0.4); background: rgba(188,140,255,0.08); }
+  .bpill.inv { color: #58a6ff; border-color: rgba(88,166,255,0.4); background: rgba(88,166,255,0.08); }
+  .bpill.trs { color: #d29922; border-color: rgba(210,153,34,0.4); background: rgba(210,153,34,0.08); }
+  .bpill.pub { color: #3fb950; border-color: rgba(63,185,80,0.4); background: rgba(63,185,80,0.08); }
+  .tab { flex: 1 1 auto; min-width: fit-content; min-height: 44px; padding: 10px 14px;   /* full labels; wrap to a 2nd row when narrow */
          background: var(--card); color: var(--muted); border: 1px solid var(--border);
          border-radius: 10px; font: inherit; font-size: 14px; font-weight: 600;
          cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -373,6 +391,8 @@
       Check a Coin</button>
     <button class="tab" role="tab" id="tab-narratives" aria-controls="view-narratives" data-view="narratives">
       Narratives</button>
+    <button class="tab" role="tab" id="tab-unlocks" aria-controls="view-unlocks" data-view="unlocks">
+      Token Unlocks</button>
   </nav>
 
   <section class="view" id="view-active" role="tabpanel" aria-labelledby="tab-active">
@@ -480,6 +500,29 @@
     </table>
   </div>
   <div class="tip" id="narrtip"></div>
+  </section>
+
+  <section class="view" id="view-unlocks" role="tabpanel" aria-labelledby="tab-unlocks" hidden>
+  <h2>Token Unlocks</h2>
+  <div class="sub">Every coin DropsTab tracks (not just ours), refreshed by the daily run. Click a row for its DropsTab vesting page.</div>
+  <input id="unl-search" class="unlsearch" type="search" placeholder="Search by coin name or symbol..." autocomplete="off" aria-label="Search coins">
+  <div class="sub" id="unl-count"></div>
+  <div class="card">
+    <table id="unl-table">
+      <thead>
+        <tr>
+          <th data-usort="name" aria-sort="none"><button type="button" class="sorth">Coin<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-usort="price_usd" aria-sort="none"><button type="button" class="sorth">Price<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-usort="circulating" aria-sort="none"><button type="button" class="sorth">Circulating Supply<span class="arr" aria-hidden="true"></span></button></th>
+          <th data-usort="unlocked_pct" aria-sort="none"><button type="button" class="sorth">Unlock Progress<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-usort="usd" aria-sort="none"><button type="button" class="sorth">Next Unlock Amount<span class="arr" aria-hidden="true"></span></button></th>
+          <th data-usort="date" aria-sort="ascending"><button type="button" class="sorth">Next Unlock Date<span class="arr" aria-hidden="true"></span></button></th>
+          <th>Who Benefits</th>
+        </tr>
+      </thead>
+      <tbody id="unl-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+    </table>
+  </div>
   </section>
 
   <section class="view" id="view-coin" hidden>
@@ -659,7 +702,7 @@
   // URL (#dropped / #queue) so a reload or a shared link opens the same view.
   // The 30-second refresh keeps updating all three, so switching is instant
   // and always current.
-  const VIEWS = ["active", "dropped", "queue", "check", "narratives"];
+  const VIEWS = ["active", "dropped", "queue", "check", "narratives", "unlocks"];
   // A hand-edited / truncated link can hold a broken %-escape; decodeURIComponent
   // would throw and stop the whole page script (nothing would load), so fall
   // back to the raw text.
@@ -695,6 +738,7 @@
     const hash = name === "active" ? "" : "#" + name;
     if (location.hash !== hash) history.replaceState(null, "", location.pathname + location.search + hash);
     if (name === "narratives") loadNarratives();
+    if (name === "unlocks") loadUnlocks();
   }
 
   // ---- Narratives tab (CoinGecko categories, our own 7-day history) --------
@@ -1619,6 +1663,99 @@
         <tr><td class="rowlbl"><b>Total</b></td><td><b>${s.total}</b></td><td class="sdetail na">out of ${s.max_computable} computable</td></tr>
       </tbody></table></div></div>`;
   }
+  // ---------------------------------------------------------- Token Unlocks page
+  // Every coin in DropsTab's unlock overview (/api/unlocks), searchable and
+  // sortable; default = soonest next unlock first. A row opens DropsTab.
+  let unlRows = null, unlSort = {key: "date", dir: 1};
+  async function loadUnlocks() {
+    if (unlRows) return renderUnlocks();
+    try {
+      const res = await fetch("/api/unlocks");
+      unlRows = await res.json();
+    } catch (e) {
+      document.getElementById("unl-body").innerHTML = '<tr><td colspan="7" class="empty">Could not load unlock data.</td></tr>';
+      return;
+    }
+    renderUnlocks();
+  }
+  function pillClass(name) {
+    const n = (name || "").toLowerCase();
+    if (/team|advisor|founder|contributor|employee/.test(n)) return "team";
+    if (/investor|seed|private|strategic|series|backer|venture|kol/.test(n)) return "inv";
+    if (/treasury|foundation|reserve|dao|company/.test(n)) return "trs";
+    if (/public|ido|ico|ieo|sale|community|airdrop|ecosystem|reward|incentive|liquidity|staking/.test(n)) return "pub";
+    return "";
+  }
+  function unlSortValue(r, key) {
+    const n = r.next_unlock;
+    if (key === "date") return n ? Date.parse(n.date) : null;
+    if (key === "usd") return n ? n.usd : null;
+    if (key === "name") return (r.name || r.symbol || "").toLowerCase();
+    return r[key];
+  }
+  function renderUnlocks() {
+    const body = document.getElementById("unl-body"), count = document.getElementById("unl-count");
+    const all = unlRows || [];
+    if (!all.length) {
+      count.textContent = "";
+      body.innerHTML = '<tr><td colspan="7" class="empty">No unlock data yet — populates with the next daily run.</td></tr>';
+      return;
+    }
+    const q = document.getElementById("unl-search").value.trim().toLowerCase();
+    const rows = q ? all.filter(r => (r.name || "").toLowerCase().includes(q) || (r.symbol || "").toLowerCase().includes(q)) : all.slice();
+    const key = unlSort.key, dir = unlSort.dir;
+    rows.sort((a, b) => {
+      const x = unlSortValue(a, key), y = unlSortValue(b, key);
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;                       // no value: always last
+      if (y == null) return -1;
+      return (x < y ? -1 : x > y ? 1 : 0) * dir;
+    });
+    count.textContent = "Showing " + rows.length.toLocaleString() + " of " + all.length.toLocaleString() + " coins";
+    document.querySelectorAll("#unl-table th[data-usort]").forEach(th =>
+      th.setAttribute("aria-sort", th.dataset.usort === key ? (dir > 0 ? "ascending" : "descending") : "none"));
+    if (!rows.length) {
+      body.innerHTML = `<tr><td colspan="7" class="empty">No coins match '${esc(q)}'</td></tr>`;
+      return;
+    }
+    const now = Date.now();
+    body.innerHTML = rows.map(r => {
+      const n = r.next_unlock, sym = esc(r.symbol || ""), p = r.unlocked_pct;
+      const sat = p == null ? 0 : Math.round(65 * (1 - p / 100) + 5), lig = p == null ? 0 : Math.round(45 + 10 * p / 100);
+      const prog = p == null ? "—" : `<div class="uprog"><div class="bar"><span style="width:${Math.min(p, 100)}%;background:hsl(140, ${sat}%, ${lig}%)"></span></div><b>${p.toFixed(1)}%</b></div>`;
+      let amount = "—", date = "—", who = "—";
+      if (n) {
+        amount = `${fmtTok(n.amount)} ${sym}<span class="usub">${fmtMoney(n.usd)}${n.daily ? " · daily" : ""}</span>`;
+        const t = Date.parse(n.date), ms = Math.max(0, t - now), days = Math.floor(ms / 86400000);
+        const cls = days > 30 ? "far" : days >= 7 ? "mid" : "near";
+        const when = new Date(t).toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"});
+        const left = days >= 1 ? "in " + days + (days === 1 ? " day" : " days") : "in " + Math.max(1, Math.round(ms / 3600000)) + " h";
+        date = `<span class="udate ${cls}">${when}</span><span class="usub">${left}</span>`;
+        const b = n.beneficiaries || [];
+        who = b.slice(0, 3).map(x => `<span class="bpill ${pillClass(x)}">${esc(x)}</span>`).join("")
+          + (b.length > 3 ? `<span class="usub">+${b.length - 3} more</span>` : "");
+      }
+      return `<tr data-slug="${esc(r.slug || "")}" tabindex="0" title="Open ${esc(r.name || r.symbol || "")} on DropsTab">
+        <td><div class="name">${esc(r.name || r.symbol || "")} <span class="sym">${sym}</span></div>${r.platform ? `<span class="chain">${esc(r.platform)}</span>` : ""}</td>
+        <td class="num">${fmtPrice(r.price_usd)}</td>
+        <td class="num">${fmtTok(r.circulating)}${r.total ? `<span class="usub">of ${fmtTok(r.total)}</span>` : ""}</td>
+        <td>${prog}</td>
+        <td class="num">${amount}</td>
+        <td>${date}</td>
+        <td>${who}</td></tr>`;
+    }).join("");
+  }
+  (function wireUnlocks() {
+    document.getElementById("unl-search").addEventListener("input", () => { if (unlRows) renderUnlocks(); });
+    document.querySelectorAll("#unl-table th[data-usort] .sorth").forEach(btn => btn.addEventListener("click", () => {
+      const key = btn.closest("th").dataset.usort;
+      unlSort = unlSort.key === key ? {key: key, dir: -unlSort.dir} : {key: key, dir: key === "date" || key === "name" ? 1 : -1};
+      renderUnlocks();
+    }));
+    const open = tr => { if (tr && tr.dataset.slug) window.open("https://dropstab.com/coins/" + encodeURIComponent(tr.dataset.slug) + "/vesting", "_blank", "noopener"); };
+    document.getElementById("unl-body").addEventListener("click", e => open(e.target.closest("tr[data-slug]")));
+    document.getElementById("unl-body").addEventListener("keydown", e => { if (e.key === "Enter") open(e.target.closest("tr[data-slug]")); });
+  })();
   function smartMoneyCard() {
     return `<div class="ratiocard"><h3>Smart Money</h3>
       <div class="note">Coming soon - we haven't found a free data source yet.</div>

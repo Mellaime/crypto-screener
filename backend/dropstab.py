@@ -150,7 +150,8 @@ def run_unlock_update():
     """Daily job step: map new coins, refresh unlock_snapshots for our coins."""
     from database import SessionLocal, utcnow
     from models import Coin, DropstabCoin, UnlockSnapshot
-    stats = {"mapped_calls": 0, "overview_calls": 0, "matched": 0, "with_unlocks": 0, "stored": 0}
+    stats = {"mapped_calls": 0, "overview_calls": 0, "matched": 0, "with_unlocks": 0, "stored": 0,
+             "all_stored": 0, "all_removed": 0}
     if not _key():
         log.warning("DropsTab unlocks skipped - DROPSTAB_API_KEY not set")
         return stats
@@ -163,8 +164,6 @@ def run_unlock_update():
         ids = {r.dropstab_id for r in session.query(DropstabCoin)
                if (r.chain, r.contract) in keys and r.dropstab_id is not None}
         stats["matched"] = len(ids)
-        if not ids:
-            return stats
         entries, stats["overview_calls"] = fetch_overview()
         if entries is None:
             return stats
@@ -186,6 +185,8 @@ def run_unlock_update():
             row.data, row.day, row.updated_at = json.dumps(entry), today, now
             stats["stored"] += 1
         session.commit()
+        # The Token Unlocks page: EVERY overview entry (same request, no calls).
+        stats["all_stored"], stats["all_removed"] = _store_all(session, entries, now)
     except Exception:
         session.rollback()
         raise
@@ -196,10 +197,36 @@ def run_unlock_update():
     print("=" * 52)
     print(f"  coins matched to DropsTab ...... {stats['matched']:>5}   (new lookups: {stats['mapped_calls']})")
     print(f"  with unlock data (stored) ...... {stats['stored']:>5}   (overview pages: {stats['overview_calls']})")
+    print(f"  Token Unlocks page (all coins) . {stats['all_stored']:>5}   (removed, gone from DropsTab: {stats['all_removed']})")
     print(f"  DropsTab requests this run ..... {stats['mapped_calls'] + stats['overview_calls']:>5}"
           f"   (period remaining: {REMAINING})")
     print("=" * 52)
     return stats
+
+
+ALL_KEEP_DAYS = 2          # Token Unlocks page rows not refreshed for this long are removed
+
+
+def _store_all(session, entries, now):
+    """UPSERT every overview entry into dropstab_unlocks_all; delete rows not
+    refreshed for ALL_KEEP_DAYS. Returns (stored, removed)."""
+    from models import DropstabUnlockAll
+    rows = {r.dropstab_id: r for r in session.query(DropstabUnlockAll)}
+    for cid, e in entries.items():
+        row = rows.get(cid)
+        if row is None:
+            row = DropstabUnlockAll(dropstab_id=cid)
+            session.add(row)
+        slug = e.get("coinSlug") or ""
+        row.slug, row.symbol = slug, e.get("coinSymbol")
+        # The overview has no name: built from the slug ("the-graph" -> "The Graph").
+        row.name = " ".join(w[:1].upper() + w[1:] for w in slug.split("-") if w) or e.get("coinSymbol")
+        row.data, row.day, row.updated_at = json.dumps(e), now.date(), now
+    removed = (session.query(DropstabUnlockAll)
+               .filter(DropstabUnlockAll.updated_at < now - timedelta(days=ALL_KEEP_DAYS))
+               .delete(synchronize_session=False))
+    session.commit()
+    return len(entries), removed
 
 
 # ---------------------------------------------------------------- the numbers
@@ -320,6 +347,51 @@ def compute(entry, prev_next=None, now=None):
                             "usd": sum(r["amount"] for r in daily) * price} if daily else None)},
         "updated": entry.get("updatedAt"),
     }
+
+
+ALL_CACHE_S = 600          # the Token Unlocks list is cached in memory this long
+_all_cache = {"at": 0.0, "rows": None}
+
+
+def all_unlocks(session):
+    """Token Unlocks page: every stored DropsTab coin with its next unlock
+    (compute() - the same numbers as the detail page's card). Cached for
+    ALL_CACHE_S per running process. Never raises (no table -> [])."""
+    if _all_cache["rows"] is not None and time.time() - _all_cache["at"] < ALL_CACHE_S:
+        return _all_cache["rows"]
+    from models import DropstabUnlockAll
+    try:
+        stored = session.query(DropstabUnlockAll).all()
+    except Exception:
+        session.rollback()
+        return []
+    now = datetime.now(timezone.utc)
+    out = []
+    for r in stored:
+        try:
+            e = json.loads(r.data)
+            price, mcap = e.get("priceUsd"), e.get("marketCap")
+            total = sum(a.get("tokensAllocatedAmount") or 0 for a in e.get("allocations") or []) or None
+            unl = e.get("totalTokensUnlockedPercent")
+            circ = (mcap / price if mcap and price
+                    else total * unl / 100 if total and unl is not None else None)
+            pct = (circ / total * 100 if circ and total else e.get("circulationSupplyPercent"))
+            c = compute(e, None, now)
+            nxt = None
+            if c.get("status") == "ok":
+                n = c["next"]
+                nxt = {"date": n["at"], "amount": n["amount"], "usd": n["usd"], "supply_pct": n["supply_pct"],
+                       "beneficiaries": [x["name"] for x in n["rounds"] if x.get("name")],
+                       "daily": bool(n["daily"])}
+            out.append({"dropstab_id": r.dropstab_id, "slug": r.slug, "symbol": r.symbol, "name": r.name,
+                        "platform": (e.get("icoPlatforms") or [None])[0],
+                        "price_usd": price, "circulating": circ, "total": total,
+                        "unlocked_pct": None if pct is None else round(min(pct, 100.0), 2),
+                        "next_unlock": nxt})
+        except Exception as ex:
+            log.warning("Token Unlocks: skipped %s (%s)", r.slug, type(ex).__name__)
+    _all_cache["rows"], _all_cache["at"] = out, time.time()
+    return out
 
 
 def get_unlocks(session, coin):
