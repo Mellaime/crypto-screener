@@ -293,6 +293,7 @@ def get_coin(contract: str):
         from relative_strength import get_rel_strength
         from entry_zone import get_entry_zone
         from dropstab import get_unlocks
+        from coinalyze import futures_data
         from concurrent.futures import ThreadPoolExecutor
 
         def own_session(fn, *args):
@@ -414,6 +415,7 @@ def get_coin(contract: str):
             "rel_strength": rel_strength,
             "entry_zone": entry_zone,
             "unlocks": get_unlocks(session, coin),   # DropsTab, stored (no API call)
+            "futures": futures_data(session, coin.id),  # Coinalyze, stored (no API call)
             "supply": {
                 "total": coin.total_supply,
                 "circulating": coin.circulating_supply,

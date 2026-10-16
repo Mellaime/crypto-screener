@@ -59,6 +59,9 @@
   .scoretable td.pick:hover { background: rgba(88,166,255,0.08); }
   .scoretable td.pick.on { background: rgba(88,166,255,0.16); color: var(--accent); font-weight: 700; }
   .scorewhy { font-size: 13px; margin-top: 10px; line-height: 1.5; }
+  .scoretable th.rowlbl, .scoretable td.rowlbl { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; }
+  .scoretable .up { color: #3fb950; } .scoretable .down { color: #f85149; }
+  .scoretable small.arr { font-size: 11px; margin-left: 3px; }
   .scorewhy .up { color: #3fb950; } .scorewhy .down { color: #f85149; } .scorewhy .na { color: var(--muted); }
   .badge.low  { background: rgba(248,81,73,0.15);  color: var(--low); }
 
@@ -883,6 +886,7 @@
           <div class="v mono" data-addr="${esc(c.contract)}" title="Click to copy">${esc(c.contract)}</div></div>
       </div>
       ${allScoreCard(c.score_history)}
+      ${futuresCard(c.futures)}
       ${txChart(c)}
       ${ratioCard(c, "Volume / Market cap", "vol_mcap_pct", fmtPct,
           "Traded volume as a % of the coin's market cap (CoinGecko/CMC): " + fmtMoney(c.mcap) + ".")}
@@ -1556,6 +1560,29 @@
       box.innerHTML = scoreWhy(days[+td.dataset.i]);
       box.hidden = false;
     });
+  }
+  // Futures Data: Coinalyze open interest / funding / long-short for the
+  // coin's main perpetual market, one column per day (oldest left).
+  function futuresCard(f) {
+    const head = `<div class="ratiocard"><h3>Futures Data</h3>`;
+    if (!f || f.matched == null) return head + `<div class="note" style="margin:0">Futures data will appear after the next daily run.</div></div>`;
+    if (!f.matched) return head + `<div class="note" style="margin:0">No futures data — this coin has no perpetual contracts on major exchanges.</div></div>`;
+    const h = f.history || [];
+    if (!h.length) return head + `<div class="note" style="margin:0">Futures data will appear after the next daily run.</div></div>`;
+    const dates = h.map(x => `<th>${esc(shortDate(x.date))}</th>`).join("");
+    const oi = h.map((x, i) => {
+      const p = i ? h[i - 1].oi : null;
+      const arr = x.oi == null || p == null || x.oi === p ? "" : x.oi > p ? `<small class="arr up">↑</small>` : `<small class="arr down">↓</small>`;
+      return `<td>${fmtMoney(x.oi)}${arr}</td>`;
+    }).join("");
+    const fr = h.map(x => x.funding == null ? `<td>—</td>`
+      : `<td class="${x.funding > 0 ? "up" : x.funding < 0 ? "down" : ""}">${x.funding.toFixed(3)}%</td>`).join("");
+    const ls = h.map(x => x.long_pct == null ? `<td>—</td>`
+      : `<td>${Math.round(x.long_pct)}% L${x.long_pct > 65 || x.long_pct < 35 ? ` <span title="Crowded trade: ${x.long_pct > 65 ? "most traders are long" : "most traders are short"}">⚠️</span>` : ""}</td>`).join("");
+    return head + `<div class="note">Open interest, funding rate and long/short ratio (${esc(f.symbol || "")}, Coinalyze).</div>
+      <div class="scorewrap"><table class="scoretable"><thead><tr><th class="rowlbl"></th>${dates}</tr></thead><tbody>
+        <tr><td class="rowlbl">OI</td>${oi}</tr><tr><td class="rowlbl">Funding</td>${fr}</tr><tr><td class="rowlbl">L/S</td>${ls}</tr>
+      </tbody></table></div></div>`;
   }
   function smartMoneyCard() {
     return `<div class="ratiocard"><h3>Smart Money</h3>

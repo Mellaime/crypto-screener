@@ -151,6 +151,16 @@ def run_pipeline(raise_on_error=False):
             log.exception("Upcoming unlocks update failed - continuing.")
             report.step_errors.append("Unlocks")
 
+        # Futures Data (detail page): Coinalyze OI / funding / long-short for
+        # coins with a perpetual market (~3-4 min of paced requests). Display only.
+        log.info("Updating futures data (Coinalyze)...")
+        try:
+            from coinalyze import run_coinalyze_update
+            run_coinalyze_update()
+        except Exception:
+            log.exception("Coinalyze futures update failed - continuing.")
+            report.step_errors.append("Coinalyze")
+
         log.info("Scoring active coins...")
         results = score_all()
         report.scored = len(results)
