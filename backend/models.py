@@ -472,3 +472,21 @@ class UnlockSnapshot(Base):
     data = Column(Text, nullable=False)                       # JSON overview entry
     prev_next = Column(Text)                                  # JSON {allocation id: date}
     updated_at = Column(DateTime, nullable=False)
+
+
+class ScoreHistory(Base):
+    """
+    Each ACTIVE coin's score (0-100) per daily run - the Active table's
+    delta arrow (vs the previous recorded day) and the detail page's "All
+    Score" table. Written by scoring.record_scores() after score_all; one
+    row per coin per day (a re-run the same day updates it). Kept 90 days.
+    coin_id = coins.id (no foreign key: a deleted coin's rows simply age out).
+    """
+    __tablename__ = "score_history"
+    __table_args__ = (UniqueConstraint("coin_id", "recorded_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    coin_id = Column(Integer, nullable=False, index=True)
+    score = Column(Float, nullable=False)
+    recorded_at = Column(Date, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
