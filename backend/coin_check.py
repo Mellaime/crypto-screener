@@ -221,8 +221,11 @@ def run_check(contract):
     f_liq = pool.submit(check_liquidity_trend, contract, chain)
     f_tx = pool.submit(fetch_from_codex, contract, chain)
     from entry_zone import build as entry_zone_build
-    f_ez = pool.submit(entry_zone_build, contract, chain, None, dex_rec.get("liquidity_usd"),
-                       None, None, mcap)
+    # A coin we track: the detail page's own Entry Zone (stored history,
+    # re-evaluated every 3 days) - no live Codex fetch needed for it.
+    stored_ez = _stored_entry_zone(contract)
+    f_ez = None if stored_ez else pool.submit(entry_zone_build, contract, chain, None,
+                                               dex_rec.get("liquidity_usd"), None, None, mcap)
     f_rev = pool.submit(revenue_both)
     # Futures Data (Coinalyze, live): main perpetual by ticker, confirmed by price.
     from coinalyze import futures_data_live
@@ -333,7 +336,7 @@ def run_check(contract):
 
     # Minimum liquidity (part of step 7): under $5K on BOTH sources = too thin.
     thin, best_liq = too_thin(liq.get("today_liq"), dex_rec.get("liquidity_usd"))
-    ez = f_ez.result()            # Entry Zone (also the score's price position)
+    ez = stored_ez or f_ez.result()   # Entry Zone (also the score's price position)
     if thin:
         step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,}", "fail",
              f"${best_liq:,.0f} (Codex + DexScreener)",
@@ -532,6 +535,30 @@ def check_score(dex_rec, mcap, ez, contract, chain, liq, daily):
             "full_max": 100, "parts": parts}
 
 
+def _stored_entry_zone(contract):
+    """The detail page's Entry Zone (entry_zone.get_entry_zone - stored
+    history, 3-day cycle) when the contract is a coin we track (active /
+    dropped) and it has one; marked "tracked". None otherwise (-> live).
+    Never raises."""
+    from sqlalchemy import func
+    from database import SessionLocal
+    from models import Coin
+    from entry_zone import get_entry_zone
+    session = SessionLocal()
+    try:
+        coin = (session.query(Coin).filter(func.lower(Coin.contract) == (contract or "").lower(),
+                                           Coin.status.in_(["active", "dropped"])).first())
+        if coin is None:
+            return None
+        ez = get_entry_zone(session, coin)
+        return {**ez, "tracked": True} if ez.get("status") == "ok" else None
+    except Exception:
+        session.rollback()
+        return None
+    finally:
+        session.close()
+
+
 def _stored_price_pos(contract):
     """Price position (%) from our stored daily history when the contract is
     a coin we track (active / dropped) - exactly scoring.score_inputs()'s
@@ -574,7 +601,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply")   # result layout: has these display sections
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked")   # result layout: has these display sections
 
 
 def get_check(session, contract):

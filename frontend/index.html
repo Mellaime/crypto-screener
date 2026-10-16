@@ -1409,7 +1409,8 @@
     ez = ez || {status: "unknown", reason: "no data yet"};
     const head = (badge) => `<div class="ratiocard"><div class="ezhead"><h3>Entry Zone</h3>${badge}</div>`;
     if (ez.status !== "ok") return head("") + `<div class="empty" style="padding:8px 0">${esc(ez.reason || "No data")}</div></div>`;
-    const badge = `<span class="ezbadge ${esc(ez.zone)}">${esc(ez.zone_label)}</span>`;
+    const badge = `<span class="ezbadge ${esc(ez.zone)}">${esc(ez.zone_label)}</span>`
+      + (ez.tracked ? ` <small class="na" title="Tracked coin: the same stored data as its detail page">(tracked)</small>` : "");
     const usd = v => v == null ? "—" : fmtPrice(v);
     const sig = v => v == null ? `<span class="na">—</span>`
       : `<span class="${v === 0 ? "flat" : v > 0 ? "up" : "down"}" dir="ltr">${v > 0 ? "+" : ""}${v.toFixed(1)}%</span>`;
