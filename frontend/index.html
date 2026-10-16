@@ -55,6 +55,11 @@
                                    white-space: nowrap; font-variant-numeric: tabular-nums; }
   .scoretable th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: none; letter-spacing: 0; background: var(--bg); }
   .scoretable tr:last-child td { border-bottom: none; }
+  .scoretable td.pick { cursor: pointer; border-radius: 6px; }
+  .scoretable td.pick:hover { background: rgba(88,166,255,0.08); }
+  .scoretable td.pick.on { background: rgba(88,166,255,0.16); color: var(--accent); font-weight: 700; }
+  .scorewhy { font-size: 13px; margin-top: 10px; line-height: 1.5; }
+  .scorewhy .up { color: #3fb950; } .scorewhy .down { color: #f85149; } .scorewhy .na { color: var(--muted); }
   .badge.low  { background: rgba(248,81,73,0.15);  color: var(--low); }
 
   .sec { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
@@ -898,6 +903,7 @@
              b => `<b>${esc(longDate(b.date))}</b><br>Revenue ${fmtUsd(b.revenue)}`);
     wireChart(c.tx_bars || []);
     startUnlockCountdown();
+    wireScoreBreakdown(c.score_history || []);
   }
 
   // Transactions chart: one bar per COMPLETE day. Height = total
@@ -1515,11 +1521,41 @@
     hist = hist || [];
     const days = hist.slice().reverse();          // oldest on the left, newest on the right
     const head = days.map(h => `<th>${esc(shortDate(h.date))}</th>`).join("");
-    const cells = days.map(h => `<td>${Number(h.score).toFixed(1)}</td>`).join("");
+    const cells = days.map((h, i) => `<td class="pick" data-i="${i}" title="What changed this day">${Number(h.score).toFixed(1)}</td>`).join("");
     return `<div class="ratiocard"><h3>All Score</h3>
       <div class="note">The coin's score from each daily run (last 7 days).</div>
-      ${hist.length ? `<div class="scorewrap"><table class="scoretable"><thead><tr>${head}</tr></thead><tbody><tr>${cells}</tr></tbody></table></div>`
+      ${hist.length ? `<div class="scorewrap"><table class="scoretable" id="scoretable"><thead><tr>${head}</tr></thead><tbody><tr>${cells}</tr></tbody></table></div>
+        <div class="scorewhy" id="scorewhy" hidden></div>`
         : `<div class="note" style="margin:0">No score history yet - it starts with the next daily run.</div>`}</div>`;
+  }
+  // Click a day's score -> one line of what changed vs the previous day:
+  // "↑ Volume/Liquidity +10, Liq. Growth +6 · ↓ Buyers -3" (biggest first).
+  // Click the same score again to hide it.
+  function scoreWhy(h) {
+    if (h.first) return `<span class="na">First recorded score</span>`;
+    if (!h.changes) return `<span class="na">Breakdown not available</span>`;
+    if (!h.changes.length) return `<span class="na">No change vs the previous day</span>`;
+    const fmt = c => `${esc(c.label)} ${c.delta > 0 ? "+" : ""}${Math.abs(c.delta) % 1 ? c.delta.toFixed(1) : c.delta}`;
+    const ups = h.changes.filter(c => c.delta > 0).map(fmt), downs = h.changes.filter(c => c.delta < 0).map(fmt);
+    const parts = [];
+    if (ups.length) parts.push(`<span class="up">↑ ${ups.join(", ")}</span>`);
+    if (downs.length) parts.push(`<span class="down">↓ ${downs.join(", ")}</span>`);
+    return parts.join(" · ");
+  }
+  function wireScoreBreakdown(hist) {
+    const table = document.getElementById("scoretable"), box = document.getElementById("scorewhy");
+    if (!table || !box) return;
+    const days = hist.slice().reverse();          // same order as the columns
+    table.addEventListener("click", e => {
+      const td = e.target.closest("td.pick");
+      if (!td) return;
+      const wasOn = td.classList.contains("on");
+      table.querySelectorAll("td.pick.on").forEach(x => x.classList.remove("on"));
+      if (wasOn) { box.hidden = true; return; }
+      td.classList.add("on");
+      box.innerHTML = scoreWhy(days[+td.dataset.i]);
+      box.hidden = false;
+    });
   }
   function smartMoneyCard() {
     return `<div class="ratiocard"><h3>Smart Money</h3>

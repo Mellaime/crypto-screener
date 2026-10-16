@@ -147,6 +147,13 @@ _NEW_COLUMNS = [
     # Detail page / Check a Coin: X (Twitter) link from CoinGecko (socials.py).
     ("coins", "twitter_handle", "VARCHAR", None),
     ("coins", "twitter_checked_at", "TIMESTAMP", None),
+    # Score history: the score's 6 parts per day (detail page breakdown).
+    ("score_history", "vol_liq", "FLOAT", None),
+    ("score_history", "vol_mcap", "FLOAT", None),
+    ("score_history", "liq_growth", "FLOAT", None),
+    ("score_history", "cheapness", "FLOAT", None),
+    ("score_history", "buyers", "FLOAT", None),
+    ("score_history", "rank_change", "FLOAT", None),
 ]
 
 
