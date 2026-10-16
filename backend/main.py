@@ -469,6 +469,18 @@ def check_coin(contract: str = ""):
         session.close()
 
 
+@app.get("/api/unlocks")
+def get_all_unlocks():
+    """Token Unlocks page: every coin in DropsTab's unlock overview (stored by
+    the daily run) with its next unlock - no DropsTab call; cached 10 min."""
+    from dropstab import all_unlocks
+    session = SessionLocal()
+    try:
+        return all_unlocks(session)
+    finally:
+        session.close()
+
+
 @app.get("/api/narratives")
 def get_narratives_api():
     """Narratives tab: every CoinGecko category, hottest 24h first, with a

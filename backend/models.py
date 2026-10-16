@@ -533,3 +533,23 @@ class FuturesSnapshot(Base):
     long_pct = Column(Float)
     short_pct = Column(Float)
     created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class DropstabUnlockAll(Base):
+    """
+    EVERY coin in DropsTab's token-unlock overview (~1,000), not just ours -
+    the "Token Unlocks" page. data = the overview entry as returned (same
+    shape as UnlockSnapshot.data). Refreshed by the daily run from the same
+    overview request (no extra calls); rows not refreshed for 2 days are
+    removed (coins DropsTab dropped). Display only.
+    """
+    __tablename__ = "dropstab_unlocks_all"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dropstab_id = Column(Integer, nullable=False, unique=True, index=True)
+    slug = Column(String)
+    symbol = Column(String)
+    name = Column(String)
+    data = Column(Text, nullable=False)                        # JSON overview entry
+    day = Column(Date, nullable=False)                         # UTC day fetched
+    updated_at = Column(DateTime, nullable=False)
