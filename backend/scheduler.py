@@ -156,6 +156,15 @@ def run_pipeline(raise_on_error=False):
         report.scored = len(results)
         print_ranking(results)
 
+        # Score history (Active table's delta arrow, detail page's "All
+        # Score"): today's scores, no API calls. Its own try - display only.
+        try:
+            from scoring import record_scores
+            log.info("Score history: %d scores saved for today.", record_scores(results))
+        except Exception:
+            log.exception("Score history not saved - continuing.")
+            report.step_errors.append("Score history")
+
         # Consolidated pipeline summary.
         log.info("=" * 55)
         log.info("PIPELINE COMPLETE")

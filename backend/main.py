@@ -35,7 +35,7 @@ from sqlalchemy import func
 
 from database import SessionLocal
 from models import Coin, DailySnapshot, DroppedCoin
-from scoring import score_snapshot, score_inputs
+from scoring import score_snapshot, score_inputs, previous_scores, score_history
 from socials import x_url
 
 app = FastAPI(title="Crypto Screener API", version="0.1")
@@ -188,6 +188,8 @@ def get_coins():
             rank_display = round(sum(rank_vals) / len(rank_vals)) if rank_vals else None
 
             rows.append({
+                "id": coin.id,
+                "_snap_day": snap.date,
                 "name": coin.name,
                 "chain": coin.chain,
                 "contract": coin.contract,
@@ -214,6 +216,14 @@ def get_coins():
                 "renounced": coin.renounced,
                 "mint_disabled": coin.mint_disabled,
             })
+
+        # Score vs the previous daily run (score_history: the latest recorded
+        # day before this coin's snapshot day) -> the table's delta arrow.
+        prev = previous_scores(session, {r["id"]: r.pop("_snap_day") for r in rows})
+        for r in rows:
+            y = prev.get(r["id"])
+            r["score_yesterday"] = None if y is None else round(y, 1)
+            r["score_delta"] = None if y is None else round(r["score"] - y, 1)
 
         # Highest score first, then attach a rank number.
         rows.sort(key=lambda r: r["score"], reverse=True)
@@ -383,6 +393,7 @@ def get_coin(contract: str):
             "price_updated": _iso(coin.price_updated_at),
             "mcap": snap.mcap if snap else None,
             "score": b["total"] if b else None,
+            "score_history": score_history(session, coin.id),   # last 7 days, newest first
             "category": coin.category,
             "twitter": x_url(coin.twitter_handle),  # https://x.com/<handle>, or None
             "twitter_handle": coin.twitter_handle,
@@ -429,6 +440,16 @@ def get_coin(contract: str):
                                         if this_week is not None and last_week is not None else None),
                              "last_week_mcap_approx": snap_7d is None},
         }
+    finally:
+        session.close()
+
+
+@app.get("/api/coins/{coin_id}/score-history")
+def get_score_history(coin_id: int):
+    """A coin's last 7 recorded daily scores (score_history), oldest first."""
+    session = SessionLocal()
+    try:
+        return {"coin_id": coin_id, "history": list(reversed(score_history(session, coin_id)))}
     finally:
         session.close()
 

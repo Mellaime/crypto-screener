@@ -356,8 +356,8 @@ def score_all():
 
             # Capture plain values NOW, while the session is still open, so the
             # printing step later doesn't touch detached ORM objects.
-            results.append({"name": coin.name, "chain": coin.chain, "mcap": snap.mcap,
-                            "score": snap.score, **breakdown})
+            results.append({"coin_id": coin.id, "name": coin.name, "chain": coin.chain,
+                            "mcap": snap.mcap, "score": snap.score, **breakdown})
 
         session.commit()  # persist all the scores at once
     except Exception:
@@ -369,6 +369,84 @@ def score_all():
     # Highest score first.
     results.sort(key=lambda r: r["score"], reverse=True)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Score history: one score per active coin per day (score_history), for the
+# Active table's delta arrow and the detail page's "All Score" table.
+# ---------------------------------------------------------------------------
+SCORE_HISTORY_KEEP_DAYS = 90      # rows older than this are deleted
+SCORE_HISTORY_SHOW_DAYS = 7       # the detail page's table
+
+
+def record_scores(results, day=None):
+    """Save today's score for every scored coin (results of score_all):
+    insert, or update a row already written today (re-run). Then delete rows
+    older than SCORE_HISTORY_KEEP_DAYS. Returns rows written. No API calls."""
+    from datetime import date as _date, timedelta
+    from models import ScoreHistory
+    day = day or _date.today()           # the same day the snapshots use
+    rows = [(r["coin_id"], r["score"]) for r in results if r.get("score") is not None]
+    session = SessionLocal()
+    try:
+        have = {h.coin_id: h for h in session.query(ScoreHistory).filter(ScoreHistory.recorded_at == day)}
+        for cid, score in rows:
+            h = have.get(cid)
+            if h is None:
+                session.add(ScoreHistory(coin_id=cid, score=float(score), recorded_at=day))
+            else:
+                h.score = float(score)
+        session.query(ScoreHistory).filter(
+            ScoreHistory.recorded_at < day - timedelta(days=SCORE_HISTORY_KEEP_DAYS)
+        ).delete(synchronize_session=False)
+        session.commit()
+        return len(rows)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def previous_scores(session, coins_days):
+    """{coin_id: score} - each coin's most recent recorded score from BEFORE
+    the given day (normally the day of its latest snapshot, so "yesterday's"
+    run, also when a run was missed). coins_days = {coin_id: date}. Never
+    raises: no table / no history -> {}."""
+    from sqlalchemy import func
+    from models import ScoreHistory
+    if not coins_days:
+        return {}
+    try:
+        days = set(coins_days.values())
+        out = {}
+        for day in days:                  # normally one day for every coin
+            ids = [cid for cid, d in coins_days.items() if d == day]
+            latest = (session.query(ScoreHistory.coin_id, func.max(ScoreHistory.recorded_at).label("d"))
+                      .filter(ScoreHistory.coin_id.in_(ids), ScoreHistory.recorded_at < day)
+                      .group_by(ScoreHistory.coin_id).subquery())
+            for cid, score in (session.query(ScoreHistory.coin_id, ScoreHistory.score)
+                               .join(latest, (ScoreHistory.coin_id == latest.c.coin_id)
+                                     & (ScoreHistory.recorded_at == latest.c.d))):
+                out[cid] = score
+        return out
+    except Exception:
+        session.rollback()
+        return {}
+
+
+def score_history(session, coin_id, days=SCORE_HISTORY_SHOW_DAYS):
+    """The coin's last `days` recorded scores, newest first:
+    [{"date": "YYYY-MM-DD", "score": float}]. Never raises (-> [])."""
+    from models import ScoreHistory
+    try:
+        rows = (session.query(ScoreHistory.recorded_at, ScoreHistory.score)
+                .filter(ScoreHistory.coin_id == coin_id)
+                .order_by(ScoreHistory.recorded_at.desc()).limit(days).all())
+        return [{"date": d.isoformat(), "score": round(sc, 1)} for d, sc in rows]
+    except Exception:
+        session.rollback()
+        return []
 
 
 def print_ranking(results):
