@@ -68,11 +68,6 @@
          background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.35);
          border-radius: 20px; padding: 2px 10px; }
 
-  .rankwrap { white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .rankwrap .up   { color: var(--good); font-weight: 700; }
-  .rankwrap .down { color: var(--low); font-weight: 700; }
-  .rankwrap .flat { color: var(--muted); }
-
   .reason { color: #ffb4ac; font-size: 13px; }
   .contract { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--muted); cursor: copy; }
   .tag.unknown { color: var(--muted); background: #21262d; border-color: var(--border); }
@@ -376,7 +371,6 @@
           <th>Name</th>
           <th class="num">Price</th>
           <th class="num">Score</th>
-          <th class="num">Rank</th>
           <th class="num">Market Cap</th>
           <th class="num">Revenue/day</th>
           <th class="num">Vol / Liq</th>
@@ -506,20 +500,6 @@
   function scoreClass(s) { return s >= 30 ? "good" : (s >= 15 ? "mid" : "low"); }
   function yn(b) { return b === true ? "yes" : (b === false ? "no" : "?"); }
 
-  // Rank indicator: "#150 ↑130" (green up / red down), or "—" if unknown.
-  function rankCell(c) {
-    if (c.market_rank == null) return "—";
-    let move = "";
-    if (c.rank_change != null && c.rank_change > 0) {
-      move = ` <span class="up">↑${c.rank_change}</span>`;
-    } else if (c.rank_change != null && c.rank_change < 0) {
-      move = ` <span class="down">↓${Math.abs(c.rank_change)}</span>`;
-    } else if (c.rank_change === 0) {
-      move = ` <span class="flat">→0</span>`;
-    }
-    return `<span class="rankwrap">#${c.market_rank}${move}</span>`;
-  }
-
   // The green SAFE / grey ? security badge, with full details on hover.
   function secBadge(c) {
     let cls = "unknown", label = "?";
@@ -553,7 +533,7 @@
       "Active coins (" + data.count + ")";
     document.getElementById("count-active").textContent = "(" + data.count + ")";
     if (!data.coins.length) {
-      body.innerHTML = '<tr><td colspan="10" class="empty">No active coins right now.</td></tr>';
+      body.innerHTML = '<tr><td colspan="9" class="empty">No active coins right now.</td></tr>';
       return;
     }
     body.innerHTML = data.coins.map(c => `
@@ -566,7 +546,6 @@
         </td>
         ${priceCell(c)}
         <td class="num"><span class="badge ${scoreClass(c.score)}">${c.score}</span>${scoreDelta(c)}</td>
-        <td class="num">${rankCell(c)}</td>
         <td class="num">${fmtMoney(c.mcap)}</td>
         <td class="num">${c.revenue == null ? "—" : fmtMoney(c.revenue)}</td>
         <td class="num">${fmtX(c.vol_liq)}</td>
