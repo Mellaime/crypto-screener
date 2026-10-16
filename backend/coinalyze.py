@@ -71,17 +71,19 @@ def _pace(coins):
         time.sleep(max(1.0, 60 - (now - _sent[0][0]) + 0.5))
 
 
-def _get(path, coins=1, **params):
+def _get(path, coins=1, wait=True, **params):
     """(status, json or None). Paced; on 429 waits Retry-After (or 60s) and
-    retries ONCE. Never raises; the key is never logged."""
+    retries ONCE. wait=False (live web requests): no pacing and no waiting -
+    a 429 is returned at once. Never raises; the key is never logged."""
     for attempt in (1, 2):
-        _pace(coins)
+        if wait:
+            _pace(coins)
         try:
             r = requests.get(BASE_URL + path, params=params, headers={"api_key": _key()}, timeout=40)
         except requests.exceptions.RequestException as e:
             log.warning("Coinalyze %s failed (%s)", path, type(e).__name__)
             return None, None
-        if r.status_code == 429 and attempt == 1:
+        if r.status_code == 429 and attempt == 1 and wait:
             wait = float(r.headers.get("Retry-After") or 60)
             log.warning("Coinalyze rate limit on %s - waiting %.0fs", path, wait)
             time.sleep(wait + 1)
@@ -101,16 +103,19 @@ def _window(days=2):
     return {"from": int((now - timedelta(days=days)).timestamp()), "to": int(now.timestamp())}
 
 
-def _history(path, symbols, days=2, **extra):
+def _history(path, symbols, days=2, wait=True, failed=None, **extra):
     """{symbol: {date: daily candle}} for the symbols over the last `days`
-    days (batched; today = the day so far)."""
+    days (batched; today = the day so far). `failed` (a list) collects the
+    paths of batches that failed."""
     out = {}
     for i in range(0, len(symbols), BATCH):
         part = symbols[i:i + BATCH]
-        st, body = _get(path, coins=len(part), symbols=",".join(part), interval="daily",
+        st, body = _get(path, coins=len(part), wait=wait, symbols=",".join(part), interval="daily",
                         **_window(days), **extra)
         if st != 200 or not isinstance(body, list):
             log.warning("Coinalyze %s batch failed (HTTP %s)", path, st)
+            if failed is not None:
+                failed.append(path)
             continue
         for row in body:
             out[row["symbol"]] = {datetime.fromtimestamp(h["t"], timezone.utc).date(): h
@@ -220,6 +225,60 @@ def run_coinalyze_update():
     log.info("Coinalyze: fetched OI/funding/L-S for %d coins (%d new matches this run, %d coins checked).",
              stats["stored"], stats["new_matches"], stats["checked"])
     return stats
+
+
+# ---------------------------------------------------------------- live (Check a Coin)
+MARKETS_TTL_S = 3600       # the futures market list is cached in memory this long
+_markets = {"at": 0.0, "main": None}
+
+
+def _main_markets_cached():
+    """{TICKER: main perpetual symbol}, fetched at most once per MARKETS_TTL_S
+    (per running process). None if Coinalyze couldn't be asked."""
+    if _markets["main"] is None or time.time() - _markets["at"] > MARKETS_TTL_S:
+        st, markets = _get("/future-markets", wait=False)
+        if st != 200 or not isinstance(markets, list):
+            return _markets["main"]                   # last good list, or None
+        _markets["main"], _markets["at"] = _main_markets(markets), time.time()
+    return _markets["main"]
+
+
+def futures_data_live(ticker, price, days=SHOW_DAYS):
+    """Check a Coin: the same Futures Data for ANY coin, looked up live
+    (ticker -> main perpetual market, confirmed by price within 30%, then the
+    last HISTORY_DAYS of OI / funding / long-short). Nothing is stored.
+    Returns {"matched", "symbol", "history"} like futures_data(); "error":
+    True when Coinalyze couldn't be asked (the caller then doesn't cache the
+    result). No key, no ticker / price -> not matched. Never raises."""
+    none = {"matched": False, "history": []}
+    if not _key() or not ticker or not price:
+        return none
+    try:
+        main = _main_markets_cached()
+        if main is None:
+            return {**none, "error": True}
+        sym = main.get(ticker.upper())
+        if not sym:
+            return none
+        failed = []
+        close = (_latest("/ohlcv-history", [sym], wait=False, failed=failed).get(sym) or {}).get("c")
+        if failed:
+            return {**none, "error": True}
+        if not close or abs(close / price - 1) > PRICE_TOLERANCE:
+            return none                                 # ticker clash: another coin
+        oi = _history("/open-interest-history", [sym], HISTORY_DAYS, wait=False, failed=failed,
+                      convert_to_usd="true").get(sym, {})
+        fr = _history("/funding-rate-history", [sym], HISTORY_DAYS, wait=False, failed=failed).get(sym, {})
+        ls = _history("/long-short-ratio-history", [sym], HISTORY_DAYS, wait=False, failed=failed).get(sym, {})
+        if failed:
+            return {**none, "error": True}
+        hist = [{"date": d.isoformat(), "oi": (oi.get(d) or {}).get("c"), "funding": (fr.get(d) or {}).get("c"),
+                 "long_pct": (ls.get(d) or {}).get("l"), "short_pct": (ls.get(d) or {}).get("s")}
+                for d in sorted(set(oi) | set(fr) | set(ls))]
+        return {"matched": True, "symbol": sym, "history": hist[-days:]}
+    except Exception as e:
+        log.warning("Coinalyze live lookup failed (%s)", type(e).__name__)
+        return {**none, "error": True}
 
 
 def futures_data(session, coin_id, days=SHOW_DAYS):
