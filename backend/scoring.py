@@ -377,6 +377,13 @@ def score_all():
 # ---------------------------------------------------------------------------
 SCORE_HISTORY_KEEP_DAYS = 90      # rows older than this are deleted
 SCORE_HISTORY_SHOW_DAYS = 7       # the detail page's table
+# The score's parts as stored in score_history: (column, score_snapshot key, label).
+SCORE_PARTS = [("vol_liq", "vol_liq_pts", "Volume/Liquidity"),
+               ("vol_mcap", "vol_mcap_pts", "Volume/MCap"),
+               ("liq_growth", "liq_growth_pts", "Liq. Growth"),
+               ("cheapness", "cheap_pts", "Price Cheapness"),
+               ("buyers", "buyers_pts", "Buyers"),
+               ("rank_change", "rank_pts", "Rank Change")]
 
 
 def record_scores(results, day=None):
@@ -386,16 +393,19 @@ def record_scores(results, day=None):
     from datetime import date as _date, timedelta
     from models import ScoreHistory
     day = day or _date.today()           # the same day the snapshots use
-    rows = [(r["coin_id"], r["score"]) for r in results if r.get("score") is not None]
+    rows = [r for r in results if r.get("score") is not None]
     session = SessionLocal()
     try:
         have = {h.coin_id: h for h in session.query(ScoreHistory).filter(ScoreHistory.recorded_at == day)}
-        for cid, score in rows:
-            h = have.get(cid)
+        for r in rows:
+            h = have.get(r["coin_id"])
             if h is None:
-                session.add(ScoreHistory(coin_id=cid, score=float(score), recorded_at=day))
-            else:
-                h.score = float(score)
+                h = ScoreHistory(coin_id=r["coin_id"], recorded_at=day)
+                session.add(h)
+            h.score = float(r["score"])
+            for col, key, _ in SCORE_PARTS:          # the 6 parts, for the breakdown
+                v = r.get(key)
+                setattr(h, col, None if v is None else float(v))
         session.query(ScoreHistory).filter(
             ScoreHistory.recorded_at < day - timedelta(days=SCORE_HISTORY_KEEP_DAYS)
         ).delete(synchronize_session=False)
@@ -437,16 +447,40 @@ def previous_scores(session, coins_days):
 
 def score_history(session, coin_id, days=SCORE_HISTORY_SHOW_DAYS):
     """The coin's last `days` recorded scores, newest first:
-    [{"date": "YYYY-MM-DD", "score": float}]. Never raises (-> [])."""
+    [{"date", "score", "parts": {label: points} or None,
+      "first": True when there is no earlier recorded day,
+      "changes": [{"label", "delta"}] vs the previous recorded day - only the
+                 parts that changed, biggest change first; None when either
+                 day has no breakdown (rows saved before the parts existed)}].
+    Reads one extra (older) day so the oldest shown day has its comparison.
+    Never raises (-> [])."""
     from models import ScoreHistory
+    cols = [getattr(ScoreHistory, c) for c, _, _ in SCORE_PARTS]
     try:
-        rows = (session.query(ScoreHistory.recorded_at, ScoreHistory.score)
+        rows = (session.query(ScoreHistory.recorded_at, ScoreHistory.score, *cols)
                 .filter(ScoreHistory.coin_id == coin_id)
-                .order_by(ScoreHistory.recorded_at.desc()).limit(days).all())
-        return [{"date": d.isoformat(), "score": round(sc, 1)} for d, sc in rows]
+                .order_by(ScoreHistory.recorded_at.desc()).limit(days + 1).all())
     except Exception:
         session.rollback()
         return []
+
+    def parts(row):
+        vals = row[2:]
+        if any(v is None for v in vals):
+            return None
+        return {label: round(v, 1) for (_, _, label), v in zip(SCORE_PARTS, vals)}
+
+    out = []
+    for i, row in enumerate(rows[:days]):
+        prev = rows[i + 1] if i + 1 < len(rows) else None
+        now_p, prev_p = parts(row), parts(prev) if prev is not None else None
+        changes = None
+        if now_p is not None and prev_p is not None:
+            changes = sorted(({"label": k, "delta": round(now_p[k] - prev_p[k], 1)} for k in now_p
+                              if abs(now_p[k] - prev_p[k]) >= 0.05), key=lambda c: -abs(c["delta"]))
+        out.append({"date": row[0].isoformat(), "score": round(row[1], 1), "parts": now_p,
+                    "first": prev is None, "changes": changes})
+    return out
 
 
 def print_ranking(results):

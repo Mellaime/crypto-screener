@@ -488,5 +488,12 @@ class ScoreHistory(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     coin_id = Column(Integer, nullable=False, index=True)
     score = Column(Float, nullable=False)
+    # The score's 6 parts that day (NULL on rows saved before they existed).
+    vol_liq = Column(Float)        # Volume / Liquidity (max 25)
+    vol_mcap = Column(Float)       # Volume / Market cap (max 15)
+    liq_growth = Column(Float)     # Liquidity growth 7d (max 15)
+    cheapness = Column(Float)      # Price cheapness (max 20)
+    buyers = Column(Float)         # Buyers volume (max 20)
+    rank_change = Column(Float)    # Rank change (max 5)
     recorded_at = Column(Date, nullable=False, index=True)
     created_at = Column(DateTime, nullable=False, default=utcnow)
