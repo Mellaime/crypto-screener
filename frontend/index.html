@@ -49,10 +49,11 @@
   .badge.mid  { background: rgba(210,153,34,0.15); color: var(--mid); }
   .sdelta { font-size: 13px; font-weight: 600; margin-left: 5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .sdelta.up { color: #3fb950; } .sdelta.down { color: #f85149; }
+  .scorewrap { overflow-x: auto; }
   .scoretable { width: 100%; border-collapse: collapse; font-size: 14px; }
-  .scoretable th, .scoretable td { padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: left; }
+  .scoretable th, .scoretable td { padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: center;
+                                   white-space: nowrap; font-variant-numeric: tabular-nums; }
   .scoretable th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: none; letter-spacing: 0; background: var(--bg); }
-  .scoretable td.num, .scoretable th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .scoretable tr:last-child td { border-bottom: none; }
   .badge.low  { background: rgba(248,81,73,0.15);  color: var(--low); }
 
@@ -1529,13 +1530,16 @@
     const up = d > 0;
     return `<span class="sdelta ${up ? "up" : "down"}" title="${up ? "Up" : "Down"} ${v} vs the previous day (${c.score_yesterday})">${up ? "↑" : "↓"}${v}</span>`;
   }
-  // "All Score": the coin's last 7 recorded daily scores, newest first.
+  // "All Score": the coin's last 7 recorded daily scores, one column per day
+  // (dates across the top, oldest left; scrolls sideways on narrow screens).
   function allScoreCard(hist) {
     hist = hist || [];
-    const rows = hist.map(h => `<tr><td>${esc(shortDate(h.date))}</td><td class="num">${Number(h.score).toFixed(1)}</td></tr>`).join("");
+    const days = hist.slice().reverse();          // oldest on the left, newest on the right
+    const head = days.map(h => `<th>${esc(shortDate(h.date))}</th>`).join("");
+    const cells = days.map(h => `<td>${Number(h.score).toFixed(1)}</td>`).join("");
     return `<div class="ratiocard"><h3>All Score</h3>
       <div class="note">The coin's score from each daily run (last 7 days).</div>
-      ${hist.length ? `<table class="scoretable"><thead><tr><th>Date</th><th class="num">Score</th></tr></thead><tbody>${rows}</tbody></table>`
+      ${hist.length ? `<div class="scorewrap"><table class="scoretable"><thead><tr>${head}</tr></thead><tbody><tr>${cells}</tr></tbody></table></div>`
         : `<div class="note" style="margin:0">No score history yet - it starts with the next daily run.</div>`}</div>`;
   }
   function smartMoneyCard() {
