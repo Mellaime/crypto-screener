@@ -497,3 +497,39 @@ class ScoreHistory(Base):
     rank_change = Column(Float)    # Rank change (max 5)
     recorded_at = Column(Date, nullable=False, index=True)
     created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class CoinalyzeCoin(Base):
+    """
+    Our coin (coins.id) -> its main Coinalyze perpetual market (e.g.
+    LDOUSDT_PERP.A = Binance), found by ticker and confirmed by price
+    (within 30%, so a ticker clash like META isn't matched). Coins without a
+    match (coinalyze_symbol NULL) are checked again after 30 days.
+    """
+    __tablename__ = "coinalyze_coins"
+    __table_args__ = (UniqueConstraint("coin_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    coin_id = Column(Integer, nullable=False, index=True)
+    ticker = Column(String)
+    coinalyze_symbol = Column(String, index=True)            # NULL = no futures match
+    checked_at = Column(DateTime, nullable=False)
+
+
+class FuturesSnapshot(Base):
+    """
+    One row per matched coin per day: Coinalyze open interest (USD), funding
+    rate (%), and long / short %. Written by the daily job; the detail page's
+    "Futures Data" table reads these. Kept 90 days. Display only.
+    """
+    __tablename__ = "futures_snapshots"
+    __table_args__ = (UniqueConstraint("coin_id", "day"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    coin_id = Column(Integer, nullable=False, index=True)
+    day = Column(Date, nullable=False, index=True)
+    open_interest_usd = Column(Float)
+    funding_rate = Column(Float)        # in % (0.01 = 0.01%)
+    long_pct = Column(Float)
+    short_pct = Column(Float)
+    created_at = Column(DateTime, nullable=False, default=utcnow)

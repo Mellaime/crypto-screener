@@ -40,7 +40,7 @@ MAX_NAMES = 15              # names listed per section, then "+N"
 # Monthly free-tier limits (CMC's comes from its own counter).
 LIMITS = {"Codex": 10_000, "CoinGecko": 10_000, "CoinMarketCap": 15_000, "DropsTab": 500_000}
 NEAR_LIMIT_SHARE = 0.8      # warn when the month is projected past 80% of a limit
-HOSTS = {"graph.codex.io": "Codex", "api.coingecko.com": "CoinGecko", "public-api.dropstab.com": "DropsTab",
+HOSTS = {"graph.codex.io": "Codex", "api.coingecko.com": "CoinGecko", "public-api.dropstab.com": "DropsTab", "api.coinalyze.net": "Coinalyze",
          "pro-api.coinmarketcap.com": "CoinMarketCap", "api.dexscreener.com": "DexScreener",
          "api.llama.fi": "DefiLlama", "api.gopluslabs.io": "GoPlus"}
 MASS_DROP_SHARE = 0.5       # more than half of the checked coins dropped -> flag
