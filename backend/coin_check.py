@@ -511,9 +511,15 @@ def check_score(dex_rec, mcap, ez, contract, chain, liq, daily):
     part("Liq. Growth", 15, score_liquidity_growth(growth) if growth is not None else None,
          f"{growth:+.1f}% over 7 days" if growth is not None else None,
          "Codex unreliable for this coin" if unreliable else "not enough liquidity history")
-    pos = ez.get("position_pct") if isinstance(ez, dict) and ez.get("status") == "ok" else None
+    # A coin we already track: the SAME stored 60-day closes and function as
+    # its detail page score (the run's daily price), so both pages agree.
+    # Otherwise the live Entry Zone (Codex's price right now).
+    stored = _stored_price_pos(contract)
+    pos = stored if stored is not None else (
+        ez.get("position_pct") if isinstance(ez, dict) and ez.get("status") == "ok" else None)
     part("Price Cheapness", 20, score_cheapness(pos) if pos is not None else None,
-         f"{pos:.0f}% of the 60-day range" if pos is not None else None, "not enough price history")
+         (f"{pos:.0f}% of the 60-day range" + (" (tracked)" if stored is not None else ""))
+         if pos is not None else None, "not enough price history")
     bars = [b for b in ((daily or {}).get("bars") or []) if b.get("buy_volume") is not None][-BUYERS_DAYS:]
     buy, sell = sum(b["buy_volume"] for b in bars), sum(b["sell_volume"] for b in bars)
     ratio = buy / sell if sell and len(bars) >= BUYERS_MIN_DAYS and not unreliable else None
@@ -524,6 +530,27 @@ def check_score(dex_rec, mcap, ez, contract, chain, liq, daily):
     avail = [p for p in parts if p["available"]]
     return {"total": sum(p["pts"] for p in avail), "max_computable": sum(p["max"] for p in avail),
             "full_max": 100, "parts": parts}
+
+
+def _stored_price_pos(contract):
+    """Price position (%) from our stored daily history when the contract is
+    a coin we track (active / dropped) - exactly scoring.score_inputs()'s
+    price_pos, i.e. what its detail page scores. None if untracked or no
+    stored history. Never raises."""
+    from sqlalchemy import func
+    from database import SessionLocal
+    from models import Coin
+    from scoring import score_inputs
+    session = SessionLocal()
+    try:
+        coin = (session.query(Coin).filter(func.lower(Coin.contract) == (contract or "").lower(),
+                                           Coin.status.in_(["active", "dropped"])).first())
+        return score_inputs(session, [coin])[coin.id]["price_pos"] if coin else None
+    except Exception:
+        session.rollback()
+        return None
+    finally:
+        session.close()
 
 
 def check_supply(md):
@@ -547,7 +574,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score2|supply")   # result layout: has these display sections
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply")   # result layout: has these display sections
 
 
 def get_check(session, contract):
