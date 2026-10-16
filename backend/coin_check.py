@@ -388,7 +388,7 @@ def run_check(contract):
                         {"status": "unknown", "reason": "CoinGecko doesn't list this contract"},
         # Entry Zone (Codex daily bars; no holders history for an unlisted coin).
         "entry_zone": ez,
-        "score": check_score(dex_rec, mcap, ez),
+        "score": check_score(dex_rec, mcap, ez, contract, chain, liq, daily),
         "supply": check_supply(md),
         # Futures Data (Coinalyze OI / funding / long-short; nothing stored).
         "futures": f_fut.result(),
@@ -447,6 +447,13 @@ def summarize(r):
         parts.append(f"يتتبّعه {llama} لكنه لا يُظهر إيرادات خلال آخر 30 يوماً."); minus += 1
     else:
         parts.append(f"لا توجد بيانات إيرادات (لا يتتبّعه {llama}).")
+    sc = r.get("score") or {}
+    if sc.get("max_computable"):
+        tot, mx = sc["total"], sc["max_computable"]
+        if tot >= 60:
+            parts.append(f"تقدير النقاط مرتفع ({_ltr(f'{tot}/{mx}')})."); plus += 1
+        elif tot < 30:
+            parts.append(f"تقدير النقاط منخفض ({_ltr(f'{tot}/{mx}')}) — إشارات الشراء ضعيفة حالياً."); minus += 1
     vd = r["verdict"]
     parts.append("يجتاز خطوات الفلتر السبع كلها." if vd["passes"] else
                  f"لا يجتاز الفلتر: {vd['reason']}." if vd["passes"] is False else vd["reason"])
@@ -464,37 +471,59 @@ def summarize(r):
     return " ".join(parts), opinion + " هذا وصف للبيانات على السلسلة فقط — وليس نصيحة مالية."
 
 
-def check_score(dex_rec, mcap, ez):
-    """Score estimate for an untracked coin: the 3 of the 6 score parts that
-    need no history, computed EXACTLY like the Active list (scoring.py):
+def check_score(dex_rec, mcap, ez, contract, chain, liq, daily):
+    """Score for an untracked coin, from the SAME data sources as the detail
+    page's score (scoring.py) - 5 of the 6 parts, all from data the check
+    already fetched (no extra API calls):
       Volume/Liquidity = DexScreener 24h volume / DexScreener liquidity
       Volume/MCap      = DexScreener 24h volume / global market cap
+      Liq. Growth      = Codex daily liquidity, today vs 7 days ago (the
+                         filter step's own series; scoring._change_over).
+                         NOT the filter's own % - that is over 30 days.
       Price Cheapness  = position in the 60-day price range (Entry Zone)
-    (CoinGecko's daily volume would also count centralised exchanges and
-    inflate both ratios - ZK: 0.49x vs 317x.) Liquidity growth, buyers and
-    rank change need daily tracking -> not available. No API calls."""
-    from scoring import score_vol_liq, score_vol_mcap, score_cheapness
+      Buyers           = Codex daily buy / sell volume, last 15 complete
+                         days (the Transactions chart's bars)
+      Rank Change      = needs weekly tracking -> not available.
+    Fix 4 as on the detail page: Codex unreliable for the coin (> 10x
+    DexScreener) -> no Liq. Growth / Buyers from Codex. A part without data
+    is unavailable and leaves max_computable."""
+    from scoring import (score_vol_liq, score_vol_mcap, score_cheapness, score_liquidity_growth,
+                         score_buyers, _change_over, BUYERS_DAYS, BUYERS_MIN_DAYS)
+    from liquidity_check import get_liquidity_series, codex_unreliable
     volume, liquidity = _num(dex_rec.get("volume_24h")), _num(dex_rec.get("liquidity_usd"))
-    pos = ez.get("position_pct") if isinstance(ez, dict) and ez.get("status") == "ok" else None
+    unreliable = codex_unreliable(liq.get("today_liq"), liquidity)
+    parts = []
+
+    def part(label, mx, pts=None, detail=None, reason=None):
+        ok = pts is not None
+        parts.append({"label": label, "pts": pts if ok else None, "max": mx, "available": ok,
+                      "detail": detail if ok else reason})
+
     vl_pts, vl_ratio = score_vol_liq(volume, liquidity)
+    part("Volume/Liquidity", 25, vl_pts if vl_ratio is not None else None,
+         f"{vl_ratio:.2f}x" if vl_ratio is not None else None, "no DexScreener volume / liquidity")
     vm_pts, vm_pct = score_vol_mcap(volume, mcap)
-    cheap_pts = score_cheapness(pos)
-    return {
-        "total": vl_pts + vm_pts + cheap_pts,
-        "max_computable": 25 + 15 + 20,
-        "full_max": 100,
-        "parts": [
-            {"label": "Volume/Liquidity", "pts": vl_pts, "max": 25, "available": True,
-             "detail": f"{vl_ratio:.2f}x" if vl_ratio is not None else "no DexScreener data"},
-            {"label": "Volume/MCap", "pts": vm_pts, "max": 15, "available": True,
-             "detail": f"{vm_pct:.1f}%" if vm_pct is not None else "no volume / market cap"},
-            {"label": "Liq. Growth", "pts": None, "max": 15, "available": False},
-            {"label": "Price Cheapness", "pts": cheap_pts, "max": 20, "available": True,
-             "detail": f"{pos:.0f}% of the 60-day range" if pos is not None else "not enough price history"},
-            {"label": "Buyers", "pts": None, "max": 20, "available": False},
-            {"label": "Rank Change", "pts": None, "max": 5, "available": False},
-        ],
-    }
+    part("Volume/MCap", 15, vm_pts if vm_pct is not None else None,
+         f"{vm_pct:.1f}%" if vm_pct is not None else None, "no volume / market cap")
+    # Liquidity growth: the same Codex daily series the filter step read
+    # (cached in this process - no new request), today vs 7 days ago.
+    growth = None if unreliable else _change_over(get_liquidity_series(contract, chain) or [])
+    part("Liq. Growth", 15, score_liquidity_growth(growth) if growth is not None else None,
+         f"{growth:+.1f}% over 7 days" if growth is not None else None,
+         "Codex unreliable for this coin" if unreliable else "not enough liquidity history")
+    pos = ez.get("position_pct") if isinstance(ez, dict) and ez.get("status") == "ok" else None
+    part("Price Cheapness", 20, score_cheapness(pos) if pos is not None else None,
+         f"{pos:.0f}% of the 60-day range" if pos is not None else None, "not enough price history")
+    bars = [b for b in ((daily or {}).get("bars") or []) if b.get("buy_volume") is not None][-BUYERS_DAYS:]
+    buy, sell = sum(b["buy_volume"] for b in bars), sum(b["sell_volume"] for b in bars)
+    ratio = buy / sell if sell and len(bars) >= BUYERS_MIN_DAYS and not unreliable else None
+    part("Buyers", 20, score_buyers(ratio) if ratio is not None else None,
+         f"buy/sell {ratio:.2f} ({len(bars)}d)" if ratio is not None else None,
+         "Codex unreliable for this coin" if unreliable else "not enough trade history")
+    part("Rank Change", 5, None, None, "needs weekly tracking")
+    avail = [p for p in parts if p["available"]]
+    return {"total": sum(p["pts"] for p in avail), "max_computable": sum(p["max"] for p in avail),
+            "full_max": 100, "parts": parts}
 
 
 def check_supply(md):
@@ -518,7 +547,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score|supply")   # result layout: has these display sections
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score2|supply")   # result layout: has these display sections
 
 
 def get_check(session, contract):

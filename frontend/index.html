@@ -62,6 +62,9 @@
   .scoretable th.rowlbl, .scoretable td.rowlbl { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; }
   .scoretable .up { color: #3fb950; } .scoretable .down { color: #f85149; }
   .scoretable small.arr { font-size: 11px; margin-left: 3px; }
+  .scoretable .mid { color: var(--mid); } .scoretable .na { color: var(--muted); }
+  .scoretable td.sdetail { text-align: left; color: var(--muted); font-size: 12px; }
+  .checkscore td.rowlbl { white-space: nowrap; }
   .scorewhy .up { color: #3fb950; } .scorewhy .down { color: #f85149; } .scorewhy .na { color: var(--muted); }
   .badge.low  { background: rgba(248,81,73,0.15);  color: var(--low); }
 
@@ -1592,23 +1595,28 @@
         <tr><td class="rowlbl">OI</td>${oi}</tr><tr><td class="rowlbl">Funding</td>${fr}</tr><tr><td class="rowlbl">L/S</td>${ls}</tr>
       </tbody></table></div></div>`;
   }
-  // Check a Coin: score estimate from the 3 parts that need no history.
+  // Check a Coin: the score card in the detail page's All Score style, with
+  // today's column only - one row per score part (points colour-coded, with
+  // the reading behind them); parts without data show "—".
   function checkScoreCard(s) {
     if (!s) return "";
-    const pctOf = s.max_computable ? Math.round(s.total / s.max_computable * 100) : 0;
+    const today = new Date().toISOString().slice(0, 10);
     const rows = s.parts.map(p => {
-      if (!p.available) return `<li class="soon"><span class="lbl">${esc(p.label)}<small>max ${p.max}</small></span>
-        <span class="val">— <small>needs tracking</small></span></li>`;
+      if (!p.available) return `<tr><td class="rowlbl">${esc(p.label)} <small class="na">/ ${p.max}</small></td>
+        <td title="${esc(p.detail || "needs tracking")}"><span class="na">—</span></td><td class="sdetail na">${esc(p.detail || "needs tracking")}</td></tr>`;
       const share = p.max ? p.pts / p.max : 0;
-      const col = share >= 0.7 ? "var(--good)" : share >= 0.4 ? "var(--mid)" : "var(--low)";
-      return `<li><span class="lbl">${esc(p.label)}<small>${esc(p.detail || "")}</small></span>
-        <span class="val">${p.pts} / ${p.max}<span class="sbar"><span style="width:${Math.round(share * 100)}%;background:${col}"></span></span></span></li>`;
+      const cls = share >= 0.7 ? "up" : share >= 0.4 ? "mid" : "down";
+      return `<tr><td class="rowlbl">${esc(p.label)} <small class="na">/ ${p.max}</small></td>
+        <td class="${cls}"><b>${p.pts}</b></td><td class="sdetail">${esc(p.detail || "")}</td></tr>`;
     }).join("");
-    return `<div class="ratiocard"><h3>Score estimate</h3>
-      <div class="sbig">${s.total} <small>/ ${s.max_computable} available</small></div>
-      <div class="note" style="margin:2px 0 4px">${pctOf}% of computable (full max: ${s.full_max})</div>
-      <div class="note">3 of 6 components need daily tracking — add this coin for a full score.</div>
-      <ul class="supply">${rows}</ul></div>`;
+    return `<div class="ratiocard"><h3>Score</h3>
+      <div class="sbig">${s.total} <small>/ ${s.max_computable} available · full score /${s.full_max}</small></div>
+      <div class="note">Same parts and data sources as a tracked coin's score, from today's live data.
+        ${s.parts.filter(p => !p.available).length} of ${s.parts.length} need tracking.</div>
+      <div class="scorewrap"><table class="scoretable checkscore"><thead><tr><th class="rowlbl">Component</th>
+        <th>${esc(shortDate(today))}</th><th class="rowlbl">Based on</th></tr></thead><tbody>${rows}
+        <tr><td class="rowlbl"><b>Total</b></td><td><b>${s.total}</b></td><td class="sdetail na">out of ${s.max_computable} computable</td></tr>
+      </tbody></table></div></div>`;
   }
   function smartMoneyCard() {
     return `<div class="ratiocard"><h3>Smart Money</h3>
