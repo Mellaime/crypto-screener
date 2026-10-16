@@ -215,8 +215,8 @@ def score_inputs(session, coins):
                         DexScreener) or a partial bulk reading (< 1/3 of
                         DexScreener, liquidity_check.bulk_codex_too_low) ->
                         our daily snapshots' DexScreener readings.
-    BUYERS is left out (unknown) in the same cases: the daily buy / sell
-    volume comes from the same bulk request.
+    BUYERS is left out (unknown) only for fix 4 (Codex > 10x): a buy / sell
+    RATIO stays meaningful on a partial bulk reading.
     Unknown values are None (0 points)."""
     import json
     from datetime import date as _date, timedelta
@@ -287,7 +287,7 @@ def score_inputs(session, coins):
         # --- buy / sell volume, last BUYERS_DAYS readings (not when Codex is
         #     unreliable for the coin: its trades may be the phantom pool's)
         fl = [(b, s) for _, b, s in flows.get(cid, []) if b is not None and s is not None][-BUYERS_DAYS:]
-        latest_unreliable = bool(rows) and codex_bad(rows[-1][1], rows[-1][2])
+        latest_unreliable = bool(rows) and codex_unreliable(rows[-1][1], rows[-1][2])
         if len(fl) >= BUYERS_MIN_DAYS and not latest_unreliable:
             buy, sell = sum(b for b, _ in fl), sum(s for _, s in fl)
             res["buy_sell"], res["buy_sell_days"] = (buy / sell if sell else None), len(fl)
