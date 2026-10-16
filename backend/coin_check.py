@@ -333,6 +333,7 @@ def run_check(contract):
 
     # Minimum liquidity (part of step 7): under $5K on BOTH sources = too thin.
     thin, best_liq = too_thin(liq.get("today_liq"), dex_rec.get("liquidity_usd"))
+    ez = f_ez.result()            # Entry Zone (also the score's price position)
     if thin:
         step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,}", "fail",
              f"${best_liq:,.0f} (Codex + DexScreener)",
@@ -386,7 +387,9 @@ def run_check(contract):
         "rel_strength": rel_from_cg(cg) if cg else
                         {"status": "unknown", "reason": "CoinGecko doesn't list this contract"},
         # Entry Zone (Codex daily bars; no holders history for an unlisted coin).
-        "entry_zone": f_ez.result(),
+        "entry_zone": ez,
+        "score": check_score(dex_rec, mcap, ez),
+        "supply": check_supply(md),
         # Futures Data (Coinalyze OI / funding / long-short; nothing stored).
         "futures": f_fut.result(),
         "tx_bars": (daily or {}).get("bars") or [],
@@ -461,6 +464,52 @@ def summarize(r):
     return " ".join(parts), opinion + " هذا وصف للبيانات على السلسلة فقط — وليس نصيحة مالية."
 
 
+def check_score(dex_rec, mcap, ez):
+    """Score estimate for an untracked coin: the 3 of the 6 score parts that
+    need no history, computed EXACTLY like the Active list (scoring.py):
+      Volume/Liquidity = DexScreener 24h volume / DexScreener liquidity
+      Volume/MCap      = DexScreener 24h volume / global market cap
+      Price Cheapness  = position in the 60-day price range (Entry Zone)
+    (CoinGecko's daily volume would also count centralised exchanges and
+    inflate both ratios - ZK: 0.49x vs 317x.) Liquidity growth, buyers and
+    rank change need daily tracking -> not available. No API calls."""
+    from scoring import score_vol_liq, score_vol_mcap, score_cheapness
+    volume, liquidity = _num(dex_rec.get("volume_24h")), _num(dex_rec.get("liquidity_usd"))
+    pos = ez.get("position_pct") if isinstance(ez, dict) and ez.get("status") == "ok" else None
+    vl_pts, vl_ratio = score_vol_liq(volume, liquidity)
+    vm_pts, vm_pct = score_vol_mcap(volume, mcap)
+    cheap_pts = score_cheapness(pos)
+    return {
+        "total": vl_pts + vm_pts + cheap_pts,
+        "max_computable": 25 + 15 + 20,
+        "full_max": 100,
+        "parts": [
+            {"label": "Volume/Liquidity", "pts": vl_pts, "max": 25, "available": True,
+             "detail": f"{vl_ratio:.2f}x" if vl_ratio is not None else "no DexScreener data"},
+            {"label": "Volume/MCap", "pts": vm_pts, "max": 15, "available": True,
+             "detail": f"{vm_pct:.1f}%" if vm_pct is not None else "no volume / market cap"},
+            {"label": "Liq. Growth", "pts": None, "max": 15, "available": False},
+            {"label": "Price Cheapness", "pts": cheap_pts, "max": 20, "available": True,
+             "detail": f"{pos:.0f}% of the 60-day range" if pos is not None else "not enough price history"},
+            {"label": "Buyers", "pts": None, "max": 20, "available": False},
+            {"label": "Rank Change", "pts": None, "max": 5, "available": False},
+        ],
+    }
+
+
+def check_supply(md):
+    """Supply section data (same shape as the detail page's) from the
+    CoinGecko response already fetched. No API calls."""
+    total, circ, mx = md.get("total_supply"), md.get("circulating_supply"), md.get("max_supply")
+    return {
+        "total": total, "circulating": circ,
+        "circulating_pct": round(circ / total * 100, 2) if circ and total else None,
+        "max": mx,
+        "uncapped": mx is None and (total is not None or circ is not None),
+        "burned": None, "upcoming_unlock": None, "updated": None,
+    }
+
+
 def rules_signature():
     """The filter settings a check result depends on. A cached result made
     under different settings (e.g. before a range change) is recomputed."""
@@ -469,7 +518,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures")   # result layout: has these display sections
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score|supply")   # result layout: has these display sections
 
 
 def get_check(session, contract):
