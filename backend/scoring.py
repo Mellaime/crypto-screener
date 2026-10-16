@@ -211,13 +211,21 @@ def score_inputs(session, coins):
       "Codex history" - until a coin has 7 days of those: the getBars days in
                         entry_zone_bars (the detail page tile's own series),
                         leaving out the days the tracking step appended.
-      "DexScreener"   - fix 4: Codex > 10x DexScreener today or ~7 days ago ->
+      "DexScreener"   - Codex unreliable today or ~7 days ago - fix 4 (> 10x
+                        DexScreener) or a partial bulk reading (< 1/3 of
+                        DexScreener, liquidity_check.bulk_codex_too_low) ->
                         our daily snapshots' DexScreener readings.
+    BUYERS is left out (unknown) only for fix 4 (Codex > 10x): a buy / sell
+    RATIO stays meaningful on a partial bulk reading.
     Unknown values are None (0 points)."""
     import json
     from datetime import date as _date, timedelta
     from models import EntryZoneBars, TradeFlow
-    from liquidity_check import codex_unreliable
+    from liquidity_check import codex_unreliable, bulk_codex_too_low
+
+    def codex_bad(cx, dx):
+        # fix 4 (Codex > 10x DexScreener) or a partial bulk reading (< 1/3)
+        return codex_unreliable(cx, dx) or bulk_codex_too_low(cx, dx)
 
     if not coins:
         return {}
@@ -257,7 +265,7 @@ def score_inputs(session, coins):
         recent = rows[-1:] + [r for r in rows if rows and
                               rows[-1][0] - timedelta(days=LIQ_GROWTH_DAYS + LIQ_GROWTH_SLACK)
                               <= r[0] <= rows[-1][0] - timedelta(days=LIQ_GROWTH_DAYS)]
-        unreliable = any(codex_unreliable(cx, dx) for _, cx, dx in recent)
+        unreliable = any(codex_bad(cx, dx) for _, cx, dx in recent)
         if unreliable:
             res["liq_growth"], res["liq_source"] = _change_over([(d, dx) for d, _, dx in rows]), "DexScreener"
         else:

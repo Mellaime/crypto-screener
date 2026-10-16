@@ -64,6 +64,22 @@ def codex_unreliable(codex_liq, dex_liq):
     return float(codex_liq) > MISMATCH_RATIO * max(float(dex_liq), 1.0)
 
 
+# PARTIAL BULK READING (the other direction): Codex's BULK request
+# (filterTokens, stored daily as daily_snapshots.codex_liquidity) sometimes
+# covers only part of a coin's pools - ZyFAI: $5-8K stored vs ~$170K on both
+# Codex's own daily bars (getBars) and DexScreener. Under 1/BULK_TOO_LOW_RATIO
+# of DexScreener = a partial reading; the score then uses DexScreener instead.
+BULK_TOO_LOW_RATIO = 3
+
+
+def bulk_codex_too_low(codex_liq, dex_liq):
+    """True when both readings exist and the bulk Codex liquidity is under
+    1/BULK_TOO_LOW_RATIO of DexScreener's (a partial reading)."""
+    if codex_liq is None or dex_liq is None:
+        return False
+    return float(codex_liq) * BULK_TOO_LOW_RATIO < float(dex_liq)
+
+
 def best_liquidity(codex_liq, dex_liq, label=None):
     """(liquidity, mismatch). Normally the higher of Codex and DexScreener
     (Codex sometimes under-reports); if Codex is > MISMATCH_RATIO x
