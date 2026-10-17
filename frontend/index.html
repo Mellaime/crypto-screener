@@ -139,6 +139,17 @@
   .sorth:hover { color: var(--text); }
   .sorth:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
   .sorth .arr { display: inline-block; width: 10px; font-size: 10px; color: var(--accent); }
+  th.num .sorth { justify-content: flex-end; }
+  /* Favorites star */
+  .favstar { all: unset; cursor: pointer; font-size: 15px; line-height: 1; color: var(--muted); margin-right: 6px;
+    display: inline-block; transition: transform .15s ease, color .15s ease; vertical-align: -1px; }
+  .favstar:hover { color: #e3b341; transform: scale(1.15); }
+  .favstar:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  .favstar.on { color: #e3b341; }
+  .favstar.pop { animation: favpop .35s ease; }
+  @keyframes favpop { 0% { transform: scale(1); } 40% { transform: scale(1.45); } 100% { transform: scale(1); } }
+  .droptag { display: inline-block; margin-left: 4px; font-size: 11px; color: var(--low); border: 1px solid var(--low);
+    border-radius: 20px; padding: 1px 7px; }
   th[aria-sort="none"] .sorth .arr::after { content: "↕"; color: var(--muted); opacity: 0.6; }
   #narrtip .up { color: var(--good); } #narrtip .down { color: var(--low); } #narrtip .flat { color: var(--muted); }
   .card { overflow-x: auto; }       /* wide tables scroll sideways on phones */
@@ -397,6 +408,8 @@
       Active Coins <span class="count" id="count-active"></span></button>
     <button class="tab" role="tab" id="tab-dropped" aria-controls="view-dropped" data-view="dropped">
       Dropped Coins <span class="count" id="count-dropped"></span></button>
+    <button class="tab" role="tab" id="tab-favorites" aria-controls="view-favorites" data-view="favorites">
+      Favorites <span class="count" id="count-favorites"></span></button>
     <button class="tab" role="tab" id="tab-queue" aria-controls="view-queue" data-view="queue">
       Coming Up · <bdi>طابور</bdi> <span class="count" id="count-queue"></span></button>
     <button class="tab" role="tab" id="tab-check" aria-controls="view-check" data-view="check">
@@ -412,17 +425,17 @@
   <div class="badgelegend"><span>🆕 new — entered the list on the latest daily run</span>
     <span>🔥 hot — 24h volume above 25% of market cap</span></div>
   <div class="card">
-    <table>
+    <table data-table="active">
       <thead>
         <tr>
           <th class="rank">#</th>
           <th>Name</th>
           <th class="num">Price</th>
-          <th class="num">Score</th>
-          <th class="num">Market Cap</th>
-          <th class="num">Revenue/day</th>
-          <th class="num">Vol / Liq</th>
-          <th class="num">Holders</th>
+          <th class="num" data-sort="score" aria-sort="none"><button type="button" class="sorth">Score<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="mcap" aria-sort="none"><button type="button" class="sorth">Market Cap<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="revenue" aria-sort="none"><button type="button" class="sorth">Revenue/day<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="vol_liq" aria-sort="none"><button type="button" class="sorth">Vol / Liq<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="holders" aria-sort="none"><button type="button" class="sorth">Holders<span class="arr" aria-hidden="true"></span></button></th>
           <th>Narrative</th>
         </tr>
       </thead>
@@ -445,16 +458,40 @@
   <section class="view" id="view-dropped" role="tabpanel" aria-labelledby="tab-dropped" hidden>
   <h2 id="dropped-title">Dropped coins</h2>
   <div class="card">
-    <table>
+    <table data-table="dropped">
       <thead>
         <tr>
           <th>Name</th>
-          <th class="num">Price</th>
-          <th>Date dropped</th>
+          <th class="num" data-sort="price" aria-sort="none"><button type="button" class="sorth">Price<span class="arr" aria-hidden="true"></span></button></th>
+          <th data-sort="date" aria-sort="none"><button type="button" class="sorth">Date dropped<span class="arr" aria-hidden="true"></span></button></th>
           <th>Reason</th>
         </tr>
       </thead>
       <tbody id="dropped-body"></tbody>
+    </table>
+  </div>
+  </section>
+
+  <section class="view" id="view-favorites" role="tabpanel" aria-labelledby="tab-favorites" hidden>
+  <h2 id="favorites-title">Favorite tokens</h2>
+  <div class="badgelegend"><span>★ click the star next to any coin (Active or Dropped) to add or remove it.
+    Favorites are saved in this browser only.</span></div>
+  <div class="card">
+    <table data-table="favorites">
+      <thead>
+        <tr>
+          <th class="rank">#</th>
+          <th>Name</th>
+          <th class="num">Price</th>
+          <th class="num" data-sort="score" aria-sort="none"><button type="button" class="sorth">Score<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="mcap" aria-sort="none"><button type="button" class="sorth">Market Cap<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="revenue" aria-sort="none"><button type="button" class="sorth">Revenue/day<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="vol_liq" aria-sort="none"><button type="button" class="sorth">Vol / Liq<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="holders" aria-sort="none"><button type="button" class="sorth">Holders<span class="arr" aria-hidden="true"></span></button></th>
+          <th>Narrative</th>
+        </tr>
+      </thead>
+      <tbody id="fav-body"></tbody>
     </table>
   </div>
   </section>
@@ -598,20 +635,84 @@
   }
 
   // ---- rendering ----------------------------------------------------------
-  function renderCoins(data) {
-    const body = document.getElementById("coins-body");
-    document.getElementById("active-title").textContent =
-      "Active coins (" + data.count + ")";
-    document.getElementById("count-active").textContent = "(" + data.count + ")";
-    if (!data.coins.length) {
-      body.innerHTML = '<tr><td colspan="9" class="empty">No active coins right now.</td></tr>';
-      return;
-    }
-    body.innerHTML = data.coins.map(c => `
+  // ---- favorites (this browser only: localStorage "favoriteCoins" = JSON
+  // array of lower-case contracts) and per-table sorting ("sort:<table>").
+  function store(key, fallback) {
+    try { const v = JSON.parse(localStorage.getItem(key)); return v == null ? fallback : v; } catch (e) { return fallback; }
+  }
+  function save(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* private mode: not kept */ }
+  }
+  let favs = new Set((store("favoriteCoins", []) || []).map(x => String(x).toLowerCase()));
+  const isFav = contract => !!contract && favs.has(String(contract).toLowerCase());
+  function favStar(contract, name) {
+    if (!contract) return "";
+    const on = isFav(contract);
+    return `<button type="button" class="favstar${on ? " on" : ""}" data-fav="${esc(String(contract).toLowerCase())}"
+      aria-pressed="${on}" title="${on ? "Remove from" : "Add to"} favorites" aria-label="${on ? "Remove" : "Add"} ${esc(name)} ${on ? "from" : "to"} favorites">${on ? "★" : "☆"}</button>`;
+  }
+  function toggleFav(btn) {
+    const c = btn.dataset.fav;
+    if (favs.has(c)) favs.delete(c); else favs.add(c);
+    save("favoriteCoins", [...favs]);
+    // every star for this coin (Active / Dropped / Favorites), then the Favorites table
+    document.querySelectorAll(`.favstar[data-fav="${CSS.escape(c)}"]`).forEach(b => {
+      const on = favs.has(c);
+      b.classList.toggle("on", on);
+      b.textContent = on ? "★" : "☆";
+      b.setAttribute("aria-pressed", on);
+      b.title = (on ? "Remove from" : "Add to") + " favorites";
+    });
+    renderFavorites();
+    const again = document.querySelector(`#${btn.closest("tbody") ? btn.closest("tbody").id : "x"} .favstar[data-fav="${CSS.escape(c)}"]`) || btn;
+    again.classList.remove("pop"); void again.offsetWidth; again.classList.add("pop");
+  }
+  // Remove favorites that are no longer in our database (not active, not dropped).
+  function pruneFavs() {
+    if (!activeData || !droppedData) return;
+    const known = new Set([...activeData.coins, ...droppedData.dropped].map(c => String(c.contract || "").toLowerCase()));
+    const kept = [...favs].filter(c => known.has(c));
+    if (kept.length !== favs.size) { favs = new Set(kept); save("favoriteCoins", kept); }
+  }
+
+  // Sorting: click a header -> biggest first, again -> smallest first, a
+  // third time -> back to the default order (Active / Favorites: score).
+  const sorts = {active: store("sort:active", null), dropped: store("sort:dropped", null),
+                 favorites: store("sort:favorites", null)};
+  function sortRows(rows, table) {
+    const st = sorts[table];
+    if (!st) return rows;
+    const val = r => { const v = r[st.key]; return v == null || v === "" ? null : v; };
+    return rows.slice().sort((a, b) => {
+      const x = val(a), y = val(b);
+      if (x == null || y == null) return (x == null) - (y == null);          // empty values always last
+      return st.dir * (typeof x === "string" ? x.localeCompare(y) : x - y);
+    });
+  }
+  function paintSort(table) {
+    const st = sorts[table];
+    document.querySelectorAll(`table[data-table="${table}"] th[data-sort]`).forEach(th => {
+      const on = st && st.key === th.dataset.sort;
+      th.setAttribute("aria-sort", on ? (st.dir === 1 ? "ascending" : "descending") : "none");
+      th.querySelector(".arr").textContent = on ? (st.dir === 1 ? "↑" : "↓") : "";
+    });
+  }
+  document.querySelectorAll("table[data-table] th[data-sort] .sorth").forEach(btn =>
+    btn.addEventListener("click", () => {
+      const table = btn.closest("table").dataset.table, key = btn.closest("th").dataset.sort, st = sorts[table];
+      sorts[table] = !st || st.key !== key ? {key, dir: -1} : st.dir === -1 ? {key, dir: 1} : null;
+      save("sort:" + table, sorts[table]);
+      ({active: () => activeData && renderCoins(activeData), dropped: () => droppedData && renderDropped(droppedData),
+        favorites: renderFavorites})[table]();
+    }));
+
+  let activeData = null, droppedData = null;
+  function coinRow(c) {
+    return `
       <tr tabindex="0" data-contract="${esc(c.contract)}" title="Open ${esc(c.name)}">
         <td class="rank">${c.rank}</td>
         <td>
-          <div class="name">${esc(c.name)}${coinBadges(c)} ${secBadge(c)}${exchangeBadges(c.exchange_badges)}</div>
+          <div class="name">${favStar(c.contract, c.name)}${esc(c.name)}${coinBadges(c)} ${secBadge(c)}${exchangeBadges(c.exchange_badges)}</div>
           <span class="chain">${esc(c.chain)}</span>
           ${secInfo(c)}
         </td>
@@ -622,7 +723,52 @@
         <td class="num">${fmtX(c.vol_liq)}</td>
         <td class="num">${fmtNum(c.holders)}</td>
         <td class="narrative">${c.category ? `<span class="tag">${esc(c.category)}</span>` : esc(c.narrative)}</td>
-      </tr>`).join("");
+      </tr>`;
+  }
+  // A favorite that has been dropped: same columns, only what we still have.
+  function droppedFavRow(d) {
+    return `
+      <tr tabindex="0" data-contract="${esc(d.contract)}" title="Open ${esc(d.name)}">
+        <td class="rank">—</td>
+        <td>
+          <div class="name">${favStar(d.contract, d.name)}${esc(d.name)}<span class="droptag" title="${esc(d.reason || "")}">dropped ${esc(d.date)}</span>${exchangeBadges(d.exchange_badges)}</div>
+          <span class="chain">${esc(d.chain)}</span>
+        </td>
+        ${priceCell(d)}
+        <td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>
+        <td class="narrative">—</td>
+      </tr>`;
+  }
+  function renderCoins(data) {
+    activeData = data;
+    const body = document.getElementById("coins-body");
+    document.getElementById("active-title").textContent =
+      "Active coins (" + data.count + ")";
+    document.getElementById("count-active").textContent = "(" + data.count + ")";
+    paintSort("active");
+    if (!data.coins.length) {
+      body.innerHTML = '<tr><td colspan="9" class="empty">No active coins right now.</td></tr>';
+      return;
+    }
+    body.innerHTML = sortRows(data.coins, "active").map(coinRow).join("");
+  }
+  function renderFavorites() {
+    const body = document.getElementById("fav-body");
+    const act = (activeData ? activeData.coins : []).filter(c => isFav(c.contract));
+    const seen = new Set(act.map(c => String(c.contract).toLowerCase()));
+    const drp = (droppedData ? droppedData.dropped : []).filter(d => isFav(d.contract) && !seen.has(String(d.contract).toLowerCase()));
+    const n = act.length + drp.length;
+    document.getElementById("count-favorites").textContent = "(" + n + ")";
+    document.getElementById("favorites-title").textContent = "Favorite tokens (" + n + ")";
+    paintSort("favorites");
+    if (!activeData) return;
+    if (!n) {
+      body.innerHTML = '<tr><td colspan="9" class="empty">No favorites yet — click the ☆ star next to any coin to add it here.</td></tr>';
+      return;
+    }
+    const rows = [...act.map(c => ({...c, _row: coinRow})),
+                  ...drp.map(d => ({...d, rank: null, score: null, _row: droppedFavRow}))];
+    body.innerHTML = sortRows(rows, "favorites").map(r => r._row(r)).join("");
   }
 
   // 🆕 = entered the active list on the latest run; 🔥 = Volume / MCap > HOT_VOL_MCAP_PCT.
@@ -649,6 +795,8 @@
   }
 
   function renderDropped(data) {
+    droppedData = data;
+    paintSort("dropped");
     const body = document.getElementById("dropped-body");
     document.getElementById("dropped-title").textContent =
       "Dropped coins (" + data.count + ")";
@@ -657,9 +805,9 @@
       body.innerHTML = '<tr><td colspan="4" class="empty">Nothing dropped yet.</td></tr>';
       return;
     }
-    body.innerHTML = data.dropped.map(d => `
+    body.innerHTML = sortRows(data.dropped, "dropped").map(d => `
       <tr${d.contract ? ` tabindex="0" data-contract="${esc(d.contract)}" title="Open ${esc(d.name)}"` : ""}>
-        <td><div class="name">${esc(d.name)}${exchangeBadges(d.exchange_badges)}</div><span class="chain">${esc(d.chain)}</span></td>
+        <td><div class="name">${favStar(d.contract, d.name)}${esc(d.name)}${exchangeBadges(d.exchange_badges)}</div><span class="chain">${esc(d.chain)}</span></td>
         ${priceCell(d)}
         <td class="num" style="text-align:left">${esc(d.date)}</td>
         <td class="reason" dir="rtl" lang="ar" title="${esc(d.reason)}">${esc(d.reason_ar || d.reason)}</td>
@@ -727,7 +875,7 @@
   // URL (#dropped / #queue) so a reload or a shared link opens the same view.
   // The 30-second refresh keeps updating all three, so switching is instant
   // and always current.
-  const VIEWS = ["active", "dropped", "queue", "check", "narratives", "unlocks"];
+  const VIEWS = ["active", "dropped", "favorites", "queue", "check", "narratives", "unlocks"];
   // A hand-edited / truncated link can hold a broken %-escape; decodeURIComponent
   // would throw and stop the whole page script (nothing would load), so fall
   // back to the raw text.
@@ -898,10 +1046,17 @@
   let backTo = "active";     // which table "Back" returns to
   let scrollToCard = null;   // card id to scroll to once the detail page renders (badge click)
   function openRow(e) {
-    const tr = e.target.closest("#coins-body tr[data-contract], #dropped-body tr[data-contract]");
+    // The ☆ star only toggles the favorite - it never opens the coin.
+    const star = e.target.closest(".favstar");
+    if (star) {
+      if (e.type === "click") { e.stopPropagation(); toggleFav(star); }
+      return;
+    }
+    const tr = e.target.closest("#coins-body tr[data-contract], #dropped-body tr[data-contract], #fav-body tr[data-contract]");
     if (tr) {
-      backTo = tr.closest("#dropped-body") ? "dropped" : "active";
-      document.getElementById("back").textContent = backTo === "dropped" ? "← Back to Dropped coins" : "← Back to Active coins";
+      backTo = tr.closest("#dropped-body") ? "dropped" : tr.closest("#fav-body") ? "favorites" : "active";
+      document.getElementById("back").textContent = {dropped: "← Back to Dropped coins", favorites: "← Back to Favorites"}[backTo]
+        || "← Back to Active coins";
     }
     if (tr) {
       scrollToCard = e.target.closest("[data-goto]") ? e.target.closest("[data-goto]").dataset.goto : null;
@@ -912,6 +1067,8 @@
   document.getElementById("coins-body").addEventListener("keydown", e => { if (e.key === "Enter") openRow(e); });
   document.getElementById("dropped-body").addEventListener("click", openRow);
   document.getElementById("dropped-body").addEventListener("keydown", e => { if (e.key === "Enter") openRow(e); });
+  document.getElementById("fav-body").addEventListener("click", openRow);
+  document.getElementById("fav-body").addEventListener("keydown", e => { if (e.key === "Enter") openRow(e); });
   // "Back to Active coins" always lands on the Active table (the browser's
   // own back button still steps through history).
   document.getElementById("back").addEventListener("click", () => {
@@ -1878,6 +2035,8 @@
       renderCoins(await coinsRes.json());
       renderDropped(await droppedRes.json());
       renderQueue(await queueRes.json());
+      pruneFavs();
+      renderFavorites();
       errBox.style.display = "none";
       const now = new Date();
       document.getElementById("status").textContent =
