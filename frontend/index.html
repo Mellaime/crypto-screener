@@ -193,6 +193,26 @@
   .cmp-summary ol { margin: 8px 0 0; padding-left: 20px; }
   .cmp-summary li { margin: 3px 0; }
   .cmp-top { font-size: 18px; font-weight: 700; margin: 6px 0; }
+  /* Performance since caught */
+  .pnl { font-weight: 700; font-variant-numeric: tabular-nums; cursor: help; white-space: nowrap; }
+  .pnl.up { color: #3fb950; } .pnl.down { color: #f85149; } .pnl.flat { color: var(--muted); font-weight: 500; }
+  .perfov { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 14px; margin: 0 0 12px; font-size: 13px; color: var(--muted); }
+  .perfov b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .perfov a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  .perfov a:hover { text-decoration: underline; }
+  .perfcard .pbig { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 6px 0 2px; }
+  .perfcard.bigup .pbig, .perfcard.up .pbig { color: #3fb950; }
+  .perfcard.flat .pbig { color: var(--muted); }
+  .perfcard.down .pbig { color: #d29922; }
+  .perfcard.bigdown .pbig { color: #f85149; }
+  .perfcard .pline { font-size: 14px; }
+  .prange { position: relative; height: 8px; border-radius: 4px; background: #21262d; margin: 26px 6px 30px; }
+  .prange .seg { position: absolute; top: 0; height: 100%; border-radius: 4px; }
+  .prange .mk { position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 50%; transform: translate(-50%, -50%);
+    border: 2px solid var(--bg); }
+  .prange .mk span { position: absolute; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .prange .mk.entry span { bottom: 14px; } .prange .mk.now span { top: 14px; }
   /* Volume spike badge (🚨 big / ⚠️ spike / 📈 elevated) */
   .vbadge { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 700; line-height: 1;
     padding: 3px 6px; border-radius: 999px; margin-left: 5px; cursor: help; white-space: nowrap; vertical-align: 1px;
@@ -486,6 +506,7 @@
 
   <section class="view" id="view-active" role="tabpanel" aria-labelledby="tab-active">
   <h2 id="active-title">Active coins</h2>
+  <div class="perfov" id="perf-overview" hidden></div>
   <div class="badgelegend"><span>🆕 new — entered the list on the latest daily run</span>
     <span>🔥 hot — 24h volume above 25% of market cap</span>
     <span>🚨 / ⚠️ / 📈 volume 5x+ / 3–5x / 2–3x its 30-day average</span></div>
@@ -497,6 +518,7 @@
           <th>Name</th>
           <th class="num">Price</th>
           <th class="num" data-sort="score" aria-sort="none"><button type="button" class="sorth">Score<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="performance.change_pct" aria-sort="none" title="Price change since the coin entered the Active list"><button type="button" class="sorth">P&amp;L<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="mcap" aria-sort="none"><button type="button" class="sorth">Market Cap<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="revenue" aria-sort="none"><button type="button" class="sorth">Revenue/day<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="vol_liq" aria-sort="none"><button type="button" class="sorth">Vol / Liq<span class="arr" aria-hidden="true"></span></button></th>
@@ -528,6 +550,7 @@
         <tr>
           <th>Name</th>
           <th class="num" data-sort="price" aria-sort="none"><button type="button" class="sorth">Price<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="performance.change_pct" aria-sort="none" title="Price change since the coin entered the Active list"><button type="button" class="sorth">P&amp;L<span class="arr" aria-hidden="true"></span></button></th>
           <th data-sort="date" aria-sort="none"><button type="button" class="sorth">Date dropped<span class="arr" aria-hidden="true"></span></button></th>
           <th>Reason</th>
         </tr>
@@ -549,6 +572,7 @@
           <th>Name</th>
           <th class="num">Price</th>
           <th class="num" data-sort="score" aria-sort="none"><button type="button" class="sorth">Score<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="performance.change_pct" aria-sort="none" title="Price change since the coin entered the Active list"><button type="button" class="sorth">P&amp;L<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="mcap" aria-sort="none"><button type="button" class="sorth">Market Cap<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="revenue" aria-sort="none"><button type="button" class="sorth">Revenue/day<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="vol_liq" aria-sort="none"><button type="button" class="sorth">Vol / Liq<span class="arr" aria-hidden="true"></span></button></th>
@@ -761,7 +785,7 @@
   function sortRows(rows, table) {
     const st = sorts[table];
     if (!st) return rows;
-    const val = r => { const v = r[st.key]; return v == null || v === "" ? null : v; };
+    const val = r => { const v = st.key.split(".").reduce((o, k) => o == null ? o : o[k], r); return v == null || v === "" ? null : v; };
     return rows.slice().sort((a, b) => {
       const x = val(a), y = val(b);
       if (x == null || y == null) return (x == null) - (y == null);          // empty values always last
@@ -797,6 +821,7 @@
         </td>
         ${priceCell(c)}
         <td class="num"><span class="badge ${scoreClass(c.score)}">${c.score}</span>${scoreDelta(c)}</td>
+        ${pnlCell(c.performance)}
         <td class="num">${fmtMoney(c.mcap)}</td>
         <td class="num">${c.revenue == null ? "—" : fmtMoney(c.revenue)}</td>
         <td class="num">${fmtX(c.vol_liq)}</td>
@@ -814,19 +839,83 @@
           <span class="chain">${esc(d.chain)}</span>
         </td>
         ${priceCell(d)}
-        <td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>
+        <td class="num">—</td>${pnlCell(d.performance)}<td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>
         <td class="narrative">—</td>
       </tr>`;
   }
+  // Performance since the coin entered the Active list (P&L column / card / overview).
+  function pnlText(v) { return (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(Math.abs(v) < 10 ? 1 : 0) + "%"; }
+  function perfDay(d) { return new Date(d + "T00:00:00Z").toLocaleDateString("en-US", {month: "short", day: "numeric", timeZone: "UTC"}); }
+  function pnlCell(p) {
+    if (!p || p.change_pct == null) return `<td class="num"><span class="na" title="No entry price recorded">—</span></td>`;
+    const tip = `Entered ${perfDay(p.entry_date)} at ${fmtPrice(p.entry_price)} → ${p.dropped ? "dropped at" : "now"} ${fmtPrice(p.current_price)} (${p.days_held} day${p.days_held === 1 ? "" : "s"})`;
+    return `<td class="num"><span class="pnl ${p.status}" title="${esc(tip)}">${pnlText(p.change_pct)}</span></td>`;
+  }
+  function renderPerfOverview(coins) {
+    const box = document.getElementById("perf-overview");
+    const ps = coins.filter(c => c.performance && c.performance.change_pct != null);
+    if (!ps.length) { box.hidden = true; return; }
+    const avg = ps.reduce((a, c) => a + c.performance.change_pct, 0) / ps.length;
+    const up = ps.filter(c => c.performance.status === "up").length, down = ps.filter(c => c.performance.status === "down").length;
+    const best = ps.reduce((a, c) => c.performance.change_pct > a.performance.change_pct ? c : a);
+    const worst = ps.reduce((a, c) => c.performance.change_pct < a.performance.change_pct ? c : a);
+    const link = c => `<a data-open="${esc(c.contract)}" title="Open ${esc(c.name)}">${esc(c.name)}</a>`;
+    const cls = v => Math.abs(v) < 1 ? "flat" : v > 0 ? "up" : "down";
+    box.hidden = false;
+    box.innerHTML = `<span><b>Since caught</b> · ${ps.length} active coins</span>
+      <span>Average <b class="pnl ${cls(avg)}">${pnlText(avg)}</b></span>
+      <span><b style="color:#3fb950">${up}</b> up · <b style="color:#f85149">${down}</b> down · ${ps.length - up - down} flat</span>
+      <span>Best ${link(best)} <b class="pnl up">${pnlText(best.performance.change_pct)}</b></span>
+      <span>Worst ${link(worst)} <b class="pnl ${cls(worst.performance.change_pct)}">${pnlText(worst.performance.change_pct)}</b></span>`;
+  }
+  document.addEventListener("click", e => {
+    const a = e.target.closest("#perf-overview a[data-open]");
+    if (!a) return;
+    backTo = "active";
+    document.getElementById("back").textContent = "← Back to Active coins";
+    showView("coin/" + encodeURIComponent(a.dataset.open));
+  });
+  function performanceCard(p) {
+    const head = `<div class="ratiocard perfcard`;
+    if (!p) return `<div class="ratiocard"><h3>Performance Since Caught</h3>
+      <div class="note" style="margin:0">Performance tracking not available for this coin (entered before tracking was enabled).</div></div>`;
+    const v = p.change_pct, kind = v > 20 ? "bigup" : v < -20 ? "bigdown" : p.status;
+    const icon = {bigup: "✨", up: "↑", flat: "→", down: "↓", bigdown: "⚠️"}[kind];
+    const lo = p.lowest_since.price, hi = p.highest_since.price;
+    const span = hi - lo || 1, at = x => Math.max(0, Math.min(100, (x - lo) / span * 100));
+    const color = {bigup: "#3fb950", up: "#3fb950", flat: "#8b949e", down: "#d29922", bigdown: "#f85149"}[kind];
+    const a = at(p.entry_price), b = at(p.current_price);
+    const usd = p.change_usd;
+    return `${head} ${kind}"><h3>Performance Since Caught</h3>
+      <div class="note">Price change since the coin entered the Active list (daily snapshots, DexScreener price).</div>
+      <div class="pbig">${icon} ${pnlText(v)}</div>
+      <div class="pline">${fmtPrice(p.entry_price)} → ${fmtPrice(p.current_price)}
+        <span class="na">(${usd >= 0 ? "+" : "−"}${fmtPrice(Math.abs(usd))} per token)</span></div>
+      <div class="note" style="margin:4px 0 0">Entered ${esc(perfDay(p.entry_date))} · ${p.days_held} day${p.days_held === 1 ? "" : "s"} ${p.dropped ? "until it was dropped" : "in the list"}
+        ${p.dropped ? `· dropped price from ${esc(perfDay(p.price_date))}` : ""}</div>
+      <div class="prange" aria-label="Price range since entry: low ${esc(fmtPrice(lo))}, high ${esc(fmtPrice(hi))}">
+        <div class="seg" style="left:${Math.min(a, b)}%;width:${Math.abs(b - a)}%;background:${color};opacity:.55"></div>
+        <div class="mk entry" style="left:${a}%;background:#8b949e"><span>entry</span></div>
+        <div class="mk now" style="left:${b}%;background:${color}"><span>${p.dropped ? "dropped" : "now"}</span></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin:-22px 0 10px">
+        <span>Low ${fmtPrice(lo)}</span><span>High ${fmtPrice(hi)}</span></div>
+      <div class="scorewrap"><table class="scoretable"><tbody>
+        <tr><td class="rowlbl">Highest since entry</td><td>${fmtPrice(hi)}</td><td class="sdetail">${esc(perfDay(p.highest_since.date))} · ${pnlText((hi - p.entry_price) / p.entry_price * 100)} vs entry</td></tr>
+        <tr><td class="rowlbl">Lowest since entry</td><td>${fmtPrice(lo)}</td><td class="sdetail">${esc(perfDay(p.lowest_since.date))} · ${pnlText((lo - p.entry_price) / p.entry_price * 100)} vs entry</td></tr>
+      </tbody></table></div></div>`;
+  }
+
   function renderCoins(data) {
     activeData = data;
+    renderPerfOverview(data.coins);
     const body = document.getElementById("coins-body");
     document.getElementById("active-title").textContent =
       "Active coins (" + data.count + ")";
     document.getElementById("count-active").textContent = "(" + data.count + ")";
     paintSort("active");
     if (!data.coins.length) {
-      body.innerHTML = '<tr><td colspan="9" class="empty">No active coins right now.</td></tr>';
+      body.innerHTML = '<tr><td colspan="10" class="empty">No active coins right now.</td></tr>';
       return;
     }
     body.innerHTML = sortRows(data.coins, "active").map(coinRow).join("");
@@ -842,7 +931,7 @@
     paintSort("favorites");
     if (!activeData) return;
     if (!n) {
-      body.innerHTML = '<tr><td colspan="9" class="empty">No favorites yet — click the ☆ star next to any coin to add it here.</td></tr>';
+      body.innerHTML = '<tr><td colspan="10" class="empty">No favorites yet — click the ☆ star next to any coin to add it here.</td></tr>';
       return;
     }
     const rows = [...act.map(c => ({...c, _row: coinRow})),
@@ -908,13 +997,14 @@
       "Dropped coins (" + data.count + ")";
     document.getElementById("count-dropped").textContent = "(" + data.count + ")";
     if (!data.dropped.length) {
-      body.innerHTML = '<tr><td colspan="4" class="empty">Nothing dropped yet.</td></tr>';
+      body.innerHTML = '<tr><td colspan="5" class="empty">Nothing dropped yet.</td></tr>';
       return;
     }
     body.innerHTML = sortRows(data.dropped, "dropped").map(d => `
       <tr${d.contract ? ` tabindex="0" data-contract="${esc(d.contract)}" title="Open ${esc(d.name)}"` : ""}>
         <td><div class="name">${favStar(d.contract, d.name)}${esc(d.name)}${exchangeBadges(d.exchange_badges)}</div><span class="chain">${esc(d.chain)}</span></td>
         ${priceCell(d)}
+        ${pnlCell(d.performance)}
         <td class="num" style="text-align:left">${esc(d.date)}</td>
         <td class="reason" dir="rtl" lang="ar" title="${esc(d.reason)}">${esc(d.reason_ar || d.reason)}</td>
       </tr>`).join("");
@@ -1238,6 +1328,7 @@
       ${ratioCard(c, "Volume / Liquidity", "vol_liq_x", fmtMult,
           "Traded volume as a multiple of the coin's current liquidity (Codex): " + fmtMoney(c.liquidity) + ".")}
       ${volumeAlertCard(c.volume_spike)}
+      ${performanceCard(c.performance)}
       ${liquidityCard(c)}
       ${rankCard(c)}
       ${holdersCard(c)}
