@@ -20,7 +20,12 @@ the previous day:
     so a volume dip doesn't flip it to delisted and back.
   * A listing seen on a coin's first check (or on an exchange's first
     complete fetch) is the starting point (baseline), not "new".
-  * Not seen on a complete fetch -> delisted that day; seen again -> new.
+  * NEW only if the exchange had NO pair at all with that ticker the
+    previous day (a thin pair crossing the volume minimum, or a price
+    moving back within the tolerance, is an old listing - not news).
+  * DELISTED only when the ticker disappears from the exchange completely
+    (on a complete fetch); a price / volume dip keeps it listed.
+  * Rows of coins that no longer exist (deleted from Dropped) are removed.
 An exchange whose pages didn't all arrive is skipped for the day (no false
 delistings).
 
@@ -203,6 +208,9 @@ def run_listings_update():
                 continue
             fresh[slug] = [_pair_dict(p) for p in pairs if p.get("base")]
         had_before = {e for (e,) in session.query(ExchangePair.exchange).distinct()}
+        # Every ticker each exchange had BEFORE today's lists replace them.
+        bases_before = {(e, b) for e, b in session.query(ExchangePair.exchange, ExchangePair.base)
+                        .filter(ExchangePair.exchange.in_(list(fresh))).distinct()}
         for slug, rows in fresh.items():
             session.query(ExchangePair).filter_by(exchange=slug).delete(synchronize_session=False)
             session.bulk_insert_mappings(ExchangePair, [{**r, "exchange": slug, "day": today} for r in rows])
@@ -235,22 +243,32 @@ def run_listings_update():
                                 min_volume=0 if listed_now else MIN_NEW_VOLUME)
                 if top:
                     stats["listings"] += 1
+                    known = first_check or slug not in had_before or (slug, ticker) in bases_before
                     if row is None:
-                        baseline = first_check or slug not in had_before
+                        baseline = known
                         row = ExchangeListing(coin_id=cid, exchange=slug, first_seen=today, baseline=baseline)
                         session.add(row)
                         existing[(cid, slug)] = row
                         if not baseline:
                             stats["new"].append((c.name, EXCHANGES[slug], f"{ticker}/{top['quote']}"))
                     elif row.delisted_on is not None:             # listed again
-                        row.delisted_on, row.first_seen, row.baseline = None, today, False
-                        stats["new"].append((c.name, EXCHANGES[slug], f"{ticker}/{top['quote']}"))
+                        row.delisted_on = None
+                        if not known:
+                            row.first_seen, row.baseline = today, False
+                            stats["new"].append((c.name, EXCHANGES[slug], f"{ticker}/{top['quote']}"))
                     row.last_seen = today
                     row.top_pair, row.volume_24h = f"{ticker}/{top['quote']}", top["volume_24h"]
                     row.price_usd, row.link = top["price_usd"], top["link"]
-                elif row is not None and row.delisted_on is None and row.last_seen < today:
+                elif (row is not None and row.delisted_on is None and row.last_seen < today
+                      and (slug, ticker) not in by_base):              # ticker gone from the exchange
                     row.delisted_on = today
                     stats["delisted"].append((c.name, EXCHANGES[slug]))
+        # Coins deleted from our database (e.g. 7 days after being dropped).
+        gone = [cid for (cid,) in session.query(ExchangeWatch.coin_id) if cid not in coins]
+        if gone:
+            stats["cleaned"] = session.query(ExchangeListing).filter(ExchangeListing.coin_id.in_(gone)).delete(
+                synchronize_session=False)
+            session.query(ExchangeWatch).filter(ExchangeWatch.coin_id.in_(gone)).delete(synchronize_session=False)
         session.commit()
 
         # 4. Upcoming Binance listings for our coins (ticker match).
@@ -262,9 +280,10 @@ def run_listings_update():
     finally:
         session.close()
     log.info("Exchange listings: %d exchanges read (%d failed), %d pairs, %d DropsTab requests; "
-             "%d coins checked, %d listings, %d new, %d delisted, %d scheduled.",
+             "%d coins checked, %d listings, %d new, %d delisted, %d scheduled; %d rows of deleted coins removed.",
              stats["exchanges_ok"], len(stats["exchanges_failed"]), stats["pairs"], stats["calls"],
-             stats["coins"], stats["listings"], len(stats["new"]), len(stats["delisted"]), len(stats["scheduled"]))
+             stats["coins"], stats["listings"], len(stats["new"]), len(stats["delisted"]), len(stats["scheduled"]),
+             stats.get("cleaned", 0))
     return stats
 
 
