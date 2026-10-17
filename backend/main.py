@@ -236,6 +236,11 @@ def get_coins():
         for r in rows:
             r["volume_spike"] = vs.get(r["id"])
         _add_symbols(session, rows, coins)
+        # Performance since the coin entered Active (stored prices, no API call).
+        from performance import safe_compute, brief
+        perf = safe_compute(session, coins)
+        for r in rows:
+            r["performance"] = brief(perf.get(r["id"]))
 
         # Highest score first, then attach a rank number.
         rows.sort(key=lambda r: r["score"], reverse=True)
@@ -300,6 +305,10 @@ def get_dropped():
         } for dropped, coin in results]
 
         _add_symbols(session, rows, [coin for _, coin in results])
+        from performance import safe_compute, brief
+        perf = safe_compute(session, [coin for _, coin in results])
+        for r in rows:
+            r["performance"] = brief(perf.get(r["id"]))   # change up to the day it was dropped
         return {"count": len(rows), "dropped": rows}
     finally:
         session.close()
@@ -339,6 +348,7 @@ def get_coin(contract: str):
         from coinalyze import futures_data
         from listings import get_listings
         from volume_anomaly import get_recent_spike
+        from performance import safe_compute
         from concurrent.futures import ThreadPoolExecutor
 
         def own_session(fn, *args):
@@ -463,6 +473,7 @@ def get_coin(contract: str):
             "futures": futures_data(session, coin.id),  # Coinalyze, stored (no API call)
             "listings": get_listings(session, coin),    # exchange listings, stored (no API call)
             "volume_spike": get_recent_spike(session, coin.id),  # last 7 days, stored (no API call)
+            "performance": safe_compute(session, [coin]).get(coin.id),  # since it entered Active
             "supply": {
                 "total": coin.total_supply,
                 "circulating": coin.circulating_supply,
