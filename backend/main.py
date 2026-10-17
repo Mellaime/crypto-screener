@@ -225,6 +225,12 @@ def get_coins():
             r["score_yesterday"] = None if y is None else round(y, 1)
             r["score_delta"] = None if y is None else round(r["score"] - y, 1)
 
+        # Exchange listing badges (🆕 new listing / 📅 scheduled), stored.
+        from listings import badges
+        xb = badges(session, [r["id"] for r in rows])
+        for r in rows:
+            r["exchange_badges"] = xb.get(r["id"], [])
+
         # Highest score first, then attach a rank number.
         rows.sort(key=lambda r: r["score"], reverse=True)
         for i, r in enumerate(rows, start=1):
@@ -246,10 +252,13 @@ def get_dropped():
             .order_by(DroppedCoin.dropped_date.desc())
             .all()
         )
+        from listings import badges
+        xb = badges(session, [coin.id for _, coin in results])
         rows = [{
             "name": coin.name,
             "chain": coin.chain,
             "contract": coin.contract,              # opens the coin's detail page
+            "exchange_badges": xb.get(coin.id, []),  # 🆕 / 📅 exchange listings
             "price": coin.price_usd,                # current USD price (refreshed each run)
             "price_updated": _iso(coin.price_updated_at),
             "date": dropped.dropped_date.strftime("%Y-%m-%d"),
@@ -294,6 +303,7 @@ def get_coin(contract: str):
         from entry_zone import get_entry_zone
         from dropstab import get_unlocks
         from coinalyze import futures_data
+        from listings import get_listings
         from concurrent.futures import ThreadPoolExecutor
 
         def own_session(fn, *args):
@@ -416,6 +426,7 @@ def get_coin(contract: str):
             "entry_zone": entry_zone,
             "unlocks": get_unlocks(session, coin),   # DropsTab, stored (no API call)
             "futures": futures_data(session, coin.id),  # Coinalyze, stored (no API call)
+            "listings": get_listings(session, coin),    # exchange listings, stored (no API call)
             "supply": {
                 "total": coin.total_supply,
                 "circulating": coin.circulating_supply,

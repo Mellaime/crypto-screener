@@ -553,3 +553,74 @@ class DropstabUnlockAll(Base):
     data = Column(Text, nullable=False)                        # JSON overview entry
     day = Column(Date, nullable=False)                         # UTC day fetched
     updated_at = Column(DateTime, nullable=False)
+
+
+class ExchangePair(Base):
+    """
+    The latest full trading-pair list of each monitored exchange (DropsTab
+    /exchanges/{slug}/pairs; ~25K rows). An exchange's rows are replaced
+    whenever all its pages were fetched. Used to find our coins' listings
+    and, for Check a Coin, any coin's listings by ticker (0 API calls).
+    """
+    __tablename__ = "exchange_pairs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    exchange = Column(String, nullable=False, index=True)       # DropsTab slug
+    base = Column(String, nullable=False, index=True)           # upper-case ticker
+    quote = Column(String)
+    pair_type = Column(String)                                  # SPOT / DERIVATIVE
+    price_usd = Column(Float)
+    volume_24h = Column(Float)
+    link = Column(String)
+    day = Column(Date, nullable=False)
+
+
+class ExchangeWatch(Base):
+    """Coins (active / dropped) the listing check has looked at, and since
+    when: listings found on a coin's FIRST check are its starting point
+    (baseline), not new listings."""
+    __tablename__ = "exchange_watch"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    coin_id = Column(Integer, nullable=False, unique=True, index=True)
+    since = Column(Date, nullable=False)
+
+
+class ExchangeListing(Base):
+    """
+    One row per coin per monitored exchange it trades on (or traded on):
+    first_seen = the day our check first saw it; baseline = it was already
+    listed when we started watching (so not a "new" listing); delisted_on =
+    the day it disappeared (NULL while listed). Top pair / volume / price =
+    the coin's biggest pair there on the latest check.
+    """
+    __tablename__ = "exchange_listings"
+    __table_args__ = (UniqueConstraint("coin_id", "exchange"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    coin_id = Column(Integer, nullable=False, index=True)
+    exchange = Column(String, nullable=False)                   # DropsTab slug
+    first_seen = Column(Date, nullable=False)
+    last_seen = Column(Date, nullable=False)
+    delisted_on = Column(Date)
+    baseline = Column(Boolean, nullable=False, default=False)
+    top_pair = Column(String)
+    volume_24h = Column(Float)
+    price_usd = Column(Float)
+    link = Column(String)
+
+
+class ExchangeAnnouncement(Base):
+    """Upcoming-listing announcements ("Binance Will List X (ABC)") with the
+    trading start time read from the article. Matched to coins by ticker."""
+    __tablename__ = "exchange_announcements"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    exchange = Column(String, nullable=False)
+    code = Column(String, nullable=False, unique=True)          # the exchange's article id
+    title = Column(String)
+    tickers = Column(Text)                                      # JSON list, upper-case
+    listing_at = Column(DateTime)                               # UTC; NULL = not found in the article
+    released_at = Column(DateTime)
+    url = Column(String)
+    checked_at = Column(DateTime, nullable=False)

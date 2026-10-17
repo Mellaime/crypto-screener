@@ -230,6 +230,9 @@ def run_check(contract):
     # Futures Data (Coinalyze, live): main perpetual by ticker, confirmed by price.
     from coinalyze import futures_data_live
     f_fut = pool.submit(futures_data_live, symbol, price)
+    # Exchange Listings: stored for a coin we track, else the stored pair lists (0 calls).
+    from listings import listings_live
+    f_lst = pool.submit(listings_live, symbol, price, contract)
     pool.shutdown(wait=False)
 
     steps = []
@@ -395,6 +398,8 @@ def run_check(contract):
         "supply": check_supply(md),
         # Futures Data (Coinalyze OI / funding / long-short; nothing stored).
         "futures": f_fut.result(),
+        # Exchange Listings on the 12 monitored exchanges (stored data).
+        "listings": f_lst.result(),
         "tx_bars": (daily or {}).get("bars") or [],
         "tx_error": tx_err,
         "tx_window_days": 15,
@@ -601,7 +606,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked")   # result layout: has these display sections
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings")   # result layout: has these display sections
 
 
 def get_check(session, contract):
