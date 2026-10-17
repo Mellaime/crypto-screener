@@ -186,6 +186,15 @@ def run_pipeline(raise_on_error=False):
             log.exception("Score history not saved - continuing.")
             report.step_errors.append("Score history")
 
+        # Volume Alert (tables' badge, detail page, Telegram): today's
+        # DexScreener volume vs the coin's 30-day average. No API calls.
+        try:
+            from volume_anomaly import run_volume_anomaly_detection
+            report.volume = run_volume_anomaly_detection()
+        except Exception:
+            log.exception("Volume anomaly detection failed")
+            report.step_errors.append("Volume Anomaly")
+
         # Consolidated pipeline summary.
         log.info("=" * 55)
         log.info("PIPELINE COMPLETE")

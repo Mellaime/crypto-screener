@@ -148,6 +148,23 @@
   .favstar.on { color: #e3b341; }
   .favstar.pop { animation: favpop .35s ease; }
   @keyframes favpop { 0% { transform: scale(1); } 40% { transform: scale(1.45); } 100% { transform: scale(1); } }
+  /* Volume spike badge (🚨 big / ⚠️ spike / 📈 elevated) */
+  .vbadge { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 700; line-height: 1;
+    padding: 3px 6px; border-radius: 999px; margin-left: 5px; cursor: help; white-space: nowrap; vertical-align: 1px;
+    font-variant-numeric: tabular-nums; }
+  .vbadge.big { background: rgba(248,81,73,.22); color: #ff7b72; border: 1px solid #f85149; animation: vpulse 2s ease-in-out infinite; }
+  .vbadge.medium { background: rgba(210,153,34,.20); color: #e3b341; border: 1px solid #d29922; }
+  .vbadge.elevated { background: rgba(88,166,255,.15); color: #79c0ff; border: 1px solid rgba(88,166,255,.5);
+    font-size: 10px; padding: 2px 5px; font-weight: 600; }
+  @keyframes vpulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(248,81,73,.45); } 50% { box-shadow: 0 0 0 4px rgba(248,81,73,0); } }
+  @media (prefers-reduced-motion: reduce) { .vbadge.big { animation: none; } }
+  .valert { border-left: 4px solid var(--accent); }
+  .valert.big { border-left-color: #f85149; } .valert.medium { border-left-color: #d29922; }
+  .valert .vratio { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 6px 0 2px; }
+  .valert.big .vratio { color: #ff7b72; } .valert.medium .vratio { color: #e3b341; } .valert.elevated .vratio { color: #79c0ff; }
+  .vbars { margin-top: 10px; display: grid; grid-template-columns: max-content 1fr max-content; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .vbars .track { height: 10px; background: #21262d; border-radius: 5px; overflow: hidden; }
+  .vbars .fill { height: 100%; border-radius: 5px; }
   .droptag { display: inline-block; margin-left: 4px; font-size: 11px; color: var(--low); border: 1px solid var(--low);
     border-radius: 20px; padding: 1px 7px; }
   th[aria-sort="none"] .sorth .arr::after { content: "↕"; color: var(--muted); opacity: 0.6; }
@@ -423,7 +440,8 @@
   <section class="view" id="view-active" role="tabpanel" aria-labelledby="tab-active">
   <h2 id="active-title">Active coins</h2>
   <div class="badgelegend"><span>🆕 new — entered the list on the latest daily run</span>
-    <span>🔥 hot — 24h volume above 25% of market cap</span></div>
+    <span>🔥 hot — 24h volume above 25% of market cap</span>
+    <span>🚨 / ⚠️ / 📈 volume 5x+ / 3–5x / 2–3x its 30-day average</span></div>
   <div class="card">
     <table data-table="active">
       <thead>
@@ -712,7 +730,7 @@
       <tr tabindex="0" data-contract="${esc(c.contract)}" title="Open ${esc(c.name)}">
         <td class="rank">${c.rank}</td>
         <td>
-          <div class="name">${favStar(c.contract, c.name)}${esc(c.name)}${coinBadges(c)} ${secBadge(c)}${exchangeBadges(c.exchange_badges)}</div>
+          <div class="name">${favStar(c.contract, c.name)}${esc(c.name)}${volBadge(c.volume_spike)}${coinBadges(c)} ${secBadge(c)}${exchangeBadges(c.exchange_badges)}</div>
           <span class="chain">${esc(c.chain)}</span>
           ${secInfo(c)}
         </td>
@@ -779,6 +797,33 @@
     if (c.vol_mcap != null && c.vol_mcap > HOT_VOL_MCAP_PCT)
       s += `<span class="cbadge" title="Hot: 24h volume is ${c.vol_mcap.toFixed(1)}% of market cap (above ${HOT_VOL_MCAP_PCT}%)" aria-label="volume above ${HOT_VOL_MCAP_PCT}% of market cap">🔥</span>`;
     return s;
+  }
+
+  // Volume spike of the last 7 days: today's volume vs the coin's own 30-day average.
+  const VOL_LEVEL = {big: {icon: "🚨", label: "Big volume spike"}, medium: {icon: "⚠️", label: "Volume spike"},
+                     elevated: {icon: "📈", label: "Elevated volume"}};
+  function volTip(v) {
+    const day = new Date(v.day + "T00:00:00Z").toLocaleDateString("en-US", {month: "short", day: "numeric", timeZone: "UTC"});
+    return `Volume today ${fmtMoney(v.volume_today)} vs ${fmtMoney(v.volume_avg_30d)} avg (${v.ratio.toFixed(1)}x) — detected ${day}`;
+  }
+  function volBadge(v) {
+    if (!v || !VOL_LEVEL[v.severity]) return "";
+    return `<span class="vbadge ${v.severity}" title="${esc(volTip(v))}" aria-label="${esc(VOL_LEVEL[v.severity].label + ": " + volTip(v))}">${VOL_LEVEL[v.severity].icon} ${v.ratio.toFixed(1)}x</span>`;
+  }
+  function volumeAlertCard(v) {
+    if (!v || !VOL_LEVEL[v.severity]) return "";
+    const L = VOL_LEVEL[v.severity];
+    const day = new Date(v.day + "T00:00:00Z").toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"});
+    const max = Math.max(v.volume_today || 0, v.volume_avg_30d || 0) || 1;
+    const color = {big: "#f85149", medium: "#d29922", elevated: "#58a6ff"}[v.severity];
+    return `<div class="ratiocard valert ${v.severity}"><h3>${L.icon} Volume Alert — ${esc(L.label)}</h3>
+      <div class="note">Daily trading volume (DexScreener) compared with this coin's own average over the previous 30 days. Detected ${esc(day)}.</div>
+      <div class="vratio">${v.ratio.toFixed(1)}x <small style="font-size:14px;color:var(--muted);font-weight:500">its usual volume</small></div>
+      <div class="vbars">
+        <span>That day</span><div class="track"><div class="fill" style="width:${(v.volume_today / max * 100).toFixed(1)}%;background:${color}"></div></div><b>${fmtMoney(v.volume_today)}</b>
+        <span>30-day avg</span><div class="track"><div class="fill" style="width:${(v.volume_avg_30d / max * 100).toFixed(1)}%;background:var(--muted)"></div></div><b>${fmtMoney(v.volume_avg_30d)}</b>
+      </div>
+      <div class="note" style="margin:10px 0 0">🚨 5x or more · ⚠️ 3–5x · 📈 2–3x. Shown for 7 days after detection.${v.severity === "elevated" ? "" : " Sent as a Telegram alert."}</div></div>`;
   }
 
   // Exchange listing badges: 🆕 Binance = newly listed (last 7 days), 📅 Upbit =
@@ -1130,6 +1175,7 @@
           "Traded volume as a % of the coin's market cap (CoinGecko/CMC): " + fmtMoney(c.mcap) + ".")}
       ${ratioCard(c, "Volume / Liquidity", "vol_liq_x", fmtMult,
           "Traded volume as a multiple of the coin's current liquidity (Codex): " + fmtMoney(c.liquidity) + ".")}
+      ${volumeAlertCard(c.volume_spike)}
       ${liquidityCard(c)}
       ${rankCard(c)}
       ${holdersCard(c)}
@@ -1333,6 +1379,7 @@
           ${tile("Honeypot", r.honeypot === "safe" ? "✓ sellable" : r.honeypot === "unsafe" ? "✗ not sellable" : "unknown")}
         </div></div>
       ${checkScoreCard(r.score)}
+      ${volumeAlertCard(r.volume_spike)}
       <div style="margin-top:12px">${txChart(r, "ck")}</div>
       ${priceRangeCard(r.price_range)}
       ${relStrengthCard(r.rel_strength)}

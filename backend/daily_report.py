@@ -83,6 +83,7 @@ class RunReport:
         self.drop = None            # run_drop_logic() stats
         self.scored = None          # number of coins scored
         self.listings = None        # listings.run_listings_update() stats
+        self.volume = None          # volume_anomaly.run_volume_anomaly_detection() stats
 
 
 def _new_coin_names(session, since):
@@ -203,6 +204,15 @@ def build_message(rep, session):
                      for n, ex, when in lst["scheduled"][:MAX_NAMES])
     if lst.get("delisted"):
         lines.append("📉 تحيدات من بورصة: " + "، ".join(f"{n} ({ex})" for n, ex in lst["delisted"][:MAX_NAMES]))
+
+    # 📊 unusual volume (big / medium spikes, each coin at most once per 3 days)
+    vol = rep.volume or {}
+    if vol.get("alerts"):
+        def usd(v):
+            return f"${v / 1e6:.1f}M" if v >= 1e6 else f"${v / 1e3:.0f}K"
+        lines.append(f"\n📊 فوليوم غير عادي: {len(vol['alerts'])}")
+        lines.extend(f"• {'🚨' if sev == 'big' else '⚠️'} {n} — {ratio:.1f}x ({usd(today)} مقابل متوسط {usd(avg)})"
+                     for n, sev, ratio, today, avg in vol["alerts"][:MAX_NAMES])
 
     # ⚠️ problems / data-quality flags
     issues = []

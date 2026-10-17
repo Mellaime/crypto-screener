@@ -230,6 +230,11 @@ def get_coins():
         xb = badges(session, [r["id"] for r in rows])
         for r in rows:
             r["exchange_badges"] = xb.get(r["id"], [])
+        # Volume spike of the last 7 days (🚨 / ⚠️ / 📈 badge), stored.
+        from volume_anomaly import recent_spikes
+        vs = recent_spikes(session, [r["id"] for r in rows])
+        for r in rows:
+            r["volume_spike"] = vs.get(r["id"])
 
         # Highest score first, then attach a rank number.
         rows.sort(key=lambda r: r["score"], reverse=True)
@@ -304,6 +309,7 @@ def get_coin(contract: str):
         from dropstab import get_unlocks
         from coinalyze import futures_data
         from listings import get_listings
+        from volume_anomaly import get_recent_spike
         from concurrent.futures import ThreadPoolExecutor
 
         def own_session(fn, *args):
@@ -427,6 +433,7 @@ def get_coin(contract: str):
             "unlocks": get_unlocks(session, coin),   # DropsTab, stored (no API call)
             "futures": futures_data(session, coin.id),  # Coinalyze, stored (no API call)
             "listings": get_listings(session, coin),    # exchange listings, stored (no API call)
+            "volume_spike": get_recent_spike(session, coin.id),  # last 7 days, stored (no API call)
             "supply": {
                 "total": coin.total_supply,
                 "circulating": coin.circulating_supply,
