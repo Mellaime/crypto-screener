@@ -336,6 +336,14 @@ async def fav_remove_coin(name: str, coin_ref: str, request: Request):
     return _fav(remove_coin, name, coin_ref, token=token, pin=b.get("pin"), ip=_client_ip(request))
 
 
+@app.post("/api/favorites/profiles/{name}/reset")
+async def fav_reset(name: str, request: Request):
+    """Wipe the profile's coins and restart its portfolio (PIN always required)."""
+    from favorites import reset_profile
+    b = await _body(request)
+    return _fav(reset_profile, name, b.get("pin"), _client_ip(request))
+
+
 @app.delete("/api/favorites/profiles/{name}")
 async def fav_delete_profile(name: str, request: Request):
     from favorites import delete_profile

@@ -660,6 +660,7 @@ class FavoriteProfile(Base):
     pin_hash = Column(String, nullable=False)                 # "pbkdf2$<iterations>$<salt hex>$<hash hex>"
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow)
+    tracking_since = Column(DateTime)                         # portfolio start: created, or the last Reset
 
 
 class FavoriteProfileCoin(Base):
@@ -677,6 +678,7 @@ class FavoriteProfileCoin(Base):
     coin_name = Column(String)
     coin_symbol = Column(String)
     coin_chain = Column(String)
+    entry_price = Column(Float)                               # price when it was added (portfolio P&L basis)
     last_known_price = Column(Float)
     last_known_mcap = Column(Float)
     last_known_pnl = Column(Float)                            # % since it entered Active (performance.py)
