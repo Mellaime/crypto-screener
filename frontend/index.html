@@ -148,6 +148,51 @@
   .favstar.on { color: #e3b341; }
   .favstar.pop { animation: favpop .35s ease; }
   @keyframes favpop { 0% { transform: scale(1); } 40% { transform: scale(1.45); } 100% { transform: scale(1); } }
+  /* Compare Coins */
+  .cmp-picker { position: relative; max-width: 560px; }
+  .cmp-picker input { width: 100%; padding: 10px 12px; font-size: 15px; background: var(--card); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; }
+  .cmp-picker input:disabled { opacity: .6; cursor: not-allowed; }
+  .cmp-results { position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px); background: var(--card);
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+  .cmp-results button { all: unset; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; cursor: pointer; font-size: 14px; }
+  .cmp-results button:hover, .cmp-results button.on { background: rgba(88,166,255,.1); }
+  .cmp-results .none { padding: 10px 12px; color: var(--muted); font-size: 14px; }
+  .cmp-ico { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #0d1117; flex: none; }
+  .cmp-sym { color: var(--muted); font-size: 12px; }
+  .cmp-pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0 4px; }
+  .cmp-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; border-radius: 999px;
+    background: #21262d; border: 1px solid var(--border); font-size: 13px; }
+  .cmp-pill button, .cmp-clear { all: unset; cursor: pointer; color: var(--muted); padding: 0 4px; }
+  .cmp-pill button:hover, .cmp-clear:hover { color: var(--text); }
+  .cmp-clear { font-size: 13px; text-decoration: underline; margin-left: 6px; }
+  .cmp-x { all: unset; cursor: pointer; color: var(--muted); padding: 0 4px; font-size: 15px; }
+  .cmp-x:hover { color: var(--text); }
+  .cmp-count { color: var(--muted); font-size: 13px; margin-left: 4px; }
+  .cmp-warn { color: var(--mid); font-size: 13px; margin: 6px 0; }
+  .cmp-wrap { overflow: auto; max-height: 78vh; margin-top: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+  .cmp-table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 520px; }
+  .cmp-table th, .cmp-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; text-align: left; }
+  .cmp-table thead th { position: sticky; top: 0; z-index: 3; background: #1c2129; font-size: 14px; }
+  .cmp-table thead th small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; margin-top: 2px; }
+  .cmp-table .mlabel { position: sticky; left: 0; z-index: 2; background: var(--card); color: var(--muted); font-size: 13px;
+    white-space: nowrap; min-width: 150px; }
+  .cmp-table thead th.mlabel { z-index: 4; background: #1c2129; }
+  .cmp-table tr.grp td { background: #0f1419; color: var(--muted); font-size: 11px; font-variant: small-caps; text-transform: lowercase;
+    letter-spacing: 1px; padding: 6px 12px; font-weight: 600; }
+  .cmp-table tr.grp td.mlabel { background: #0f1419; }
+  .cmp-cell { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+  .cmp-v { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .cmp-sub { display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 2px; }
+  .cmp-table td.win { background: rgba(63,185,80,.10); }
+  .cmp-table td.na .cmp-v { color: var(--muted); font-weight: 400; }
+  .cmp-trophy { font-size: 15px; line-height: 1; }
+  .cmp-summary { margin-top: 14px; }
+  .cmp-summary ol { margin: 8px 0 0; padding-left: 20px; }
+  .cmp-summary li { margin: 3px 0; }
+  .cmp-top { font-size: 18px; font-weight: 700; margin: 6px 0; }
   /* Volume spike badge (🚨 big / ⚠️ spike / 📈 elevated) */
   .vbadge { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 700; line-height: 1;
     padding: 3px 6px; border-radius: 999px; margin-left: 5px; cursor: help; white-space: nowrap; vertical-align: 1px;
@@ -427,6 +472,8 @@
       Dropped Coins <span class="count" id="count-dropped"></span></button>
     <button class="tab" role="tab" id="tab-favorites" aria-controls="view-favorites" data-view="favorites">
       Favorites <span class="count" id="count-favorites"></span></button>
+    <button class="tab" role="tab" id="tab-compare" aria-controls="view-compare" data-view="compare">
+      Compare</button>
     <button class="tab" role="tab" id="tab-queue" aria-controls="view-queue" data-view="queue">
       Coming Up · <bdi>طابور</bdi> <span class="count" id="count-queue"></span></button>
     <button class="tab" role="tab" id="tab-check" aria-controls="view-check" data-view="check">
@@ -567,6 +614,20 @@
     </table>
   </div>
   <div class="tip" id="narrtip"></div>
+  </section>
+
+  <section class="view" id="view-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
+  <h2>Compare coins</h2>
+  <div class="sub" style="margin-bottom:12px">Pick 2–5 coins we track (active or dropped) and see them side by side.
+    🏆 marks the best value in each row. Stored data from the daily run.</div>
+  <div class="cmp-picker">
+    <input id="cmp-input" type="search" autocomplete="off" placeholder="Search a coin by name or ticker…"
+      aria-label="Search coins to compare" aria-controls="cmp-results" aria-expanded="false">
+    <div class="cmp-results" id="cmp-results" role="listbox" hidden></div>
+  </div>
+  <div class="cmp-pills" id="cmp-pills"></div>
+  <div id="cmp-warn"></div>
+  <div id="cmp-body"></div>
   </section>
 
   <section class="view" id="view-unlocks" role="tabpanel" aria-labelledby="tab-unlocks" hidden>
@@ -920,7 +981,7 @@
   // URL (#dropped / #queue) so a reload or a shared link opens the same view.
   // The 30-second refresh keeps updating all three, so switching is instant
   // and always current.
-  const VIEWS = ["active", "dropped", "favorites", "queue", "check", "narratives", "unlocks"];
+  const VIEWS = ["active", "dropped", "favorites", "compare", "queue", "check", "narratives", "unlocks"];
   // A hand-edited / truncated link can hold a broken %-escape; decodeURIComponent
   // would throw and stop the whole page script (nothing would load), so fall
   // back to the raw text.
@@ -957,6 +1018,7 @@
     if (location.hash !== hash) history.replaceState(null, "", location.pathname + location.search + hash);
     if (name === "narratives") loadNarratives();
     if (name === "unlocks") loadUnlocks();
+    if (name === "compare") initCompare();
   }
 
   // ---- Narratives tab (CoinGecko categories, our own 7-day history) --------
@@ -1938,6 +2000,233 @@
         <tr><td class="rowlbl"><b>Total</b></td><td><b>${s.total}</b></td><td class="sdetail na">out of ${s.max_computable} computable</td></tr>
       </tbody></table></div></div>`;
   }
+  // ---------------------------------------------------------- Compare Coins page
+  // 2-5 tracked coins side by side (/api/compare - stored data only). Coins
+  // are identified by "slug" (lower-case ticker, or the contract when two
+  // tracked coins share a ticker). The selection lives in the address
+  // (?coins=zk,ldo#compare - shareable) and in localStorage as a fallback.
+  const CMP_MAX = 5;
+  let cmpSel = null, cmpCache = {}, cmpErrors = [], cmpTimer = null, cmpPick = -1;
+  function cmpAllCoins() {
+    const a = activeData ? activeData.coins : [], d = droppedData ? droppedData.dropped : [];
+    return [...a.map(c => ({...c, status: "active"})), ...d.map(c => ({...c, status: "dropped"}))].filter(c => c.slug);
+  }
+  function cmpSave() {
+    save("compareCoins", cmpSel);
+    const q = new URLSearchParams(location.search);
+    if (cmpSel.length) q.set("coins", cmpSel.join(",")); else q.delete("coins");
+    const qs = q.toString().replace(/%2C/g, ",");
+    history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+  }
+  function initCompare() {
+    if (cmpSel === null) {
+      const fromUrl = new URLSearchParams(location.search).get("coins");
+      cmpSel = (fromUrl ? fromUrl.split(",") : (store("compareCoins", []) || []))
+        .map(x => String(x).trim().toLowerCase()).filter(Boolean).slice(0, CMP_MAX);
+      cmpSel = [...new Set(cmpSel)];
+    }
+    cmpSave();
+    cmpRender();
+    cmpFetch();
+  }
+  let cmpBusy = false, cmpAgain = false;
+  async function cmpFetch() {
+    if (cmpBusy) { cmpAgain = true; return; }
+    const missing = cmpSel.filter(x => !cmpCache[x]);
+    if (!missing.length) return cmpRender();
+    cmpBusy = true;
+    document.getElementById("cmp-body").innerHTML = cmpSel.length >= 2 ? '<div class="empty">Loading comparison…</div>' : "";
+    try {
+      const res = await fetch("/api/compare?coins=" + encodeURIComponent(missing.join(",")));
+      const d = await res.json();
+      // the API answers with each coin's canonical slug: map what we asked for onto it
+      for (const c of d.coins) {
+        cmpCache[c.slug] = c;
+        const asked = missing.find(m => m === c.slug || m === String(c.contract).toLowerCase() || m === String(c.symbol || "").toLowerCase());
+        if (asked && asked !== c.slug) cmpSel = cmpSel.map(x => x === asked ? c.slug : x);
+      }
+      if (!res.ok || !Array.isArray(d.coins)) throw new Error("API returned " + res.status);
+      for (const e of d.errors || []) {
+        const slug = String(e.slug).toLowerCase();
+        if (!missing.includes(slug)) continue;
+        cmpSel = cmpSel.filter(x => x !== slug);
+        if (!cmpErrors.includes(e.error)) cmpErrors.push(e.error);
+      }
+      cmpSel = [...new Set(cmpSel)];
+      cmpSave();
+    } catch (e) {
+      document.getElementById("cmp-body").innerHTML = `<div class="empty">Couldn't load the comparison (${esc(e.message)}).</div>`;
+      return;
+    } finally {
+      cmpBusy = false;
+    }
+    cmpRender();
+    if (cmpAgain) { cmpAgain = false; cmpFetch(); }
+  }
+  function cmpAdd(slug) {
+    if (!slug || cmpSel.includes(slug) || cmpSel.length >= CMP_MAX) return;
+    cmpSel.push(slug);
+    cmpSave();
+    const inp = document.getElementById("cmp-input");
+    inp.value = ""; cmpShowResults(false);
+    cmpFetch();
+    cmpRender();
+    if (cmpSel.length < CMP_MAX) inp.focus();
+  }
+  function cmpRemove(slug) { cmpSel = cmpSel.filter(x => x !== slug); cmpSave(); cmpRender(); }
+  function cmpIcon(c) {
+    let h = 0; for (const ch of String(c.symbol || c.name)) h = (h * 31 + ch.charCodeAt(0)) % 360;
+    return `<span class="cmp-ico" style="background:hsl(${h},60%,62%)" aria-hidden="true">${esc(String(c.symbol || c.name).slice(0, 2).toUpperCase())}</span>`;
+  }
+  function cmpShowResults(on) {
+    const box = document.getElementById("cmp-results");
+    box.hidden = !on;
+    document.getElementById("cmp-input").setAttribute("aria-expanded", on ? "true" : "false");
+  }
+  function cmpSearch() {
+    const inp = document.getElementById("cmp-input"), box = document.getElementById("cmp-results");
+    const q = inp.value.trim().toLowerCase();
+    if (!q) return cmpShowResults(false);
+    const all = cmpAllCoins();
+    if (!all.length) { box.innerHTML = '<div class="none">Loading coin list…</div>'; return cmpShowResults(true); }
+    const score = c => {
+      const n = c.name.toLowerCase(), t = String(c.symbol || "").toLowerCase();
+      return t === q ? 0 : n === q ? 1 : t.startsWith(q) ? 2 : n.startsWith(q) ? 3 : (t.includes(q) || n.includes(q)) ? 4 : 9;
+    };
+    const hits = all.filter(c => score(c) < 9 && !cmpSel.includes(c.slug))
+      .sort((a, b) => score(a) - score(b) || (a.status === "active" ? 0 : 1) - (b.status === "active" ? 0 : 1)).slice(0, 10);
+    cmpPick = hits.length ? 0 : -1;
+    box.innerHTML = hits.length ? hits.map((c, i) => `<button type="button" role="option" data-slug="${esc(c.slug)}" class="${i === 0 ? "on" : ""}">
+        ${cmpIcon(c)}<span><b>${esc(c.name)}</b> <span class="cmp-sym">${esc(c.symbol || "")}</span></span>
+        <span class="chain" style="margin:0 0 0 auto">${esc(c.chain)}</span>${c.status === "dropped" ? '<span class="droptag" style="margin:0">dropped</span>' : ""}</button>`).join("")
+      : `<div class="none">No matches for '${esc(inp.value.trim())}'</div>`;
+    cmpShowResults(true);
+  }
+  (function wireCompare() {
+    const inp = document.getElementById("cmp-input"), box = document.getElementById("cmp-results");
+    inp.addEventListener("input", () => { clearTimeout(cmpTimer); cmpTimer = setTimeout(cmpSearch, 150); });
+    inp.addEventListener("focus", () => { if (inp.value.trim()) cmpSearch(); });
+    inp.addEventListener("keydown", e => {
+      const btns = [...box.querySelectorAll("button")];
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        if (!btns.length) return;
+        e.preventDefault();
+        cmpPick = (cmpPick + (e.key === "ArrowDown" ? 1 : -1) + btns.length) % btns.length;
+        btns.forEach((b, i) => b.classList.toggle("on", i === cmpPick));
+      } else if (e.key === "Enter" && btns[cmpPick]) { e.preventDefault(); cmpAdd(btns[cmpPick].dataset.slug); }
+      else if (e.key === "Escape") cmpShowResults(false);
+    });
+    box.addEventListener("mousedown", e => { const b = e.target.closest("button[data-slug]"); if (b) { e.preventDefault(); cmpAdd(b.dataset.slug); } });
+    document.addEventListener("click", e => { if (!e.target.closest(".cmp-picker")) cmpShowResults(false); });
+    document.getElementById("cmp-pills").addEventListener("click", e => {
+      const x = e.target.closest("[data-remove]");
+      if (x) cmpRemove(x.dataset.remove);
+      if (e.target.closest("button.cmp-clear")) { cmpSel = []; cmpErrors = []; cmpSave(); cmpRender(); }
+    });
+    document.getElementById("cmp-body").addEventListener("click", e => {
+      const x = e.target.closest("[data-remove]");
+      if (x) cmpRemove(x.dataset.remove);
+    });
+  })();
+
+  // Metric rows: value(c) -> number used to pick the winner (null = missing,
+  // never wins); dir 1 = higher wins, -1 = lower wins, 0 = info only.
+  function cmpMetrics() {
+    const pct = v => v == null ? "—" : (v < 1 && v > 0 ? v.toFixed(2) : v.toFixed(1)) + "%";
+    const posText = v => v == null ? "" : v <= 25 ? "cheap" : v <= 50 ? "lower half" : v < 70 ? "upper half" : "high";
+    const day = d => new Date(d).toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"});
+    const SPIKE = {big: "🚨", medium: "⚠️", elevated: "📈"};
+    return [
+      {group: "Price & Market"},
+      {key: "price", label: "Price", dir: 0, value: c => c.price, show: c => [fmtPrice(c.price), c.symbol ? c.symbol + " / USD" : ""]},
+      {key: "mcap", label: "Market Cap", dir: 0, value: c => c.mcap, show: c => [fmtMoney(c.mcap), "Market Cap"]},
+      {key: "score", label: "Score", dir: 1, value: c => c.score.total, reason: "Highest score",
+       show: c => [c.score.total == null ? "—" : `${c.score.total} <small class="cmp-sym">/ 100</small>` +
+         (c.score.delta ? ` <span class="sdelta ${c.score.delta > 0 ? "up" : "down"}">${c.score.delta > 0 ? "↑" : "↓"}${Math.abs(c.score.delta)}</span>` : ""),
+         c.status === "dropped" ? "dropped — from its last snapshot" : "vs yesterday"]},
+      {key: "rank", label: "Rank by Score", dir: -1, value: c => c.rank, reason: "Best rank",
+       show: c => [c.rank == null ? "—" : "#" + c.rank, c.rank == null ? (c.status === "dropped" ? "not ranked (dropped)" : "") : `of ${c.rank_of} active coins`]},
+      {group: "Volume & Liquidity"},
+      {key: "vol", label: "Volume 24h", dir: 1, value: c => c.volume_24h, reason: "Most volume", show: c => [fmtMoney(c.volume_24h), "DexScreener"]},
+      {key: "vl", label: "Vol / Liq", dir: 1, value: c => c.vol_liq_ratio, reason: "Highest Vol/Liq", show: c => [fmtX(c.vol_liq_ratio), "24h volume ÷ liquidity"]},
+      {key: "vm", label: "Vol / MCap", dir: 1, value: c => c.vol_mcap_pct, reason: "Highest Vol/MCap", show: c => [pct(c.vol_mcap_pct), "24h volume ÷ market cap"]},
+      {key: "liq", label: "Liquidity", dir: 1, value: c => c.liquidity, reason: "Deepest liquidity", show: c => [fmtMoney(c.liquidity), ""]},
+      {group: "Entry Signal"},
+      {key: "ez", label: "Entry Zone", dir: 1, value: c => c.entry_zone.rank, reason: "Best entry zone",
+       show: c => [c.entry_zone.label ? esc(c.entry_zone.label) : "—", c.entry_zone.zone ? "Entry Zone card" : "not enough history"]},
+      {key: "pos", label: "Price Position (60d)", dir: -1, value: c => c.price_position_pct, reason: "Cheapest in its 60-day range",
+       show: c => [c.price_position_pct == null ? "—" : Math.round(c.price_position_pct) + "%", posText(c.price_position_pct) && `(${posText(c.price_position_pct)}) — 0% = 60-day low`]},
+      {key: "spike", label: "Volume Spike", dir: 1, value: c => c.volume_spike ? c.volume_spike.ratio : null, reason: "Biggest volume spike",
+       show: c => c.volume_spike ? [`${SPIKE[c.volume_spike.severity] || ""} ${c.volume_spike.ratio.toFixed(1)}x`, "vs 30-day avg, " + shortDate(c.volume_spike.day)] : ["—", "none in the last 7 days"]},
+      {group: "Fundamentals"},
+      {key: "holders", label: "Holders", dir: 1, value: c => c.holders.count, reason: "Most holders",
+       show: c => [fmtNum(c.holders.count), c.holders.weekly_change_pct == null ? "" :
+         `<span class="${c.holders.weekly_change_pct > 0 ? "up" : c.holders.weekly_change_pct < 0 ? "down" : ""}">${c.holders.weekly_change_pct > 0 ? "↑" : c.holders.weekly_change_pct < 0 ? "↓" : ""}${Math.abs(c.holders.weekly_change_pct)}%</span> this week`]},
+      {key: "rev", label: "Revenue 30d", dir: 1, value: c => c.revenue_30d || null, reason: "Most revenue", show: c => [c.revenue_30d ? fmtMoney(c.revenue_30d) : "—", c.revenue_30d ? "DefiLlama" : "no revenue data"]},
+      {key: "unlock", label: "Next Unlock", dir: 1, reason: "Furthest-off token unlock",
+       value: c => c.next_unlock.status === "none" ? Infinity : c.next_unlock.status === "ok" ? new Date(c.next_unlock.date).getTime() : null,
+       show: c => c.next_unlock.status === "none" ? ["No upcoming unlock", "DropsTab"]
+         : c.next_unlock.status === "ok" ? [day(c.next_unlock.date), `${fmtTok(c.next_unlock.amount)} ${esc(c.symbol || "")} · ${fmtMoney(c.next_unlock.usd)}${c.next_unlock.daily ? " · daily" : ""}`]
+         : ["—", "not on DropsTab"]},
+      {key: "ex", label: "Exchanges", dir: 1, value: c => c.exchange_count, reason: "Listed on the most top exchanges",
+       show: c => [c.exchange_count == null ? "—" : `${c.exchange_count} of ${c.exchanges_monitored}`, c.exchanges && c.exchanges.length ? c.exchanges.join(", ") : c.exchange_count === 0 ? "none of the top exchanges" : ""],
+       tip: c => c.exchanges && c.exchanges.length ? c.exchanges.join(", ") : ""},
+    ];
+  }
+  function cmpWinners(m, coins) {
+    if (!m.dir) return new Set();
+    const vals = coins.map(c => m.value(c)).map(v => v == null || Number.isNaN(v) ? null : v);
+    const have = vals.filter(v => v != null);
+    if (!have.length) return new Set();
+    const best = m.dir > 0 ? Math.max(...have) : Math.min(...have);
+    const win = new Set(coins.filter((c, i) => vals[i] === best).map(c => c.slug));
+    return win.size === coins.length && coins.length > 1 ? new Set() : win;   // everyone tied: no winner
+  }
+  function cmpRender() {
+    const pills = document.getElementById("cmp-pills"), body = document.getElementById("cmp-body"),
+          warn = document.getElementById("cmp-warn"), inp = document.getElementById("cmp-input");
+    if (cmpSel === null) return;
+    const name = slug => (cmpCache[slug] || cmpAllCoins().find(c => c.slug === slug) || {name: slug}).name;
+    pills.innerHTML = cmpSel.map(sl => `<span class="cmp-pill">${esc(name(sl))}<button type="button" data-remove="${esc(sl)}" aria-label="Remove ${esc(name(sl))}">×</button></span>`).join("")
+      + `<span class="cmp-count">${cmpSel.length} / ${CMP_MAX} coins</span>` + (cmpSel.length ? `<button type="button" class="cmp-clear">Clear all</button>` : "");
+    const full = cmpSel.length >= CMP_MAX;
+    inp.disabled = full;
+    inp.placeholder = full ? "Max 5 coins reached — remove one to add another" : "Search a coin by name or ticker…";
+    warn.innerHTML = cmpErrors.map(e => `<div class="cmp-warn">⚠️ ${esc(e)}</div>`).join("");
+    if (cmpSel.length === 0) { body.innerHTML = '<div class="empty">Add 2-5 coins to compare them side-by-side.</div>'; return; }
+    if (cmpSel.length === 1) { body.innerHTML = '<div class="empty">Add at least 1 more coin to see the comparison.</div>'; return; }
+    const coins = cmpSel.map(sl => cmpCache[sl]).filter(Boolean);
+    if (coins.length < 2) return;                      // still loading
+    const metrics = cmpMetrics(), wins = Object.fromEntries(coins.map(c => [c.slug, []]));
+    const head = `<thead><tr><th class="mlabel">Metric</th>${coins.map(c => `<th>${cmpIcon(c)} ${esc(c.name)}
+        <button type="button" class="cmp-x" data-remove="${esc(c.slug)}" aria-label="Remove ${esc(c.name)}">×</button>
+        <small>${esc(c.symbol || "")} · ${esc(c.chain)}${c.status === "dropped" ? ' · <span style="color:var(--low)">dropped</span>' : ""}</small></th>`).join("")}</tr></thead>`;
+    const rows = metrics.map(m => {
+      if (m.group) return `<tr class="grp"><td class="mlabel">${esc(m.group)}</td><td colspan="${coins.length}"></td></tr>`;
+      const w = cmpWinners(m, coins);
+      return `<tr><td class="mlabel">${esc(m.label)}</td>${coins.map(c => {
+        const [main, sub] = m.show(c), isWin = w.has(c.slug), missing = m.value(c) == null;
+        if (isWin) wins[c.slug].push(m);
+        return `<td class="${isWin ? "win" : ""}${missing ? " na" : ""}"${m.tip && m.tip(c) ? ` title="${esc(m.tip(c))}"` : ""}><div class="cmp-cell"><div>
+          <span class="cmp-v">${main}</span>${sub ? `<span class="cmp-sub">${sub}</span>` : ""}</div>${isWin ? '<span class="cmp-trophy" title="Best in this row">🏆</span>' : ""}</div></td>`;
+      }).join("")}</tr>`;
+    }).join("");
+    // Summary: coins by number of rows won.
+    const order = coins.slice().sort((a, b) => wins[b.slug].length - wins[a.slug].length);
+    const topN = wins[order[0].slug].length, tops = order.filter(c => wins[c.slug].length === topN);
+    const val = (m, c) => m.show(c)[0].replace(/<[^>]+>/g, "").trim();
+    const summary = topN === 0 ? `<div class="note">No coin wins any row yet — not enough data to compare.</div>`
+      : `<div class="cmp-top">🥇 ${tops.map(c => esc(c.name)).join(" & ")} ${tops.length > 1 ? "tie" : "comes out ahead"} with ${topN} of ${metrics.filter(m => m.dir).length} rows won</div>
+         <div class="note" style="margin:0">${tops.length === 1 ? "Top reasons:" : "Where " + esc(tops[0].name) + " wins:"}</div>
+         <ol>${wins[tops[0].slug].slice(0, 5).map(m => `<li>${esc(m.reason)} — ${esc(val(m, tops[0]))}</li>`).join("")}</ol>
+         <table class="scoretable" style="margin-top:10px"><tbody>${order.map((c, i) => `<tr><td class="rowlbl">${["🥇", "🥈", "🥉"][i] || (i + 1) + "."} ${esc(c.name)}</td>
+           <td>${wins[c.slug].length} win${wins[c.slug].length === 1 ? "" : "s"}</td></tr>`).join("")}</tbody></table>`;
+    body.innerHTML = `<div class="cmp-wrap"><table class="cmp-table">${head}<tbody>${rows}</tbody></table></div>
+      <div class="ratiocard cmp-summary"><h3>Summary</h3>${summary}
+        <div class="note" style="margin:12px 0 0">Wins are counted per row from the screener's stored data (Price and Market Cap are info only;
+          missing data never wins; a row where every coin ties has no winner). This is a data comparison, not investment advice.</div></div>`;
+  }
+
   // ---------------------------------------------------------- Token Unlocks page
   // Every coin in DropsTab's unlock overview (/api/unlocks), searchable and
   // sortable; default = soonest next unlock first. A row opens DropsTab.
