@@ -157,6 +157,15 @@ _NEW_COLUMNS = [
 ]
 
 
+# Favorites portfolio (added after the favorites tables were created).
+_NEW_COLUMNS += [
+    ("favorite_profiles", "tracking_since", "TIMESTAMP",
+     "UPDATE favorite_profiles SET tracking_since = created_at WHERE tracking_since IS NULL"),
+    ("favorite_profile_coins", "entry_price", "FLOAT",
+     "UPDATE favorite_profile_coins SET entry_price = last_known_price WHERE entry_price IS NULL"),
+]
+
+
 def _add_missing_columns():
     from sqlalchemy import inspect, text
 

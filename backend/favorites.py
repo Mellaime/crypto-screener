@@ -19,6 +19,14 @@ Coins are stored with a snapshot (name, symbol, chain, price, market cap,
 P&L since caught). The daily run refreshes it while the coin exists; when a
 coin is deleted from our database the favorite stays, with its last known
 data and delisted_at = the day it disappeared.
+
+Portfolio: each coin keeps its ENTRY PRICE (the price when it was added); a
+coin's P&L = (current price - entry price) / entry price - frozen at the
+last known price once the coin is delisted. The profile's Portfolio
+Performance = the average of those P&Ls (delisted coins included), since
+tracking_since (creation or the last Reset). Coins are LOCKED: the only way
+to remove them is Reset (wipes all coins, restarts tracking_since; always
+needs the PIN).
 """
 
 import re
@@ -145,10 +153,25 @@ def list_profiles(session):
     counts = dict(session.query(FavoriteProfileCoin.profile_id, func.count()).group_by(FavoriteProfileCoin.profile_id).all())
     last = dict(session.query(FavoriteProfileCoin.profile_id, func.max(FavoriteProfileCoin.added_at))
                 .group_by(FavoriteProfileCoin.profile_id).all())
+    # Leaderboard: each profile's average P&L since added (current prices;
+    # delisted coins at their last known price).
+    from models import Coin
+    rows = session.query(FavoriteProfileCoin).all()
+    contracts = list({r.coin_contract for r in rows})
+    price = {(c.contract or "").lower(): c.price_usd for c in
+             session.query(Coin).filter(func.lower(Coin.contract).in_(contracts))} if contracts else {}
+    pnls = {}
+    for r in rows:
+        now_p = price.get(r.coin_contract) if price.get(r.coin_contract) is not None else r.last_known_price
+        if now_p is not None and r.entry_price:
+            pnls.setdefault(r.profile_id, []).append((now_p - r.entry_price) / r.entry_price * 100)
     out = []
     for p in session.query(FavoriteProfile).order_by(FavoriteProfile.created_at):
         upd = max([d for d in (p.updated_at, last.get(p.id)) if d is not None], default=None)
+        v = pnls.get(p.id) or []
         out.append({"name": p.name, "coin_count": counts.get(p.id, 0),
+                    "avg_pnl": round(sum(v) / len(v), 2) if v else None,
+                    "tracking_since": (p.tracking_since or p.created_at).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "created_at": p.created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "last_updated": upd.strftime("%Y-%m-%dT%H:%M:%SZ") if upd else None})
     return {"profiles": out, "max": MAX_PROFILES, "max_coins": MAX_COINS}
@@ -166,7 +189,8 @@ def create_profile(session, name, pin):
     if session.query(FavoriteProfile).filter_by(name_key=name.lower()).first():
         raise FavError(409, f"The name '{name}' is already taken.")
     now = _now()
-    p = FavoriteProfile(name=name, name_key=name.lower(), pin_hash=hash_pin(str(pin)), created_at=now, updated_at=now)
+    p = FavoriteProfile(name=name, name_key=name.lower(), pin_hash=hash_pin(str(pin)), created_at=now, updated_at=now,
+                        tracking_since=now)
     session.add(p)
     session.flush()
     token, exp = _new_session(session, p)
@@ -222,16 +246,34 @@ def add_coin(session, name, contract, token=None, pin=None, ip="?"):
     if row is None:
         if session.query(FavoriteProfileCoin).filter_by(profile_id=p.id).count() >= MAX_COINS:
             raise FavError(409, f"Max {MAX_COINS} favorites per profile.")
-        row = FavoriteProfileCoin(profile_id=p.id, coin_contract=contract, added_at=_now())
+        row = FavoriteProfileCoin(profile_id=p.id, coin_contract=contract, added_at=_now(), entry_price=coin.price_usd)
         session.add(row)
     _snapshot(session, row, coin)
+    if row.entry_price is None:
+        row.entry_price = row.last_known_price
     p.updated_at = _now()
     session.commit()
     return {"added": contract, "coin_id": coin.id}
 
 
 def remove_coin(session, name, coin_ref, token=None, pin=None, ip="?"):
-    """coin_ref = the coin's id (as stored on the favorite) or its contract."""
+    """Coins are locked in the portfolio - only Reset removes them."""
+    raise FavError(409, "This coin is locked in your portfolio. Use Reset to start fresh.")
+
+
+def reset_profile(session, name, pin, ip):
+    """Wipe all coins and restart the portfolio; always needs the PIN."""
+    from models import FavoriteProfileCoin
+    p = _profile(session, name)
+    _check_pin(session, p, pin, ip)                           # never a session token
+    n = session.query(FavoriteProfileCoin).filter_by(profile_id=p.id).delete(synchronize_session=False)
+    p.tracking_since = p.updated_at = _now()
+    session.commit()
+    return {"reset": p.name, "removed": n, "tracking_since": p.tracking_since.strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
+def _remove_coin_unlocked(session, name, coin_ref, token=None, pin=None, ip="?"):
+    """Individual removal from before coins were locked (not exposed)."""
     from models import FavoriteProfileCoin
     p = _profile(session, name)
     _authorize(session, p, token, pin, ip)
@@ -257,9 +299,16 @@ def get_profile(session, name):
     alive = {(c.contract or "").lower(): c for c in
              session.query(Coin).filter(func.lower(Coin.contract).in_(contracts))} if contracts else {}
     coins = []
+    today = _now().date()
     for r in rows:
         c = alive.get(r.coin_contract)
+        now_price = c.price_usd if c is not None and c.price_usd is not None else r.last_known_price
+        pnl = ((now_price - r.entry_price) / r.entry_price * 100
+               if now_price is not None and r.entry_price else None)
         coins.append({
+            "entry_price": r.entry_price, "current_price": now_price,
+            "pnl": round(pnl, 2) if pnl is not None else None,
+            "days_held": max(0, (today - r.added_at.date()).days),
             "coin_id": r.coin_id, "contract": c.contract if c else r.coin_contract,
             "name": c.name if c else r.coin_name, "symbol": r.coin_symbol, "chain": c.chain if c else r.coin_chain,
             "status": c.status if c else "delisted", "delisted": c is None,
@@ -270,7 +319,30 @@ def get_profile(session, name):
             "added_at": r.added_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "snapshot_at": r.updated_at.strftime("%Y-%m-%dT%H:%M:%SZ") if r.updated_at else None,
         })
-    return {"name": p.name, "coin_count": len(coins), "max_coins": MAX_COINS, "coins": coins}
+    return {"name": p.name, "coin_count": len(coins), "max_coins": MAX_COINS, "coins": coins,
+            "portfolio": portfolio_summary(coins, p.tracking_since or p.created_at)}
+
+
+def portfolio_summary(coins, since):
+    """Average P&L since added (delisted coins included, frozen), counts,
+    best / worst pick, tracking start."""
+    vals = [c for c in coins if c.get("pnl") is not None]
+    out = {"tracking_since": since.strftime("%Y-%m-%dT%H:%M:%SZ") if since else None,
+           "days": max(0, (_now().date() - since.date()).days) if since else None,
+           "coins": len(coins), "with_pnl": len(vals), "avg_pnl": None,
+           "up": 0, "down": 0, "flat": 0, "best": None, "worst": None}
+    if not vals:
+        return out
+    out["avg_pnl"] = round(sum(c["pnl"] for c in vals) / len(vals), 2)
+    out["up"] = sum(1 for c in vals if c["pnl"] >= 1)
+    out["down"] = sum(1 for c in vals if c["pnl"] <= -1)
+    out["flat"] = len(vals) - out["up"] - out["down"]
+
+    def pick(c):
+        return {"name": c["name"], "contract": c["contract"], "pnl": c["pnl"], "delisted": c["delisted"]}
+    out["best"] = pick(max(vals, key=lambda c: c["pnl"]))
+    out["worst"] = pick(min(vals, key=lambda c: c["pnl"]))
+    return out
 
 
 def refresh_snapshots():
