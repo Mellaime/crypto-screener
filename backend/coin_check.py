@@ -232,6 +232,7 @@ def run_check(contract):
     f_fut = pool.submit(futures_data_live, symbol, price)
     # Exchange Listings: stored for a coin we track, else the stored pair lists (0 calls).
     from listings import listings_live
+    from volume_anomaly import spike_for_contract
     f_lst = pool.submit(listings_live, symbol, price, contract)
     pool.shutdown(wait=False)
 
@@ -400,6 +401,8 @@ def run_check(contract):
         "futures": f_fut.result(),
         # Exchange Listings on the 12 monitored exchanges (stored data).
         "listings": f_lst.result(),
+        # Volume Alert: a tracked coin's stored spike (last 7 days); None otherwise.
+        "volume_spike": spike_for_contract(contract),
         "tx_bars": (daily or {}).get("bars") or [],
         "tx_error": tx_err,
         "tx_window_days": 15,
@@ -606,7 +609,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings")   # result layout: has these display sections
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike")   # result layout: has these display sections
 
 
 def get_check(session, contract):

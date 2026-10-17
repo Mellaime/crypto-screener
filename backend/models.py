@@ -624,3 +624,25 @@ class ExchangeAnnouncement(Base):
     released_at = Column(DateTime)
     url = Column(String)
     checked_at = Column(DateTime, nullable=False)
+
+
+class VolumeSpike(Base):
+    """
+    A coin's unusual-volume day: today's DexScreener 24h volume vs its own
+    average over the previous 30 days (daily_snapshots). Only days at 2x or
+    more are stored: severity "big" (>= 5x), "medium" (3-5x), "elevated"
+    (2-3x). alerted = sent in the Telegram report (big / medium, at most once
+    per coin every 3 days). Kept 90 days. Display / alert only.
+    """
+    __tablename__ = "volume_spikes"
+    __table_args__ = (UniqueConstraint("coin_id", "day"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    coin_id = Column(Integer, ForeignKey("coins.id"), nullable=False, index=True)
+    day = Column(Date, nullable=False, index=True)
+    volume_today = Column(Float)
+    volume_avg_30d = Column(Float)
+    spike_ratio = Column(Float)
+    severity = Column(String)                 # big / medium / elevated
+    alerted = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
