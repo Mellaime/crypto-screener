@@ -266,6 +266,83 @@ def _add_symbols(session, rows, coins):
         session.rollback()
 
 
+# ---------------------------------------------------------------- favorites profiles
+def _client_ip(request: Request):
+    """The caller's IP (Vercel puts it first in X-Forwarded-For)."""
+    fwd = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip") or ""
+    return (fwd.split(",")[0].strip() or (request.client.host if request.client else "?"))[:64]
+
+
+def _fav(fn, *args, **kwargs):
+    """Run a favorites.py action in its own session; FavError -> HTTP error."""
+    from favorites import FavError
+    session = SessionLocal()
+    try:
+        return fn(session, *args, **kwargs)
+    except FavError as e:
+        session.rollback()
+        raise HTTPException(status_code=e.status, detail=e.message)
+    finally:
+        session.close()
+
+
+async def _body(request: Request):
+    try:
+        b = await request.json()
+        return b if isinstance(b, dict) else {}
+    except Exception:
+        return {}
+
+
+@app.get("/api/favorites/profiles")
+def fav_list_profiles():
+    from favorites import list_profiles
+    return _fav(list_profiles)
+
+
+@app.post("/api/favorites/profiles")
+async def fav_create_profile(request: Request):
+    from favorites import create_profile
+    b = await _body(request)
+    return _fav(create_profile, b.get("name"), b.get("pin"))
+
+
+@app.post("/api/favorites/profiles/{name}/verify")
+async def fav_verify(name: str, request: Request):
+    from favorites import verify_pin
+    b = await _body(request)
+    return _fav(verify_pin, name, b.get("pin"), _client_ip(request))
+
+
+@app.get("/api/favorites/profiles/{name}")
+def fav_get_profile(name: str):
+    from favorites import get_profile
+    return _fav(get_profile, name)
+
+
+@app.post("/api/favorites/profiles/{name}/coins")
+async def fav_add_coin(name: str, request: Request):
+    from favorites import add_coin
+    b = await _body(request)
+    return _fav(add_coin, name, b.get("contract"), token=b.get("session_token"), pin=b.get("pin"),
+                ip=_client_ip(request))
+
+
+@app.delete("/api/favorites/profiles/{name}/coins/{coin_ref}")
+async def fav_remove_coin(name: str, coin_ref: str, request: Request):
+    from favorites import remove_coin
+    b = await _body(request)
+    token = b.get("session_token") or request.headers.get("x-session-token")
+    return _fav(remove_coin, name, coin_ref, token=token, pin=b.get("pin"), ip=_client_ip(request))
+
+
+@app.delete("/api/favorites/profiles/{name}")
+async def fav_delete_profile(name: str, request: Request):
+    from favorites import delete_profile
+    b = await _body(request)
+    return _fav(delete_profile, name, b.get("pin"), _client_ip(request))
+
+
 @app.get("/api/compare")
 def compare_coins(coins: str = ""):
     """Compare Coins page: up to 5 tracked coins side by side, by slug

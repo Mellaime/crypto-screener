@@ -646,3 +646,64 @@ class VolumeSpike(Base):
     severity = Column(String)                 # big / medium / elevated
     alerted = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class FavoriteProfile(Base):
+    """A named Favorites profile (max 5). Anyone can view it; changes need
+    its 4-digit PIN (stored only as a salted PBKDF2 hash) or a session
+    token obtained with it. name_key = lower-case name (unique)."""
+    __tablename__ = "favorite_profiles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(20), nullable=False)
+    name_key = Column(String(20), nullable=False, unique=True, index=True)
+    pin_hash = Column(String, nullable=False)                 # "pbkdf2$<iterations>$<salt hex>$<hash hex>"
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class FavoriteProfileCoin(Base):
+    """A coin in a profile, with a snapshot (name / symbol / chain / price /
+    market cap / P&L) refreshed by the daily run while the coin exists and
+    kept as the last known data after it is deleted from our database
+    (delisted_at = the day the daily run first found it gone)."""
+    __tablename__ = "favorite_profile_coins"
+    __table_args__ = (UniqueConstraint("profile_id", "coin_contract"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    profile_id = Column(Integer, ForeignKey("favorite_profiles.id"), nullable=False, index=True)
+    coin_id = Column(Integer)                                 # coins.id (no FK: the coin may be deleted)
+    coin_contract = Column(String, nullable=False)            # lower-case
+    coin_name = Column(String)
+    coin_symbol = Column(String)
+    coin_chain = Column(String)
+    last_known_price = Column(Float)
+    last_known_mcap = Column(Float)
+    last_known_pnl = Column(Float)                            # % since it entered Active (performance.py)
+    last_known_status = Column(String)                        # active / dropped
+    delisted_at = Column(Date)                                # NULL while the coin is in our database
+    added_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime)
+
+
+class FavoriteSession(Base):
+    """A profile session (24 h) created by a correct PIN. Only the SHA-256 of
+    the token is stored. Kept in the database (not memory) because the API
+    runs on Vercel, where each request may hit a fresh server instance."""
+    __tablename__ = "favorite_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    profile_id = Column(Integer, ForeignKey("favorite_profiles.id"), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+
+
+class FavoritePinAttempt(Base):
+    """PIN attempts per IP (rate limit: 5 / minute; 10 failures in an hour
+    block the IP for an hour). Rows older than a day are pruned."""
+    __tablename__ = "favorite_pin_attempts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ip = Column(String(64), nullable=False, index=True)
+    ok = Column(Boolean, nullable=False, default=False)
+    at = Column(DateTime, nullable=False, default=utcnow, index=True)

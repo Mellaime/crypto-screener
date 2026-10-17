@@ -195,6 +195,15 @@ def run_pipeline(raise_on_error=False):
             log.exception("Volume anomaly detection failed")
             report.step_errors.append("Volume Anomaly")
 
+        # Favorites profiles: refresh each favorite's snapshot (price / market
+        # cap / P&L); coins deleted from our database keep their last one.
+        try:
+            from favorites import refresh_snapshots
+            log.info("Favorites snapshots: %s", refresh_snapshots())
+        except Exception:
+            log.exception("Favorites snapshot refresh failed - continuing.")
+            report.step_errors.append("Favorites")
+
         # Consolidated pipeline summary.
         log.info("=" * 55)
         log.info("PIPELINE COMPLETE")
