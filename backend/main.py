@@ -235,6 +235,7 @@ def get_coins():
         vs = recent_spikes(session, [r["id"] for r in rows])
         for r in rows:
             r["volume_spike"] = vs.get(r["id"])
+        _add_symbols(session, rows, coins)
 
         # Highest score first, then attach a rank number.
         rows.sort(key=lambda r: r["score"], reverse=True)
@@ -242,6 +243,32 @@ def get_coins():
             r["rank"] = i
 
         return {"count": len(rows), "coins": rows}
+    finally:
+        session.close()
+
+
+def _add_symbols(session, rows, coins):
+    """Ticker ("symbol") + Compare page "slug" on each table row (stored; no
+    API call). Never raises."""
+    try:
+        from compare import slugs_for
+        from listings import _tickers
+        tick = _tickers(session)
+        slugs = slugs_for(session, coins, tick)
+        for r in rows:
+            r["symbol"], r["slug"] = tick.get(r["id"]) or None, slugs.get(r["id"])
+    except Exception:
+        session.rollback()
+
+
+@app.get("/api/compare")
+def compare_coins(coins: str = ""):
+    """Compare Coins page: up to 5 tracked coins side by side, by slug
+    (lower-case ticker) or contract, comma-separated. Stored data only."""
+    from compare import build
+    session = SessionLocal()
+    try:
+        return build(session, [t for t in coins.split(",") if t.strip()])
     finally:
         session.close()
 
@@ -260,6 +287,7 @@ def get_dropped():
         from listings import badges
         xb = badges(session, [coin.id for _, coin in results])
         rows = [{
+            "id": coin.id,
             "name": coin.name,
             "chain": coin.chain,
             "contract": coin.contract,              # opens the coin's detail page
@@ -271,6 +299,7 @@ def get_dropped():
             "reason_ar": reason_ar(dropped.reason),
         } for dropped, coin in results]
 
+        _add_symbols(session, rows, [coin for _, coin in results])
         return {"count": len(rows), "dropped": rows}
     finally:
         session.close()
