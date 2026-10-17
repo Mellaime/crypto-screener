@@ -161,6 +161,17 @@ def run_pipeline(raise_on_error=False):
             log.exception("Coinalyze futures update failed - continuing.")
             report.step_errors.append("Coinalyze")
 
+        # Exchange Listings (tables' badges, detail page, Telegram): the 12
+        # exchanges' DropsTab pair lists (~260 requests, ~4 min) compared with
+        # the previous day + Binance's upcoming listings. Display / alert only.
+        log.info("Updating exchange listings (DropsTab + Binance announcements)...")
+        try:
+            from listings import run_listings_update
+            report.listings = run_listings_update()
+        except Exception:
+            log.exception("Exchange listings update failed - continuing.")
+            report.step_errors.append("Exchange listings")
+
         log.info("Scoring active coins...")
         results = score_all()
         report.scored = len(results)

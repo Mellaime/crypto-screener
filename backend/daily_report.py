@@ -82,6 +82,7 @@ class RunReport:
         self.tracking = None        # run_daily_tracking() stats
         self.drop = None            # run_drop_logic() stats
         self.scored = None          # number of coins scored
+        self.listings = None        # listings.run_listings_update() stats
 
 
 def _new_coin_names(session, since):
@@ -191,12 +192,26 @@ def build_message(rep, session):
     rec = det.get("recovered") or []
     lines.append(f"\n✅ راجعين لـActive: {len(rec)}" + (f"\n{_names(rec)}" if rec else ""))
 
+    # 🏦 exchange listings (new / scheduled / delisted), only when there's news
+    lst = rep.listings or {}
+    if lst.get("new"):
+        lines.append(f"\n🏦 إدراج جديد ف بورصة: {len(lst['new'])}")
+        lines.extend(f"• 🆕 {n} — {ex} ({pair})" for n, ex, pair in lst["new"][:MAX_NAMES])
+    if lst.get("scheduled"):
+        lines.append("\n📅 إدراج مبرمج:")
+        lines.extend(f"• {n} — {ex}" + (f" نهار {when:%Y-%m-%d %H:%M} UTC" if when else "")
+                     for n, ex, when in lst["scheduled"][:MAX_NAMES])
+    if lst.get("delisted"):
+        lines.append("📉 تحيدات من بورصة: " + "، ".join(f"{n} ({ex})" for n, ex in lst["delisted"][:MAX_NAMES]))
+
     # ⚠️ problems / data-quality flags
     issues = []
     if rep.failed:
         issues.append("التشغيل وقف بخطأ — الأرقام ناقصة")
     for step in rep.step_errors:
         issues.append(f"خطوة {step} فشلات (تخطيناها)")
+    if lst.get("exchanges_failed"):
+        issues.append("Listings: ما تقراوش " + "، ".join(lst["exchanges_failed"]))
     if trk.get("codex_failed_batches"):
         issues.append(f"Codex: {trk['codex_failed_batches']} دفعات فشلات")
     try:

@@ -153,6 +153,18 @@
   .reason[dir="rtl"] { text-align: right; }
   /* Active table badges + legend */
   .cbadge { display: inline-block; font-size: 13px; line-height: 1; margin-left: 3px; cursor: help; }
+  /* Exchange listing badges (🆕 new listing / 📅 scheduled) - click opens the card */
+  .xbadges { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
+  .xbadge { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; line-height: 1;
+    padding: 3px 7px; border-radius: 999px; border: 1px solid; cursor: pointer; white-space: nowrap; }
+  .xbadge.new { color: #3fb950; border-color: #3fb950; background: rgba(63,185,80,.12); }
+  .xbadge.scheduled { color: #d29922; border-color: #d29922; background: rgba(210,153,34,.12); }
+  .xbadge:hover { filter: brightness(1.25); }
+  .xsched { background: rgba(210,153,34,.10); border: 1px solid #d29922; border-radius: 8px; padding: 8px 10px; margin: 8px 0; font-size: 13px; }
+  .xsched a { color: var(--accent); text-decoration: none; }
+  .xdelisted { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .xtable td.newx { color: #3fb950; font-weight: 600; }
+  .xtable a { color: var(--accent); text-decoration: none; }
   .badgelegend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 0 0 8px; }
 
   /* Coin detail page */
@@ -599,7 +611,7 @@
       <tr tabindex="0" data-contract="${esc(c.contract)}" title="Open ${esc(c.name)}">
         <td class="rank">${c.rank}</td>
         <td>
-          <div class="name">${esc(c.name)}${coinBadges(c)} ${secBadge(c)}</div>
+          <div class="name">${esc(c.name)}${coinBadges(c)} ${secBadge(c)}${exchangeBadges(c.exchange_badges)}</div>
           <span class="chain">${esc(c.chain)}</span>
           ${secInfo(c)}
         </td>
@@ -623,6 +635,19 @@
     return s;
   }
 
+  // Exchange listing badges: 🆕 Binance = newly listed (last 7 days), 📅 Upbit =
+  // scheduled (exchange announcement). Click -> the coin's Exchange Listings card.
+  function exchangeBadges(list) {
+    if (!list || !list.length) return "";
+    const day = d => new Date(d).toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"});
+    const time = d => new Date(d).toLocaleTimeString("en-GB", {hour: "2-digit", minute: "2-digit", timeZone: "UTC"});
+    return `<span class="xbadges">` + list.map(b => {
+      const tip = b.kind === "new" ? `Listed on ${b.exchange} — ${day(b.date)}`
+        : `Scheduled: ${b.exchange} will list this` + (b.date ? ` on ${day(b.date)} at ${time(b.date)} UTC` : " (date not announced)");
+      return `<span class="xbadge ${b.kind}" data-goto="exlistings" title="${esc(tip)}">${b.kind === "new" ? "🆕" : "📅"} ${esc(b.exchange)}</span>`;
+    }).join("") + `</span>`;
+  }
+
   function renderDropped(data) {
     const body = document.getElementById("dropped-body");
     document.getElementById("dropped-title").textContent =
@@ -634,7 +659,7 @@
     }
     body.innerHTML = data.dropped.map(d => `
       <tr${d.contract ? ` tabindex="0" data-contract="${esc(d.contract)}" title="Open ${esc(d.name)}"` : ""}>
-        <td><div class="name">${esc(d.name)}</div><span class="chain">${esc(d.chain)}</span></td>
+        <td><div class="name">${esc(d.name)}${exchangeBadges(d.exchange_badges)}</div><span class="chain">${esc(d.chain)}</span></td>
         ${priceCell(d)}
         <td class="num" style="text-align:left">${esc(d.date)}</td>
         <td class="reason" dir="rtl" lang="ar" title="${esc(d.reason)}">${esc(d.reason_ar || d.reason)}</td>
@@ -871,13 +896,17 @@
     b.addEventListener("click", () => showView(b.dataset.view)));
   // Click (or Enter) on an active-coin row opens its detail page.
   let backTo = "active";     // which table "Back" returns to
+  let scrollToCard = null;   // card id to scroll to once the detail page renders (badge click)
   function openRow(e) {
     const tr = e.target.closest("#coins-body tr[data-contract], #dropped-body tr[data-contract]");
     if (tr) {
       backTo = tr.closest("#dropped-body") ? "dropped" : "active";
       document.getElementById("back").textContent = backTo === "dropped" ? "← Back to Dropped coins" : "← Back to Active coins";
     }
-    if (tr) showView("coin/" + encodeURIComponent(tr.dataset.contract));
+    if (tr) {
+      scrollToCard = e.target.closest("[data-goto]") ? e.target.closest("[data-goto]").dataset.goto : null;
+      showView("coin/" + encodeURIComponent(tr.dataset.contract));
+    }
   }
   document.getElementById("coins-body").addEventListener("click", openRow);
   document.getElementById("coins-body").addEventListener("keydown", e => { if (e.key === "Enter") openRow(e); });
@@ -952,6 +981,7 @@
       ${relStrengthCard(c.rel_strength)}
       ${entryZoneCard(c.entry_zone)}
       ${supplyCard(c)}
+      ${exchangeListingsCard(c.listings)}
       ${unlocksCard(c.unlocks)}
       ${smartMoneyCard()}`;
     wireHolders((c.holders || {}).bars || []);
@@ -960,6 +990,11 @@
     wireChart(c.tx_bars || []);
     startUnlockCountdown();
     wireScoreBreakdown(c.score_history || []);
+    if (scrollToCard) {
+      const el = document.getElementById(scrollToCard);
+      scrollToCard = null;
+      if (el) requestAnimationFrame(() => el.scrollIntoView({behavior: "smooth", block: "start"}));
+    }
   }
 
   // Transactions chart: one bar per COMPLETE day. Height = total
@@ -1146,6 +1181,7 @@
       ${relStrengthCard(r.rel_strength)}
       ${entryZoneCard(r.entry_zone)}
       ${supplyCard(r)}
+      ${exchangeListingsCard(r.listings)}
       ${futuresCard(r.futures)}
       <div class="ratiocard"><h3>Filter steps</h3>
         <div class="note">Same order as the bot; the first ✗ is the reason above.</div>
@@ -1619,6 +1655,41 @@
   }
   // Futures Data: Coinalyze open interest / funding / long-short for the
   // coin's main perpetual market, one column per day (oldest left).
+  // Exchange Listings: the coin's markets on the 12 monitored exchanges
+  // (DropsTab pair lists, daily), scheduled Binance listings on top,
+  // delistings of the last 30 days at the bottom.
+  function exchangeListingsCard(l) {
+    const head = `<div class="ratiocard" id="exlistings"><h3>Exchange Listings</h3>`;
+    if (!l || l.status !== "ok") {
+      return head + `<div class="note" style="margin:0">Exchange listings will appear after the next daily run.</div>`
+        + schedHtml(l && l.scheduled) + `</div>`;
+    }
+    const n = l.monitored || 12;
+    const note = l.live ? `Top ${n} exchanges, from the daily run's pair lists (${esc(shortDate(l.as_of))}); this coin isn't tracked, so first-seen dates are unknown.`
+      : `Markets on the top ${n} exchanges (DropsTab), checked daily since ${esc(shortDate(l.since))}. Matched by ticker and price.`;
+    const fresh = d => d && !l.live && (Date.now() - new Date(d)) / 864e5 <= (l.new_days || 7);
+    const rows = (l.listed || []).map(x => {
+      const isNew = !x.baseline && fresh(x.first_seen);
+      const first = x.first_seen == null ? "—" : x.baseline ? `by ${esc(shortDate(l.since))}` : esc(shortDate(x.first_seen));
+      return `<tr><td class="rowlbl">${x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(x.exchange)}</a>` : esc(x.exchange)}</td>
+        <td class="${isNew ? "newx" : ""}">${isNew ? "🆕 " : ""}${first}</td><td>${esc(x.top_pair || "—")}</td><td>${fmtMoney(x.volume)}</td></tr>`;
+    }).join("");
+    const table = rows ? `<div class="scorewrap"><table class="scoretable xtable"><thead><tr><th class="rowlbl">Exchange</th>
+        <th>First Seen</th><th>Top Pair</th><th>Volume 24h</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : `<div class="note" style="margin:6px 0 0">Not listed on any of the ${n} monitored exchanges.</div>`;
+    const del = (l.delisted || []).length ? `<div class="xdelisted">Recently delisted from: ${l.delisted.map(d =>
+        `${esc(d.exchange)} (${esc(shortDate(d.date))})`).join(", ")}</div>` : "";
+    return head + `<div class="note">${note}</div>` + schedHtml(l.scheduled) + table + del + `</div>`;
+  }
+  function schedHtml(list) {
+    if (!list || !list.length) return "";
+    return list.map(a => {
+      const when = a.at ? new Date(a.at).toLocaleString("en-US", {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                                                                   hourCycle: "h23", timeZone: "UTC"}) + " UTC" : "date not announced yet";
+      return `<div class="xsched">📅 <b>Scheduled:</b> ${esc(a.exchange)} will list this on ${esc(when)}
+        ${a.url ? ` · <a href="${esc(a.url)}" target="_blank" rel="noopener">announcement ↗</a>` : ""}</div>`;
+    }).join("");
+  }
   function futuresCard(f) {
     const head = `<div class="ratiocard"><h3>Futures Data</h3>`;
     if (!f || f.matched == null) return head + `<div class="note" style="margin:0">Futures data will appear after the next daily run.</div></div>`;
