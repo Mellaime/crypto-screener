@@ -156,6 +156,36 @@ def _iso(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
 
 
+# ---------------------------------------------------------------- API caching
+# The data changes once a day (daily run ~11:00 UTC), so read-only responses
+# are cached by Vercel's CDN (s-maxage) and served stale for a bit while a
+# fresh copy is fetched - fewer function runs, far less Supabase egress.
+# Writes (POST / DELETE) and /api/check (its own per-day cache) are not.
+import re as _re
+CACHE_RULES = [
+    (_re.compile(r"^/api/coins$"), 300, 60),
+    (_re.compile(r"^/api/dropped$"), 300, 60),
+    (_re.compile(r"^/api/queue$"), 300, 60),
+    (_re.compile(r"^/api/coin/[^/]+$"), 300, 60),
+    (_re.compile(r"^/api/coins/\d+/score-history$"), 300, 60),
+    (_re.compile(r"^/api/compare$"), 300, 60),
+    (_re.compile(r"^/api/unlocks$"), 600, 120),
+    (_re.compile(r"^/api/favorites/profiles$"), 60, 30),
+    (_re.compile(r"^/api/favorites/profiles/[^/]+$"), 60, 30),
+]
+
+
+@app.middleware("http")
+async def cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.method == "GET" and response.status_code == 200 and "cache-control" not in response.headers:
+        for pattern, max_age, stale in CACHE_RULES:
+            if pattern.match(request.url.path):
+                response.headers["Cache-Control"] = f"public, s-maxage={max_age}, stale-while-revalidate={stale}"
+                break
+    return response
+
+
 @app.get("/api/coins")
 def get_coins():
     """Return ACTIVE coins only, ranked by score (highest first)."""
@@ -620,18 +650,6 @@ def get_all_unlocks():
     session = SessionLocal()
     try:
         return all_unlocks(session)
-    finally:
-        session.close()
-
-
-@app.get("/api/narratives")
-def get_narratives_api():
-    """Narratives tab: every CoinGecko category, hottest 24h first, with a
-    7-day change computed from our own daily snapshots. Display only."""
-    from narratives import get_narratives
-    session = SessionLocal()
-    try:
-        return get_narratives(session)
     finally:
         session.close()
 

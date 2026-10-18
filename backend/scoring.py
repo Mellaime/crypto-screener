@@ -383,7 +383,7 @@ def score_all():
 # Score history: one score per active coin per day (score_history), for the
 # Active table's delta arrow and the detail page's "All Score" table.
 # ---------------------------------------------------------------------------
-SCORE_HISTORY_KEEP_DAYS = 90      # rows older than this are deleted
+SCORE_HISTORY_KEEP_DAYS = 30      # rows older than this are deleted (Supabase free-tier egress)
 SCORE_HISTORY_SHOW_DAYS = 7       # the detail page's table
 # The score's parts as stored in score_history: (column, score_snapshot key, label).
 SCORE_PARTS = [("vol_liq", "vol_liq_pts", "Volume/Liquidity"),

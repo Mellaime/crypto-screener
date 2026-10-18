@@ -28,7 +28,11 @@
   header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
   h1 { font-size: 24px; margin: 0; letter-spacing: -0.5px; }
   h1 .dot { color: var(--good); }
-  .status { font-size: 13px; color: var(--muted); }
+  .status { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .refreshbtn { all: unset; cursor: pointer; font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+    color: var(--text); background: var(--card); }
+  .refreshbtn:hover { border-color: var(--accent); }
+  .refreshbtn:disabled { opacity: .5; cursor: default; }
   .sub { color: var(--muted); font-size: 13px; margin: 2px 0 22px; }
   h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 28px 0 10px; }
 
@@ -118,21 +122,6 @@
          border-color: var(--accent); }
   .tab .count { font-weight: 400; opacity: 0.8; }
   .view[hidden], .tabs[hidden] { display: none; }
-  /* Narratives tab */
-  #narr-body .chg { font-weight: 700; font-variant-numeric: tabular-nums; }
-  #narr-body .chg.up { color: var(--good); } #narr-body .chg.down { color: var(--low); }
-  #narr-body .muted, #narr-body small { color: var(--muted); font-weight: 400; }
-
-  /* Daily bars: one blue bar per day, height = that day's market cap; hover / tap for details */
-  .dbars { display: flex; gap: 4px; min-width: 196px; }
-  .dday { flex: 1 1 0; min-width: 24px; display: flex; justify-content: center; outline: none; }
-  .dday .bx { width: 16px; height: 40px; display: flex; align-items: flex-end; }
-  .dday .bx i { display: block; width: 100%; border-radius: 3px 3px 0 0; background: #5b8def; }
-  .dday:not(.none) { cursor: pointer; }
-  .dday:hover .bx i, .dday.on .bx i, .dday:focus-visible .bx i { filter: brightness(1.3); }
-  .dday:focus-visible .bx { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .dday.none .bx { border: 1px dashed #6e7681; border-radius: 3px; }
-  #narrtip { position: fixed; }
   /* clickable sort headers */
   .sorth { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
            font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; white-space: nowrap; }
@@ -290,7 +279,6 @@
   .droptag { display: inline-block; margin-left: 4px; font-size: 11px; color: var(--low); border: 1px solid var(--low);
     border-radius: 20px; padding: 1px 7px; }
   th[aria-sort="none"] .sorth .arr::after { content: "↕"; color: var(--muted); opacity: 0.6; }
-  #narrtip .up { color: var(--good); } #narrtip .down { color: var(--low); } #narrtip .flat { color: var(--muted); }
   .card { overflow-x: auto; }       /* wide tables scroll sideways on phones */
   @media (max-width: 560px) {
     .tab { flex-basis: 100%; }      /* stack the buttons full-width on phones */
@@ -536,9 +524,10 @@
 <div class="wrap">
   <header>
     <h1><span class="dot">●</span> Crypto Screener</h1>
-    <div class="status" id="status">Loading…</div>
+    <div class="status"><span id="status">Loading…</span>
+      <button type="button" class="refreshbtn" id="refreshbtn" title="Load the latest data now">🔄 Refresh</button></div>
   </header>
-  <div class="sub">Auto-refreshes every 30 seconds · ranked by score (highest first)</div>
+  <div class="sub">Data updates once a day (~11:00 UTC) · the page refreshes every 10 minutes · ranked by score (highest first)</div>
 
   <div class="err" id="err"></div>
 
@@ -555,8 +544,6 @@
       Coming Up · <bdi>طابور</bdi> <span class="count" id="count-queue"></span></button>
     <button class="tab" role="tab" id="tab-check" aria-controls="view-check" data-view="check">
       Check a Coin</button>
-    <button class="tab" role="tab" id="tab-narratives" aria-controls="view-narratives" data-view="narratives">
-      Narratives</button>
     <button class="tab" role="tab" id="tab-unlocks" aria-controls="view-unlocks" data-view="unlocks">
       Token Unlocks</button>
   </nav>
@@ -678,27 +665,6 @@
     <button id="checkbtn" type="submit">Check</button>
   </form>
   <div id="checkresult"></div>
-  </section>
-
-  <section class="view" id="view-narratives" role="tabpanel" aria-labelledby="tab-narratives" hidden>
-  <h2>Narratives</h2>
-  <div class="sub" dir="rtl" lang="ar" style="text-align:right">أداء القطاعات — 24 ساعة من <bdi>CoinGecko</bdi>، و7 أيام محسوبة من بياناتنا اليومية. تُجمَّع البيانات يومياً.</div>
-  <div class="sub" id="narr-meta"></div>
-  <div class="sub" dir="rtl" lang="ar" style="text-align:right">الأعمدة اليومية تمتلئ تدريجياً مع تراكم البيانات في قاعدة البيانات (حوالي أسبوع). ارتفاع العمود = القيمة السوقية للقطاع في ذلك اليوم؛ مرّر المؤشر فوق العمود أو اضغط عليه لرؤية التفاصيل: القيمة السوقية، حجم التداول، وتغيّر كلٍّ منهما مقارنة باليوم السابق. العمود المنقّط = لا توجد بيانات بعد.</div>
-  <div class="card">
-    <table>
-      <thead>
-        <tr>
-          <th>Narrative</th>
-          <th>Daily · 7 days <small style="font-weight:400;text-transform:none;letter-spacing:0">(bar = market cap · hover or tap a bar for details)</small></th>
-          <th class="num" data-sort="market_cap" aria-sort="none"><button type="button" class="sorth">Market Cap<span class="arr" aria-hidden="true"></span></button></th>
-          <th class="num" data-sort="volume_24h" aria-sort="none"><button type="button" class="sorth">Volume 24h<span class="arr" aria-hidden="true"></span></button></th>
-        </tr>
-      </thead>
-      <tbody id="narr-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
-    </table>
-  </div>
-  <div class="tip" id="narrtip"></div>
   </section>
 
   <section class="view" id="view-compare" role="tabpanel" aria-labelledby="tab-compare" hidden>
@@ -834,7 +800,12 @@
     const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
     setTimeout(() => t.remove(), 3200);
   }
+  let fpBust = 0;                              // set after a profile change: bypass the 1-minute API cache
+  function fresh(url) {
+    return Date.now() - fpBust < 120000 ? url + (url.includes("?") ? "&" : "?") + "v=" + fpBust : url;
+  }
   async function api(method, url, body) {
+    if (method === "GET") url = fresh(url); else fpBust = Date.now();
     const res = await fetch(url, {method, headers: {"Content-Type": "application/json"}, body: body ? JSON.stringify(body) : undefined});
     let data = null; try { data = await res.json(); } catch (e) { /* empty */ }
     if (!res.ok) { const err = new Error((data && data.detail) || ("Error " + res.status)); err.status = res.status; throw err; }
@@ -1408,7 +1379,7 @@
   // URL (#dropped / #queue) so a reload or a shared link opens the same view.
   // The 30-second refresh keeps updating all three, so switching is instant
   // and always current.
-  const VIEWS = ["active", "dropped", "favorites", "compare", "queue", "check", "narratives", "unlocks"];
+  const VIEWS = ["active", "dropped", "favorites", "compare", "queue", "check", "unlocks"];
   // A hand-edited / truncated link can hold a broken %-escape; decodeURIComponent
   // would throw and stop the whole page script (nothing would load), so fall
   // back to the raw text.
@@ -1443,138 +1414,11 @@
     }
     const hash = name === "active" ? "" : "#" + name;
     if (location.hash !== hash) history.replaceState(null, "", location.pathname + location.search + hash);
-    if (name === "narratives") loadNarratives();
     if (name === "unlocks") loadUnlocks();
     if (name === "compare") initCompare();
     if (name === "favorites") fpLoad();
   }
 
-  // ---- Narratives tab (CoinGecko categories, our own 7-day history) --------
-  function fmtBig(v) {
-    if (v == null) return "—";
-    const a = Math.abs(v);
-    if (a >= 1e12) return "$" + (v / 1e12).toFixed(2) + "T";
-    if (a >= 1e9) return "$" + (v / 1e9).toFixed(1) + "B";
-    if (a >= 1e6) return "$" + Math.round(v / 1e6) + "M";
-    if (a >= 1e3) return "$" + Math.round(v / 1e3) + "K";
-    return "$" + Math.round(v);
-  }
-  // One bar per day (oldest left -> newest right), all the same blue. Bar
-  // height = that day's market cap, scaled to the sector's own 7-day range
-  // (lowest day 30%, highest 100%) so day-to-day moves are visible. Hover or
-  // tap a bar for that day's details (narrTip). Dashed slot = no data yet.
-  let narrRows = [];
-  function dayBars(daily, dates, r) {
-    const caps = (daily || []).filter(x => x && x.mcap != null).map(x => x.mcap);
-    const lo = Math.min(...caps), hi = Math.max(...caps);
-    const days = (daily || []).map((x, i) => {
-      if (!x || x.mcap == null)
-        return `<span class="dday none" title="${esc(shortDate(dates[i]))}: no data yet"><span class="bx"></span></span>`;
-      const h = hi > lo ? 30 + (x.mcap - lo) / (hi - lo) * 70 : 70;
-      return `<span class="dday" tabindex="0" data-r="${r}" data-i="${i}"
-                aria-label="${esc(longDate(x.date))}: market cap ${fmtBig(x.mcap)}"><span class="bx"><i style="height:${h.toFixed(0)}%"></i></span></span>`;
-    }).join("");
-    return `<div class="dbars">${days}</div>`;
-  }
-  // Tooltip, same behaviour as the Transactions chart: hover shows it, tap
-  // pins it (phones), tap elsewhere closes it.
-  let narrPinned = null;
-  function narrPct(v) {
-    if (v == null) return `<span class="flat">—</span>`;
-    const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
-    return `<span class="${cls}">${v > 0 ? "+" : ""}${v.toFixed(1)}%</span>`;
-  }
-  function narrShow(el) {
-    const tip = document.getElementById("narrtip");
-    const x = narrRows[+el.dataset.r].daily[+el.dataset.i];
-    document.querySelectorAll("#narr-body .dday.on").forEach(e => e.classList.remove("on"));
-    el.classList.add("on");
-    const first = +el.dataset.i === 0;
-    tip.innerHTML = `<b>${esc(narrRows[+el.dataset.r].name)} · ${esc(longDate(x.date))}</b>
-      <div class="row"><span>Market cap</span><span>${fmtMoney(x.mcap)}</span></div>
-      <div class="row"><span>Volume 24h</span><span>${fmtMoney(x.volume)}</span></div>
-      <div class="row"><span>MCap vs previous day</span><span>${narrPct(x.mcap_chg)}</span></div>
-      <div class="row"><span>Volume vs previous day</span><span>${narrPct(x.vol_chg)}</span></div>
-      ${x.mcap_chg == null ? `<div class="row"><span class="flat">${first ? "Day 1 - no previous day" : "No snapshot for the previous day"}</span></div>` : ""}`;
-    tip.style.display = "block";
-    const br = el.getBoundingClientRect(), w = tip.offsetWidth, hgt = tip.offsetHeight, gap = 8;
-    let left = br.right + gap;
-    if (left + w > window.innerWidth - 4) left = br.left - gap - w;
-    tip.style.left = Math.max(4, left) + "px";
-    tip.style.top = Math.max(4, Math.min(br.top, window.innerHeight - hgt - 4)) + "px";
-  }
-  function narrHide(force) {
-    if (narrPinned && !force) return;
-    narrPinned = null;
-    document.getElementById("narrtip").style.display = "none";
-    document.querySelectorAll("#narr-body .dday.on").forEach(e => e.classList.remove("on"));
-  }
-  (function wireNarrTip() {
-    const body = document.getElementById("narr-body");
-    body.addEventListener("mouseover", e => { const el = e.target.closest(".dday[data-i]"); if (el && !narrPinned) narrShow(el); });
-    body.addEventListener("mouseout", e => { const el = e.target.closest(".dday[data-i]"); if (el && !el.contains(e.relatedTarget)) narrHide(); });
-    body.addEventListener("focusin", e => { const el = e.target.closest(".dday[data-i]"); if (el) narrShow(el); });
-    body.addEventListener("focusout", () => narrHide(true));
-    body.addEventListener("click", e => {
-      const el = e.target.closest(".dday[data-i]");
-      if (!el) return;
-      e.stopPropagation();
-      if (narrPinned === el) narrHide(true); else { narrPinned = el; narrShow(el); }
-    });
-    document.addEventListener("click", () => { if (narrPinned) narrHide(true); });
-    window.addEventListener("scroll", () => narrHide(true), {passive: true});
-  })();
-  // Sorting: default = the server's order. Clicking Market Cap or Volume 24h
-  // sorts by that column high -> low; clicking the same header again flips
-  // it. The arrow shows the active column and direction.
-  let narrLoaded = 0, narrData = null, narrSort = null;   // narrSort = {key, dir: 1 | -1}
-  function renderNarratives() {
-    const body = document.getElementById("narr-body"), d = narrData;
-    narrRows = d.rows.slice();
-    if (narrSort) {
-      const {key, dir} = narrSort;
-      narrRows.sort((a, b) => (a[key] == null) - (b[key] == null) || dir * ((a[key] || 0) - (b[key] || 0)));
-    }
-    document.querySelectorAll("#view-narratives th[data-sort]").forEach(th => {
-      const on = narrSort && narrSort.key === th.dataset.sort;
-      th.setAttribute("aria-sort", on ? (narrSort.dir === 1 ? "ascending" : "descending") : "none");
-      th.querySelector(".arr").textContent = on ? (narrSort.dir === 1 ? "▲" : "▼") : "";
-    });
-    narrHide(true);
-    body.innerHTML = narrRows.map((r, i) => `<tr>
-        <td>${esc(r.name)}</td>
-        <td>${dayBars(r.daily, d.bar_dates, i)}</td>
-        <td class="num">${fmtBig(r.market_cap)}</td>
-        <td class="num">${fmtBig(r.volume_24h)}</td></tr>`).join("");
-  }
-  document.querySelectorAll("#view-narratives th[data-sort] .sorth").forEach(btn =>
-    btn.addEventListener("click", () => {
-      const key = btn.closest("th").dataset.sort;
-      narrSort = narrSort && narrSort.key === key ? {key, dir: -narrSort.dir} : {key, dir: -1};
-      if (narrData && narrData.rows.length) renderNarratives();
-    }));
-  async function loadNarratives() {
-    if (Date.now() - narrLoaded < 5 * 60 * 1000) return;     // the data changes once a day
-    const body = document.getElementById("narr-body"), meta = document.getElementById("narr-meta");
-    try {
-      const res = await fetch("/api/narratives", {cache: "no-store"});
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const d = await res.json();
-      narrLoaded = Date.now();
-      if (!d.rows.length) {
-        body.innerHTML = `<tr><td colspan="4" class="empty">No narrative snapshots yet — the daily run saves the first one.</td></tr>`;
-        meta.textContent = "";
-        return;
-      }
-      meta.textContent = `${d.rows.length} narratives with a total market cap of at least ${fmtBig(d.min_mcap)} · snapshot of ${longDate(d.as_of)} · `
-        + (d.days_of_history >= 7 ? "7 days of history" : `${d.days_of_history} of 7 days collected so far`)
-        + " · click Market Cap or Volume 24h to sort";
-      narrData = d;
-      renderNarratives();
-    } catch (e) {
-      body.innerHTML = `<tr><td colspan="4" class="empty">Couldn't load narratives (${esc(e.message)}).</td></tr>`;
-    }
-  }
   document.querySelectorAll(".tab").forEach(b =>
     b.addEventListener("click", () => showView(b.dataset.view)));
   // Click (or Enter) on an active-coin row opens its detail page.
@@ -2817,7 +2661,7 @@
       errBox.style.display = "none";
       const now = new Date();
       document.getElementById("status").textContent =
-        "Updated " + now.toLocaleTimeString();
+        "Last updated: " + now.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
     } catch (e) {
       errBox.textContent = "Could not reach the API. Is the server running? (" + e.message + ")";
       errBox.style.display = "block";
@@ -2825,8 +2669,20 @@
     }
   }
 
-  loadData();                       // load immediately
-  setInterval(loadData, 30000);     // then every 30 seconds
+  // The data changes once a day (daily run ~11:00 UTC), so a slow refresh is
+  // enough; the API responses are also cached by Vercel for 1-10 minutes.
+  const REFRESH_MS = 10 * 60 * 1000;
+  loadData();                         // load immediately
+  setInterval(loadData, REFRESH_MS);  // then every 10 minutes
+  document.getElementById("refreshbtn").addEventListener("click", async e => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    document.getElementById("status").textContent = "Refreshing…";
+    try {
+      await loadData();
+      if (!document.getElementById("view-favorites").hidden) await fpLoad();
+    } finally { b.disabled = false; }
+  });
 </script>
 </body>
 </html>
