@@ -295,6 +295,54 @@ def score_inputs(session, coins):
     return out
 
 
+INPUT_FIELDS = ("price_pos", "liq_growth", "liq_source", "buy_sell", "buy_sell_days")
+
+
+def save_score_inputs(session, inputs, days):
+    """Store score_inputs() results (score_inputs_cache), one row per coin,
+    tagged with the snapshot day they were computed for. Never raises."""
+    from models import ScoreInputsCache
+    from database import utcnow
+    try:
+        have = {r.coin_id: r for r in session.query(ScoreInputsCache).filter(ScoreInputsCache.coin_id.in_(list(inputs)))}
+        now = utcnow()
+        for cid, res in inputs.items():
+            if days.get(cid) is None:
+                continue
+            row = have.get(cid)
+            if row is None:
+                row = ScoreInputsCache(coin_id=cid)
+                session.add(row)
+            row.day, row.updated_at = days[cid], now
+            for k in INPUT_FIELDS:
+                setattr(row, k, res.get(k))
+        session.commit()
+    except Exception:
+        session.rollback()
+
+
+def stored_score_inputs(session, coins, days):
+    """score_inputs() for the coins, read from score_inputs_cache where the
+    row matches the coin's latest snapshot day (days = {coin_id: date});
+    the rest (no row yet, or a newer snapshot) are computed as before."""
+    from models import ScoreInputsCache
+    out = {}
+    try:
+        for r in (session.query(ScoreInputsCache.coin_id, ScoreInputsCache.day, ScoreInputsCache.price_pos,
+                                ScoreInputsCache.liq_growth, ScoreInputsCache.liq_source,
+                                ScoreInputsCache.buy_sell, ScoreInputsCache.buy_sell_days)
+                  .filter(ScoreInputsCache.coin_id.in_([c.id for c in coins]))):
+            if days.get(r.coin_id) is not None and r.day == days[r.coin_id]:
+                out[r.coin_id] = {k: getattr(r, k) for k in INPUT_FIELDS}
+                out[r.coin_id]["buy_sell_days"] = out[r.coin_id]["buy_sell_days"] or 0
+    except Exception:
+        session.rollback()
+    missing = [c for c in coins if c.id not in out]
+    if missing:
+        out.update(score_inputs(session, missing))
+    return out
+
+
 def liquidity_growth(session, coins):
     """{coin.id: (pct or None, source)} - the 7-day liquidity change alone."""
     return {cid: (r["liq_growth"], r["liq_source"]) for cid, r in score_inputs(session, coins).items()}
@@ -346,6 +394,7 @@ def score_all():
         # Only score ACTIVE coins - dropped coins aren't ranked or shown.
         coins = session.query(Coin).filter_by(status="active").all()
         inputs = score_inputs(session, coins)
+        snap_days = {}
         for coin in coins:
             # The most recent snapshot for this coin (latest date).
             snap = (
@@ -356,6 +405,7 @@ def score_all():
             )
             if snap is None:
                 continue  # coin has no snapshot yet - skip
+            snap_days[coin.id] = snap.date
 
             breakdown = score_snapshot(snap, coin, inputs.get(coin.id))
 
@@ -368,6 +418,8 @@ def score_all():
                             "mcap": snap.mcap, "score": snap.score, **breakdown})
 
         session.commit()  # persist all the scores at once
+        # The Active table reads these instead of recomputing them (egress).
+        save_score_inputs(session, inputs, snap_days)
     except Exception:
         session.rollback()
         raise

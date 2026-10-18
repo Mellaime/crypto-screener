@@ -241,7 +241,7 @@ def build_message(rep, session):
     lines.append("\n⚠️ مشاكل مهمة: " + ("ما كاين والو" if not issues else ""))
     lines.extend(f"• {x}" for x in issues)
     lines.append(flags)
-    lines.append("🗄️ توفير الـegress: كاش Vercel شغال (API ‏1–10 دقايق) · تحديث الصفحة كل 10 دقايق")
+    lines.append("🗄️ توفير الـegress: كاش Vercel شغال (API ‏1–10 دقايق) · تحديث الصفحة كل 30 دقيقة")
 
     # 🔌 APIs
     lines.append("\n🔌 الـAPIs (هاد التشغيل / الشهر / الحد):")

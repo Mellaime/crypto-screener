@@ -124,7 +124,7 @@ def _ranks(session):
 def build(session, tokens):
     """The /api/compare payload (stored data only)."""
     from main import latest_snapshot
-    from scoring import score_snapshot, score_inputs, previous_scores
+    from scoring import score_snapshot, previous_scores
     from entry_zone import get_entry_zone, ZONE_RANK, ZONES as ZONE_LABEL
     from volume_anomaly import get_recent_spike
     from listings import get_listings, _tickers
@@ -142,7 +142,8 @@ def build(session, tokens):
             continue
         seen.add(c.id)
         snap = latest_snapshot(session, c.id)
-        inp = score_inputs(session, [c]).get(c.id) or {}
+        from scoring import stored_score_inputs
+        inp = (stored_score_inputs(session, [c], {c.id: snap.date}).get(c.id) if snap else None) or {}
         # Score + ratios exactly as the Active table computes them (a dropped
         # coin: from its last snapshot, no delta / rank).
         b = score_snapshot(snap, c, inp) if snap else None
@@ -153,7 +154,7 @@ def build(session, tokens):
         mcap, liq, vol = (snap.mcap, snap.liquidity, snap.volume) if snap else (None, None, None)
         ez = get_entry_zone(session, c)
         zone = ez.get("zone") if ez.get("status") == "ok" else None
-        lst = get_listings(session, c)
+        lst = get_listings(session, c, ticker=tick.get(c.id) or "")
         listed = [x["exchange"] for x in lst.get("listed", [])] if lst.get("status") == "ok" else None
         out.append({
             "slug": slugs.get(c.id), "id": c.id, "name": c.name, "symbol": tick.get(c.id) or None,

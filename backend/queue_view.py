@@ -119,16 +119,19 @@ def upcoming(session, limit=QUEUE_DISPLAY_LIMIT, now=None):
     as dicts with the 5 display fields (+ position / run)."""
     from models import Coin, CoinQueue
 
+    from sqlalchemy import func
     now = now or _now()
-    rows = session.query(CoinQueue).filter(CoinQueue.last_seen.isnot(None)).all()
-    if not rows:
-        return []
     # Only coins discovered in the latest run (the queue picks from those).
     # Every row of one run gets the same last_seen stamp, so match it exactly
     # - a coin seen in an earlier run the same day (and filtered out since)
-    # doesn't linger.
-    latest_run = max(r.last_seen for r in rows)
-    rows = [r for r in rows if r.last_seen == latest_run]
+    # doesn't linger. Only the columns shown / needed for the order are read.
+    latest_run = session.query(func.max(CoinQueue.last_seen)).scalar()
+    if latest_run is None:
+        return []
+    rows = (session.query(CoinQueue.id, CoinQueue.chain, CoinQueue.contract, CoinQueue.name, CoinQueue.symbol,
+                          CoinQueue.mcap, CoinQueue.narrative, CoinQueue.first_seen, CoinQueue.last_checked,
+                          CoinQueue.outcome, CoinQueue.attempts)
+            .filter(CoinQueue.last_seen == latest_run).all())
 
     fresh = sorted((r for r in rows if r.last_checked is None),
                    key=lambda r: (r.first_seen, r.id))

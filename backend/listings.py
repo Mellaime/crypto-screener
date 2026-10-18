@@ -139,14 +139,16 @@ def _tickers(session, coin_ids=None):
     """{coin_id: upper-case ticker} for active + dropped coins (only
     `coin_ids` when given)."""
     from models import Coin, CoinQueue
-    cq = session.query(Coin).filter(Coin.status.in_(["active", "dropped"]))
+    # Only the 3 columns needed (this runs on most page loads - egress).
+    cq = session.query(Coin.id, Coin.chain, Coin.contract).filter(Coin.status.in_(["active", "dropped"]))
     if coin_ids is not None:
         cq = cq.filter(Coin.id.in_(list(coin_ids)))
     coins = cq.all()
     contracts = list({(c.contract or "").lower() for c in coins})
     q = {}
     for i in range(0, len(contracts), 500):
-        for r in session.query(CoinQueue).filter(CoinQueue.contract.in_(contracts[i:i + 500])):
+        for r in (session.query(CoinQueue.chain, CoinQueue.contract, CoinQueue.symbol)
+                  .filter(CoinQueue.contract.in_(contracts[i:i + 500]))):
             q[(r.chain, r.contract)] = (r.symbol or "").upper()
     return {c.id: q.get(((c.chain or "").lower(), (c.contract or "").lower()), "") for c in coins}
 
@@ -354,7 +356,7 @@ def get_listings(session, coin, ticker=None):
     try:
         w = session.query(ExchangeWatch).filter_by(coin_id=coin.id).first()
         rows = session.query(ExchangeListing).filter_by(coin_id=coin.id).all()
-        if ticker is None:
+        if ticker is None:                    # "" = the caller knows it has none
             ticker = _tickers(session, [coin.id]).get(coin.id)
         sched = [_announcement_dict(a) for a in _upcoming(session) if ticker and ticker in json.loads(a.tickers or "[]")]
     except Exception:

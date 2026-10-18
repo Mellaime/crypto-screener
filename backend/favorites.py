@@ -218,15 +218,19 @@ def delete_profile(session, name, pin, ip):
 
 
 # ---------------------------------------------------------------- coins
-def _snapshot(session, row, coin):
-    """Copy the coin's current data into the favorite row."""
+def _snapshot(session, row, coin, ticker=None, perf=False):
+    """Copy the coin's current data into the favorite row (ticker / perf can
+    be passed in when the caller already has them for many coins)."""
     from main import latest_snapshot
     from listings import _tickers
     from performance import safe_compute
     snap = latest_snapshot(session, coin.id)
-    perf = safe_compute(session, [coin]).get(coin.id)
+    if perf is False:
+        perf = safe_compute(session, [coin]).get(coin.id)
     row.coin_id, row.coin_name, row.coin_chain = coin.id, coin.name, coin.chain
-    row.coin_symbol = _tickers(session, [coin.id]).get(coin.id) or row.coin_symbol
+    if ticker is None:
+        ticker = _tickers(session, [coin.id]).get(coin.id)
+    row.coin_symbol = ticker or row.coin_symbol
     row.last_known_price = coin.price_usd if coin.price_usd is not None else row.last_known_price
     row.last_known_mcap = (snap.mcap if snap and snap.mcap is not None else row.last_known_mcap)
     row.last_known_pnl = perf["change_pct"] if perf else row.last_known_pnl
@@ -361,10 +365,15 @@ def refresh_snapshots():
         alive = {(c.contract or "").lower(): c for c in
                  session.query(Coin).filter(func.lower(Coin.contract).in_(contracts))} if contracts else {}
         today = _now().date()
+        from listings import _tickers
+        from performance import safe_compute
+        coins = list({c.id: c for c in alive.values()}.values())
+        tick = _tickers(session, [c.id for c in coins]) if coins else {}
+        perfs = safe_compute(session, coins) if coins else {}
         for r in rows:
             c = alive.get(r.coin_contract)
             if c is not None:
-                _snapshot(session, r, c)
+                _snapshot(session, r, c, ticker=tick.get(c.id) or "", perf=perfs.get(c.id))
                 stats["refreshed"] += 1
             elif r.delisted_at is None:
                 r.delisted_at = today

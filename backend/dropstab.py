@@ -187,6 +187,7 @@ def run_unlock_update():
         session.commit()
         # The Token Unlocks page: EVERY overview entry (same request, no calls).
         stats["all_stored"], stats["all_removed"] = _store_all(session, entries, now)
+        save_unlocks_display(session)
     except Exception:
         session.rollback()
         raise
@@ -211,17 +212,24 @@ def _store_all(session, entries, now):
     """UPSERT every overview entry into dropstab_unlocks_all; delete rows not
     refreshed for ALL_KEEP_DAYS. Returns (stored, removed)."""
     from models import DropstabUnlockAll
-    rows = {r.dropstab_id: r for r in session.query(DropstabUnlockAll)}
+    # Only the ids are read (not the ~4 MB of stored records): existing rows
+    # are updated, new ones inserted, in bulk.
+    have = dict(session.query(DropstabUnlockAll.dropstab_id, DropstabUnlockAll.id))
+    updates, inserts = [], []
     for cid, e in entries.items():
-        row = rows.get(cid)
-        if row is None:
-            row = DropstabUnlockAll(dropstab_id=cid)
-            session.add(row)
         slug = e.get("coinSlug") or ""
-        row.slug, row.symbol = slug, e.get("coinSymbol")
         # The overview has no name: built from the slug ("the-graph" -> "The Graph").
-        row.name = " ".join(w[:1].upper() + w[1:] for w in slug.split("-") if w) or e.get("coinSymbol")
-        row.data, row.day, row.updated_at = json.dumps(e), now.date(), now
+        vals = {"dropstab_id": cid, "slug": slug, "symbol": e.get("coinSymbol"),
+                "name": " ".join(w[:1].upper() + w[1:] for w in slug.split("-") if w) or e.get("coinSymbol"),
+                "data": json.dumps(e), "day": now.date(), "updated_at": now}
+        if cid in have:
+            updates.append({**vals, "id": have[cid]})
+        else:
+            inserts.append(vals)
+    if updates:
+        session.bulk_update_mappings(DropstabUnlockAll, updates)
+    if inserts:
+        session.bulk_insert_mappings(DropstabUnlockAll, inserts)
     removed = (session.query(DropstabUnlockAll)
                .filter(DropstabUnlockAll.updated_at < now - timedelta(days=ALL_KEEP_DAYS))
                .delete(synchronize_session=False))
@@ -353,15 +361,60 @@ ALL_CACHE_S = 600          # the Token Unlocks list is cached in memory this lon
 _all_cache = {"at": 0.0, "rows": None}
 
 
+def save_unlocks_display(session):
+    """Daily run: build the Token Unlocks page's list once and store it
+    (unlocks_display_cache) - the page then reads ~0.3 MB instead of the
+    ~4.3 MB of raw records. Never raises."""
+    from models import UnlocksDisplayCache
+    try:
+        rows = _build_unlocks(session)
+        row = session.get(UnlocksDisplayCache, 1)
+        if row is None:
+            row = UnlocksDisplayCache(id=1)
+            session.add(row)
+        row.data, row.computed_at = json.dumps(rows, separators=(",", ":")), datetime.now(timezone.utc).replace(tzinfo=None)
+        session.commit()
+        _all_cache["rows"] = None
+    except Exception as e:
+        session.rollback()
+        log.warning("Token Unlocks list not stored (%s) - the page builds it itself.", type(e).__name__)
+
+
 def all_unlocks(session):
     """Token Unlocks page: every stored DropsTab coin with its next unlock
-    (compute() - the same numbers as the detail page's card). Cached for
-    ALL_CACHE_S per running process. Never raises (no table -> [])."""
+    (compute() - the same numbers as the detail page's card), from the list
+    the daily run stored. A coin whose next unlock has passed since then is
+    recomputed from its raw record (so the page never shows a past date).
+    Cached for ALL_CACHE_S per running process. Never raises (no table -> [])."""
     if _all_cache["rows"] is not None and time.time() - _all_cache["at"] < ALL_CACHE_S:
         return _all_cache["rows"]
+    from models import UnlocksDisplayCache
+    try:
+        cached = session.query(UnlocksDisplayCache.data).filter(UnlocksDisplayCache.id == 1).scalar()
+    except Exception:
+        session.rollback()
+        cached = None
+    if not cached:
+        out = _build_unlocks(session)                          # nothing stored yet
+    else:
+        out = json.loads(cached)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        stale = [r["dropstab_id"] for r in out if r.get("next_unlock") and (r["next_unlock"].get("date") or "") < now_iso]
+        if stale:
+            fresh = {r["dropstab_id"]: r for r in _build_unlocks(session, ids=stale)}
+            out = [fresh.get(r["dropstab_id"], r) for r in out]
+    _all_cache["rows"], _all_cache["at"] = out, time.time()
+    return out
+
+
+def _build_unlocks(session, ids=None):
+    """The Token Unlocks rows from the raw stored records (all, or `ids`)."""
     from models import DropstabUnlockAll
     try:
-        stored = session.query(DropstabUnlockAll).all()
+        q = session.query(DropstabUnlockAll)
+        if ids is not None:
+            q = q.filter(DropstabUnlockAll.dropstab_id.in_(list(ids)))
+        stored = q.all()
     except Exception:
         session.rollback()
         return []
@@ -390,7 +443,6 @@ def all_unlocks(session):
                         "next_unlock": nxt})
         except Exception as ex:
             log.warning("Token Unlocks: skipped %s (%s)", r.slug, type(ex).__name__)
-    _all_cache["rows"], _all_cache["at"] = out, time.time()
     return out
 
 

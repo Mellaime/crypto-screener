@@ -158,7 +158,8 @@ def _match_coins(session, now):
         log.warning("Coinalyze market list failed (HTTP %s) - matching skipped", st)
         return 0, 0
     main = _main_markets(markets)
-    tickers = {(q.chain, q.contract): (q.symbol or "").upper() for q in session.query(CoinQueue)}
+    tickers = {(q.chain, q.contract): (q.symbol or "").upper()
+               for q in session.query(CoinQueue.chain, CoinQueue.contract, CoinQueue.symbol)}
     cand = {}
     for c in todo:
         t = tickers.get(((c.chain or "").lower(), (c.contract or "").lower()), "")

@@ -70,7 +70,8 @@ def analyzed_keys(session, now=None):
     from models import CoinQueue
     now = now or _now()
     return {(r.chain, r.contract) for r in
-            session.query(CoinQueue).filter(CoinQueue.last_checked.isnot(None))
+            session.query(CoinQueue.chain, CoinQueue.contract, CoinQueue.last_checked,
+                          CoinQueue.outcome, CoinQueue.attempts).filter(CoinQueue.last_checked.isnot(None))
             if not _recheck_due(r, now)}
 
 

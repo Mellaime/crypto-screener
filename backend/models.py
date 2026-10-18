@@ -709,3 +709,37 @@ class FavoritePinAttempt(Base):
     ip = Column(String(64), nullable=False, index=True)
     ok = Column(Boolean, nullable=False, default=False)
     at = Column(DateTime, nullable=False, default=utcnow, index=True)
+
+
+class ScoreInputsCache(Base):
+    """
+    Each active coin's stored-data score inputs (scoring.score_inputs():
+    60-day price position, 7-day liquidity growth + its source, buy / sell
+    ratio + days), saved by the daily scoring step. The Active table reads
+    these instead of re-reading every coin's 90-day Entry Zone history (~1.3
+    MB of Supabase egress per page load). day = the snapshot day they were
+    computed for; a row whose day isn't the coin's latest snapshot day is
+    ignored (recomputed), so the numbers never go stale.
+    """
+    __tablename__ = "score_inputs_cache"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    coin_id = Column(Integer, nullable=False, unique=True, index=True)
+    day = Column(Date, nullable=False)
+    price_pos = Column(Float)
+    liq_growth = Column(Float)
+    liq_source = Column(String)
+    buy_sell = Column(Float)
+    buy_sell_days = Column(Integer)
+    updated_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class UnlocksDisplayCache(Base):
+    """The Token Unlocks page's finished list (dropstab.all_unlocks() output,
+    ~0.3 MB JSON), built once by the daily run instead of from the ~4.3 MB of
+    raw DropsTab records on every page load. A single row (id = 1)."""
+    __tablename__ = "unlocks_display_cache"
+
+    id = Column(Integer, primary_key=True)
+    data = Column(Text, nullable=False)                        # JSON list
+    computed_at = Column(DateTime, nullable=False)

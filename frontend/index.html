@@ -527,7 +527,7 @@
     <div class="status"><span id="status">Loading…</span>
       <button type="button" class="refreshbtn" id="refreshbtn" title="Load the latest data now">🔄 Refresh</button></div>
   </header>
-  <div class="sub">Data updates once a day (~11:00 UTC) · the page refreshes every 10 minutes · ranked by score (highest first)</div>
+  <div class="sub">Data updates once a day (~11:00 UTC) · the page refreshes every 30 minutes · ranked by score (highest first)</div>
 
   <div class="err" id="err"></div>
 
@@ -2671,9 +2671,9 @@
 
   // The data changes once a day (daily run ~11:00 UTC), so a slow refresh is
   // enough; the API responses are also cached by Vercel for 1-10 minutes.
-  const REFRESH_MS = 10 * 60 * 1000;
+  const REFRESH_MS = 30 * 60 * 1000;
   loadData();                         // load immediately
-  setInterval(loadData, REFRESH_MS);  // then every 10 minutes
+  setInterval(loadData, REFRESH_MS);  // then every 30 minutes
   document.getElementById("refreshbtn").addEventListener("click", async e => {
     const b = e.currentTarget;
     b.disabled = true;

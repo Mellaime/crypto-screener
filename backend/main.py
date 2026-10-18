@@ -204,9 +204,13 @@ def get_coins():
             new_from, new_to = last_run[0] - timedelta(hours=3), last_run[0] + timedelta(minutes=5)
 
         rows = []
-        inputs = score_inputs(session, coins)   # stored-data score inputs (no API calls)
+        snaps = {c.id: latest_snapshot(session, c.id) for c in coins}
+        # Score inputs saved by the daily scoring step (recomputed only for a
+        # coin whose saved row isn't from its latest snapshot day).
+        from scoring import stored_score_inputs
+        inputs = stored_score_inputs(session, coins, {cid: s.date for cid, s in snaps.items() if s})
         for coin in coins:
-            snap = latest_snapshot(session, coin.id)
+            snap = snaps[coin.id]
             if snap is None:
                 continue
 
@@ -446,7 +450,8 @@ def get_coin(contract: str):
         if coin is None:
             raise HTTPException(status_code=404, detail="coin not found")
         snap = latest_snapshot(session, coin.id)
-        b = score_snapshot(snap, coin, score_inputs(session, [coin]).get(coin.id)) if snap else None
+        from scoring import stored_score_inputs
+        b = score_snapshot(snap, coin, stored_score_inputs(session, [coin], {coin.id: snap.date}).get(coin.id)) if snap else None
         q = (session.query(CoinQueue.symbol)
              .filter_by(chain=(coin.chain or "").lower(), contract=coin.contract.lower())
              .first())
