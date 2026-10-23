@@ -157,6 +157,12 @@ _NEW_COLUMNS = [
 ]
 
 
+# Hourly live price (hourly_prices.py) - nullable, safe to leave if unused.
+_NEW_COLUMNS += [
+    ("coins", "live_price", "FLOAT", None),
+    ("coins", "live_price_at", "TIMESTAMP", None),
+]
+
 # Favorites portfolio (added after the favorites tables were created).
 _NEW_COLUMNS += [
     ("favorite_profiles", "tracking_since", "TIMESTAMP",

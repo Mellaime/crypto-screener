@@ -271,10 +271,20 @@ def get_coins():
             r["volume_spike"] = vs.get(r["id"])
         _add_symbols(session, rows, coins)
         # Performance since the coin entered Active (stored prices, no API call).
-        from performance import safe_compute, brief
+        from performance import safe_compute, brief, live_pnl
+        from hourly_prices import effective_price
         perf = safe_compute(session, coins)
+        by_id = {c.id: c for c in coins}
         for r in rows:
-            r["performance"] = brief(perf.get(r["id"]))
+            r["performance"] = brief(perf.get(r["id"]))     # DAILY (Overview reads this)
+            # Hourly live price + P&L (falls back to the daily price when stale).
+            price, is_live, at = effective_price(by_id[r["id"]])
+            r["live_price"] = price if is_live else None
+            r["live_price_at"] = _iso(at) if at else None
+            r["price_is_live"] = is_live
+            p = r["performance"]
+            pct = live_pnl(p["entry_price"], price) if p else None
+            r["live_pnl"] = None if pct is None else {"change_pct": round(pct, 2), "is_live": is_live}
 
         # Highest score first, then attach a rank number.
         rows.sort(key=lambda r: r["score"], reverse=True)
@@ -431,6 +441,31 @@ def get_dropped():
         return {"count": len(rows), "dropped": rows}
     finally:
         session.close()
+
+
+def _live_fields(coin):
+    """live_price / live_price_at / price_is_live (hourly price while fresh)."""
+    from hourly_prices import effective_price
+    price, is_live, at = effective_price(coin)
+    return {"live_price": price if is_live else None, "live_price_at": _iso(at) if at else None,
+            "price_is_live": is_live}
+
+
+def _live_performance(coin, p):
+    """Performance Since Caught with the LIVE price for change_pct / change_usd
+    / current_price (an active coin's hourly price while fresh). The highest /
+    lowest since entry stay the daily-snapshot records."""
+    if not p or p.get("dropped"):
+        return p
+    from hourly_prices import effective_price
+    from performance import live_pnl
+    price, is_live, at = effective_price(coin)
+    pct = live_pnl(p["entry_price"], price)
+    if pct is None:
+        return p
+    return {**p, "current_price": price, "change_pct": round(pct, 2), "change_usd": price - p["entry_price"],
+            "status": "flat" if abs(pct) < 1 else "up" if pct > 0 else "down",
+            "is_live": is_live, "live_price_at": _iso(at) if at else None}
 
 
 HOLDER_BAR_DAYS = 30        # holders bars: up to the last 30 stored days
@@ -593,7 +628,8 @@ def get_coin(contract: str):
             "futures": futures_data(session, coin.id),  # Coinalyze, stored (no API call)
             "listings": get_listings(session, coin),    # exchange listings, stored (no API call)
             "volume_spike": get_recent_spike(session, coin.id),  # last 7 days, stored (no API call)
-            "performance": safe_compute(session, [coin]).get(coin.id),  # since it entered Active
+            "performance": _live_performance(coin, safe_compute(session, [coin]).get(coin.id)),  # since it entered Active
+            **_live_fields(coin),
             "supply": {
                 "total": coin.total_supply,
                 "circulating": coin.circulating_supply,
