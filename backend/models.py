@@ -71,6 +71,7 @@ class Coin(Base):
     # price; the API uses live_price only while it is < 90 min old.
     live_price = Column(Float)
     live_price_at = Column(DateTime)                          # UTC
+    live_source = Column(String)                              # "dexscreener" | "codex" (debugging)
 
     # Security info (from GoPlus, filter #7) - stored so the dashboard shows it.
     security_verdict = Column(String)   # "safe" / "unsafe" / "unknown"

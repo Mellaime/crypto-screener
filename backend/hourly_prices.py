@@ -12,13 +12,20 @@ measured against an entry price from the same feed. Each coin takes its
 highest-liquidity pool. (CoinGecko's contract-price endpoint takes one chain
 per call: ~13 calls an hour = ~9,400 a month of the 10K budget.)
 
+Fallback: coins DexScreener couldn't price this run (no pool, or rejected
+by the safety check) are asked from Codex getTokenPrices - bulk, 25 tokens
+per request (~1 request a run, ~720 a month), networkId from
+liquidity_check.CHAIN_TO_NETWORK - with the same safety check.
+coins.live_source = "dexscreener" | "codex" (where the live price came from).
+
 Safety:
-  * a coin missing from the response keeps its previous live price
+  * a coin missing from both keeps its previous live price
   * a price more than SANITY_X times away from the coin's daily price is
     skipped (a dust / wrong pool), the previous live price is kept
   * nothing is ever set to NULL
-  * Telegram alert only if the run fails or fewer than ALERT_SHARE of the
-    active coins were updated; the script always exits 0.
+  * Telegram alert only if the run fails, fewer than ALERT_SHARE of the
+    active coins were updated, or the whole Codex fallback call failed;
+    the script always exits 0.
 
 The API uses a live price only while it is fresher than MAX_AGE_MIN
 (effective_price()), otherwise the daily price.
@@ -33,6 +40,9 @@ log = logging.getLogger("hourly_prices")
 MAX_AGE_MIN = 90           # API: live price used only while younger than this
 SANITY_X = 3.0             # skip a live price > 3x away from the daily price
 ALERT_SHARE = 0.5          # alert if fewer than 50% of active coins updated
+CODEX_BATCH = 25           # tokens per Codex getTokenPrices request
+CODEX_PRICES_QUERY = """query ($inputs: [GetPriceInput]) {
+  getTokenPrices(inputs: $inputs) { address networkId priceUsd } }"""
 
 
 def effective_price(coin, max_age_min=MAX_AGE_MIN, now=None):
@@ -84,11 +94,46 @@ def fetch_live_prices(coins):
     return out, stats["v1_requests"] + len(other), stats["v1_failed"]
 
 
+def fetch_codex_prices(coins):
+    """Codex fallback. coins = [(chain, contract as stored)] (original case:
+    Solana addresses are case-sensitive). Returns ({contract lower: price},
+    requests, all_failed). Never raises."""
+    import requests
+    from liquidity_check import CHAIN_TO_NETWORK, CODEX_KEY, CODEX_URL
+    inputs = [{"address": ct, "networkId": CHAIN_TO_NETWORK[ch]} for ch, ct in coins if ch in CHAIN_TO_NETWORK and ct]
+    if not inputs or not CODEX_KEY:
+        return {}, 0, False
+    out, calls, failed = {}, 0, 0
+    for i in range(0, len(inputs), CODEX_BATCH):
+        calls += 1
+        try:
+            body = requests.post(CODEX_URL, json={"query": CODEX_PRICES_QUERY, "variables": {"inputs": inputs[i:i + CODEX_BATCH]}},
+                                 headers={"Authorization": CODEX_KEY}, timeout=30).json()
+            rows = (body.get("data") or {}).get("getTokenPrices")
+            if rows is None:
+                raise ValueError(str(body.get("errors"))[:200])
+        except Exception as e:
+            failed += 1
+            log.warning("Codex getTokenPrices failed (%s)", type(e).__name__)
+            continue
+        for r in rows or []:
+            if not isinstance(r, dict):                       # Codex returns null for tokens it doesn't know
+                continue
+            try:
+                p = float(r.get("priceUsd"))
+            except (TypeError, ValueError):
+                continue
+            if p > 0 and r.get("address"):
+                out[r["address"].lower()] = p
+    return out, calls, failed == calls
+
+
 def run():
     """One hourly update. Returns stats; never raises."""
     from database import SessionLocal, utcnow
     from models import Coin
-    stats = {"active": 0, "updated": 0, "missing": 0, "insane": 0, "requests": 0, "failed_requests": 0, "error": None}
+    stats = {"active": 0, "updated": 0, "missing": 0, "insane": 0, "requests": 0, "failed_requests": 0, "error": None,
+             "dexscreener": 0, "codex": 0, "codex_requests": 0, "codex_failed": False}
     session = SessionLocal()
     try:
         coins = (session.query(Coin.id, Coin.chain, Coin.contract, Coin.price_usd, Coin.name)
@@ -97,17 +142,37 @@ def run():
         prices, stats["requests"], stats["failed_requests"] = fetch_live_prices(
             [((c.chain or "").lower(), (c.contract or "").lower()) for c in coins])
         now = utcnow()
-        updates = []
-        for c in coins:
+
+        def sane(c, p):
+            return not c.price_usd or 1 / SANITY_X <= p / c.price_usd <= SANITY_X
+
+        updates, missed = [], []
+        for c in coins:                                       # 1. DexScreener
             p = prices.get((c.contract or "").lower())
-            if p is None:
-                stats["missing"] += 1
-                continue
-            if c.price_usd and not (1 / SANITY_X <= p / c.price_usd <= SANITY_X):
-                stats["insane"] += 1
-                log.info("skip %s: live %.6g vs daily %.6g", c.name, p, c.price_usd)
-                continue
-            updates.append({"id": c.id, "live_price": p, "live_price_at": now})
+            if p is not None and sane(c, p):
+                updates.append({"id": c.id, "live_price": p, "live_price_at": now, "live_source": "dexscreener"})
+                stats["dexscreener"] += 1
+                log.info("%s: dexscreener %.6g", c.name, p)
+            else:
+                if p is not None:
+                    log.info("%s: dexscreener %.6g rejected (daily %.6g)", c.name, p, c.price_usd)
+                missed.append(c)
+        if missed:                                            # 2. Codex, only for the missed coins
+            try:
+                cx, stats["codex_requests"], stats["codex_failed"] = fetch_codex_prices(
+                    [((c.chain or "").lower(), c.contract) for c in missed])
+            except Exception as e:                            # never lose the DexScreener results
+                log.warning("Codex fallback failed (%s) - DexScreener prices only this run", type(e).__name__)
+                cx, stats["codex_failed"] = {}, True
+            for c in missed:
+                p = cx.get((c.contract or "").lower())
+                if p is not None and sane(c, p):
+                    updates.append({"id": c.id, "live_price": p, "live_price_at": now, "live_source": "codex"})
+                    stats["codex"] += 1
+                    log.info("%s: codex %.6g", c.name, p)
+                else:
+                    stats["insane" if p is not None else "missing"] += 1
+                    log.info("%s: skipped (%s)", c.name, f"codex {p:.6g} vs daily {c.price_usd:.6g}" if p is not None else "no price")
         if updates:
             session.bulk_update_mappings(Coin, updates)
             session.commit()
@@ -124,9 +189,17 @@ def run():
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     st = run()
-    print(f"Hourly prices: {st['updated']}/{st['active']} active coins updated | missing {st['missing']} | "
-          f"skipped (>{SANITY_X:g}x off daily) {st['insane']} | DexScreener requests {st['requests']} "
-          f"(failed {st['failed_requests']})" + (f" | ERROR {st['error']}" if st["error"] else ""))
+    print(f"Hourly prices: {st['updated']}/{st['active']} active coins updated (dexscreener {st['dexscreener']}, "
+          f"codex {st['codex']}) | skipped: no price {st['missing']}, >{SANITY_X:g}x off daily {st['insane']} | "
+          f"DexScreener requests {st['requests']} (failed {st['failed_requests']}) | Codex requests {st['codex_requests']}"
+          + (" (ALL FAILED)" if st["codex_failed"] else "") + (f" | ERROR {st['error']}" if st["error"] else ""))
+    if st["codex_failed"] and not st["error"]:
+        try:
+            from daily_report import send_message
+            send_message(f"⏱ Hourly prices: the Codex fallback failed ({st['codex_requests']} request(s)) — "
+                         f"{st['dexscreener']} coins still updated from DexScreener; the rest keep their previous price.")
+        except Exception as e:
+            print(f"Telegram alert not sent ({type(e).__name__})")
     if st["error"] or (st["active"] and st["updated"] < ALERT_SHARE * st["active"]):
         try:
             from daily_report import send_message

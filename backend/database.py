@@ -161,6 +161,7 @@ _NEW_COLUMNS = [
 _NEW_COLUMNS += [
     ("coins", "live_price", "FLOAT", None),
     ("coins", "live_price_at", "TIMESTAMP", None),
+    ("coins", "live_source", "VARCHAR", None),
 ]
 
 # Favorites portfolio (added after the favorites tables were created).
