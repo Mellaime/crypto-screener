@@ -183,6 +183,7 @@
   .cmp-summary li { margin: 3px 0; }
   .cmp-top { font-size: 18px; font-weight: 700; margin: 6px 0; }
   /* Performance since caught */
+  .livetag { display: block; font-size: 10px; color: var(--muted); font-weight: 400; margin-top: 2px; white-space: nowrap; }
   .pnl { font-weight: 700; font-variant-numeric: tabular-nums; cursor: help; white-space: nowrap; }
   .pnl.up { color: #3fb950; } .pnl.down { color: #f85149; } .pnl.flat { color: var(--muted); font-weight: 500; }
   .perfov { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; background: var(--card); border: 1px solid var(--border);
@@ -562,7 +563,7 @@
           <th>Name</th>
           <th class="num">Price</th>
           <th class="num" data-sort="score" aria-sort="none"><button type="button" class="sorth">Score<span class="arr" aria-hidden="true"></span></button></th>
-          <th class="num" data-sort="performance.change_pct" aria-sort="none" title="Price change since the coin entered the Active list"><button type="button" class="sorth">P&amp;L<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="live_pnl.change_pct" aria-sort="none" title="Price change since the coin entered the Active list"><button type="button" class="sorth">P&amp;L<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="mcap" aria-sort="none"><button type="button" class="sorth">Market Cap<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="revenue" aria-sort="none"><button type="button" class="sorth">Revenue/day<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="vol_liq" aria-sort="none"><button type="button" class="sorth">Vol / Liq<span class="arr" aria-hidden="true"></span></button></th>
@@ -728,10 +729,29 @@
     return "$" + Number(v.toPrecision(4)).toString();
   }
   // Price cell; hover shows when the daily run last refreshed it.
+  // "12m ago" for an ISO time.
+  function agoText(iso) {
+    const m = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
+    return m < 60 ? m + "m ago" : Math.floor(m / 60) + "h " + (m % 60) + "m ago";
+  }
+  // Price: the hourly LIVE price when fresh (< 90 min, decided by the API),
+  // else the daily price.
   function priceCell(x) {
+    if (x.price_is_live && x.live_price != null) {
+      return `<td class="num" title="Live price (hourly) · daily price ${esc(fmtPrice(x.price))}">${fmtPrice(x.live_price)}<span class="livetag">updated ${esc(agoText(x.live_price_at))}</span></td>`;
+    }
     const tip = x.price_updated ? "Updated " + x.price_updated.replace("T", " ").replace("Z", " UTC")
                                 : "No price yet";
     return `<td class="num" title="${esc(tip)}">${fmtPrice(x.price)}</td>`;
+  }
+  // Active table P&L: the live P&L (hourly price) on top of the daily performance.
+  function livePerf(c) {
+    const p = c.performance;
+    if (!p || !c.live_pnl || c.live_pnl.change_pct == null) return p;
+    const v = c.live_pnl.change_pct;
+    return {...p, change_pct: v, live: c.live_pnl.is_live,
+            current_price: c.price_is_live ? c.live_price : p.current_price,
+            status: Math.abs(v) < 1 ? "flat" : v > 0 ? "up" : "down"};
   }
   function fmtX(v)   { return v == null ? "—" : v.toFixed(2) + "x"; }
   function fmtNum(v) { return v == null ? "—" : v.toLocaleString(); }
@@ -1027,7 +1047,7 @@
         </td>
         ${priceCell(c)}
         <td class="num"><span class="badge ${scoreClass(c.score)}">${c.score}</span>${scoreDelta(c)}</td>
-        ${pnlCell(c.performance)}${favCells(c)}
+        ${pnlCell(c._fav ? c.performance : livePerf(c))}${favCells(c)}
         <td class="num">${fmtMoney(c.mcap)}</td>
         <td class="num">${c.revenue == null ? "—" : fmtMoney(c.revenue)}</td>
         <td class="num">${fmtX(c.vol_liq)}</td>
@@ -1060,7 +1080,8 @@
   }
   function pnlCell(p) {
     if (!p || p.change_pct == null) return `<td class="num"><span class="na" title="No entry price recorded">—</span></td>`;
-    const tip = `${p.added ? "Added" : "Entered"} ${perfDay(p.entry_date)} at ${fmtPrice(p.entry_price)} → ${p.dropped ? "dropped at" : "now"} ${fmtPrice(p.current_price)} (${p.days_held} day${p.days_held === 1 ? "" : "s"})`;
+    const tip = `${p.added ? "Added" : "Entered"} ${perfDay(p.entry_date)} at ${fmtPrice(p.entry_price)} → ${p.dropped ? "dropped at" : "now"} ${fmtPrice(p.current_price)} `
+      + (p.live ? `(live, ${pnlText(p.change_pct)})` : `(${p.days_held} day${p.days_held === 1 ? "" : "s"})`);
     return `<td class="num"><span class="pnl ${p.status}" title="${esc(tip)}">${pnlText(p.change_pct)}</span></td>`;
   }
   function renderPerfOverview(coins) {
@@ -1099,10 +1120,11 @@
     const a = at(p.entry_price), b = at(p.current_price);
     const usd = p.change_usd;
     return `${head} ${kind}"><h3>Performance Since Caught</h3>
-      <div class="note">Price change since the coin entered the Active list (daily snapshots, DexScreener price).</div>
+      <div class="note">Price change since the coin entered the Active list (DexScreener price${p.is_live ? ", live hourly" : ""}). Highest / lowest: daily records.</div>
       <div class="pbig">${icon} ${pnlText(v)}</div>
       <div class="pline">${fmtPrice(p.entry_price)} → ${fmtPrice(p.current_price)}
-        <span class="na">(${usd >= 0 ? "+" : "−"}${fmtPrice(Math.abs(usd))} per token)</span></div>
+        <span class="na">(${usd >= 0 ? "+" : "−"}${fmtPrice(Math.abs(usd))} per token)</span>
+        ${p.is_live && p.live_price_at ? `<span class="na" style="font-size:12px">· ⏱ updated ${esc(agoText(p.live_price_at))}</span>` : ""}</div>
       <div class="note" style="margin:4px 0 0">Entered ${esc(perfDay(p.entry_date))} · ${p.days_held} day${p.days_held === 1 ? "" : "s"} ${p.dropped ? "until it was dropped" : "in the list"}
         ${p.dropped ? `· dropped price from ${esc(perfDay(p.price_date))}` : ""}</div>
       <div class="prange" aria-label="Price range since entry: low ${esc(fmtPrice(lo))}, high ${esc(fmtPrice(hi))}">
@@ -1507,7 +1529,9 @@
         <span class="chain">${esc(c.chain)}</span>
       </div>
       <div class="facts">
-        ${fact("Price", fmtPrice(c.price))}
+        ${fact("Price", c.price_is_live && c.live_price != null
+            ? `${fmtPrice(c.live_price)} <small class="na" style="font-size:12px">⏱ updated ${esc(agoText(c.live_price_at))}</small>`
+            : fmtPrice(c.price))}
         ${fact("Market cap", fmtMoney(c.mcap))}
         ${fact("Score", c.score == null ? "—" : `<span class="badge ${scoreClass(c.score)}">${c.score}</span>`)}
         ${fact("Narrative", c.category ? `<span class="tag">${esc(c.category)}</span>` : `<span dir="rtl" lang="ar">${esc(c.narrative)}</span>`)}

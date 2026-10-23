@@ -88,6 +88,13 @@ def compute(session, coins):
     return out
 
 
+def live_pnl(entry_price, live_price):
+    """Hourly P&L calculation for Active table"""
+    if not entry_price or not live_price:
+        return None
+    return (live_price - entry_price) / entry_price * 100
+
+
 def brief(p):
     """The tables' short version."""
     if not p:
