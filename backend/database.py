@@ -175,6 +175,7 @@ _NEW_COLUMNS += [
     ("coins", "liquidity_verdict", "VARCHAR", None),
     ("coins", "liquidity_sources_count", "INTEGER", None),
     ("daily_snapshots", "birdeye_liquidity", "FLOAT", None),
+    ("daily_snapshots", "majority_liquidity", "FLOAT", None),
 ]
 
 # Favorites portfolio (added after the favorites tables were created).

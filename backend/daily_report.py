@@ -230,6 +230,15 @@ def build_message(rep, session):
         lines.extend(f"• {n} — {liquidity_reason_ar(r)}\n  {readings}" for n, r, readings in gone[:MAX_NAMES])
         if len(gone) > MAX_NAMES:
             lines.append(f"و{len(gone) - MAX_NAMES} أخرى")
+    # 💥 24-hour liquidity crash (> 20%) - removed for good
+    c24 = det.get("crash_24h") or []
+    if c24:
+        def usd(v):
+            return f"${v / 1e6:.2f}M" if v >= 1e6 else f"${v / 1e3:.1f}K" if v >= 1e3 else f"${v:,.0f}"
+        lines.append("\n💥 عملات طاحت أكثر من 20% فـ 24 ساعة:")
+        lines.extend(f"• {n} — من {usd(a)} لـ {usd(b)} (-{p:.0f}%)" for n, a, b, p in c24[:MAX_NAMES])
+        if len(c24) > MAX_NAMES:
+            lines.append(f"و{len(c24) - MAX_NAMES} أخرى")
     liq_drops = [(n, r) for n, r in dropped if (r or "").startswith("Low liquidity confirmed by only 1 source")]
     if liq_drops:
         lines.append(f"⚠️ تحيدو لـDropped (غير مصدر واحد فوق $5K، عندهم 7 أيام): {_names([n for n, _ in liq_drops])}")
@@ -331,7 +340,7 @@ def build_message(rep, session):
     else:
         summary = (f"التشغيل داز{' مزيان' if not issues else ' ولكن كاين ملاحظات'}: "
                    f"{len(new)} دخلو، {len(dropped)} تحيدو، {len(rec)} رجعو"
-                   + (f"، {len(gone)} تحيدو نهائياً (السيولة)" if gone else "")
+                   + (f"، {len(gone) + len(c24)} تحيدو نهائياً (السيولة)" if gone or c24 else "")
                    + (f" — دابا {active} عملة ف Active." if active is not None else "."))
         if near:
             summary += f" انتبه للاستهلاك ديال {'، '.join(near)}."

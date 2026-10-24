@@ -34,6 +34,14 @@ A source whose request FAILED (outage, not "no data") makes any verdict
 other than healthy "unknown" - nothing is removed or dropped on missing
 data caused by our own fetch problems.
 
+24-HOUR CRASH (crash_24h, active coins, right after the 3-source verdict):
+today's majority liquidity more than CRASH_24H_PCT (20%) below YESTERDAY's
+(daily_snapshots.majority_liquidity, stored every run) -> removed for good,
+"Liquidity crashed >20% in 24h (was $X, now $Y)". Skipped when there is no
+majority for yesterday (coin new today, or the first run after this rule
+existed), when a source request failed today, and when both days are already
+under MIN_LIQ (the amount rule handles those).
+
 drop_logic.py applies the verdicts (removed_* = deleted for good: the entry
 queue's "removed_liquidity" outcome is never re-checked); save_to_db.py
 applies the same rule at entry; every decision is logged in
@@ -52,6 +60,7 @@ ABANDONED_MIN_LIQ = 10_000     # stricter minimum for an "abandoned" coin
 ABANDONED_HOURS = 48           # Birdeye's last price update older than this = abandoned
 AGREE_X = 3.0                  # two readings within 3x of each other agree
 DROPPED_RECHECK_DAYS = 3       # Birdeye refresh for dropped coins
+CRASH_24H_PCT = 20             # majority liquidity down more than this vs yesterday -> removed
 MAX_CALLS_PER_RUN = 320        # Birdeye safety cap (~175 active + ~25 dropped a day)
 
 SOURCES = ("dexscreener", "codex", "birdeye")
@@ -197,10 +206,41 @@ def coin_evaluation(session, coin, today):
     return evaluate(readings, coin.birdeye_updated_at, failed)
 
 
-def store_verdict(coin, ev):
+def store_verdict(coin, ev, session=None, today=None):
+    """The verdict on the coin; today's majority liquidity on its snapshot
+    (whatever majority could be computed, even with a source down)."""
     if ev["verdict"] != UNKNOWN:
         coin.liquidity_verdict = ev["verdict"]
     coin.liquidity_sources_count = ev["sources_count"]
+    if session is not None and ev["sources_count"] >= 2:
+        from models import DailySnapshot
+        snap = session.query(DailySnapshot).filter_by(coin_id=coin.id, date=today).first()
+        if snap is not None:
+            snap.majority_liquidity = ev["value"]
+
+
+def crash_24h(session, coin, today, ev):
+    """(yesterday, today, pct_down) when today's majority liquidity is more
+    than CRASH_24H_PCT below yesterday's; None otherwise (see docstring)."""
+    from models import DailySnapshot
+    now_v = ev["value"] if ev["sources_count"] >= 2 else None
+    if not now_v or ev["failed"]:
+        return None
+    if coin.active_since is not None and coin.active_since.date() >= today:
+        return None                                      # entered active today
+    prev = (session.query(DailySnapshot.majority_liquidity)
+            .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date == today - timedelta(days=1))
+            .scalar())
+    if not prev:
+        return None
+    if prev < MIN_LIQ and now_v < MIN_LIQ:
+        return None                                      # the amount rule's job
+    pct = (prev - now_v) / prev * 100
+    return (prev, now_v, pct) if pct > CRASH_24H_PCT else None
+
+
+def crash_reason(prev, now_v):
+    return f"Liquidity crashed >{CRASH_24H_PCT}% in 24h (was {money(prev)}, now {money(now_v)})"
 
 
 def log_decision(session, coin, today, ev, action):

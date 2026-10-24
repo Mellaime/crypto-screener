@@ -137,6 +137,9 @@ class DailySnapshot(Base):
     codex_liquidity = Column(Float)
     codex_volume24 = Column(Float)
     birdeye_liquidity = Column(Float)   # Birdeye's reading that day (liquidity_verify.py)
+    # The 3-source majority liquidity computed that day (liquidity_verify) -
+    # the 24-hour crash rule compares today's with yesterday's.
+    majority_liquidity = Column(Float)
     score = Column(Float)       # our computed ranking score
 
     coin = relationship("Coin", back_populates="snapshots")
