@@ -1,8 +1,8 @@
 name: Hourly live prices
 
 # Every hour on the hour: refresh coins.live_price / live_price_at for the
-# active coins (backend/hourly_prices.py, DexScreener ~17 requests + a Codex
-# fallback ~1 request for the coins DexScreener misses, < 1 min).
+# active coins (backend/hourly_prices.py): CoinMarketCap first (~2 credits),
+# DexScreener for coins CMC can't price, then Codex (~1 request), < 1 min.
 # Touches nothing else - the daily pipeline owns every other field. The
 # script always exits 0; it alerts on Telegram only if the run fails or
 # fewer than half of the active coins were updated.
@@ -37,6 +37,7 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          COINMARKETCAP_API_KEY: ${{ secrets.COINMARKETCAP_API_KEY }}   # primary live price
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}   # fallback for coins DexScreener can't price
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
