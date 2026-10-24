@@ -12,6 +12,9 @@ DexScreener 24h volume the Vol/Liq score uses), stored by the daily run.
   2-3x   -> "elevated"  📈 badge only
   < 2x   -> nothing stored
 
+Dollar floors (top of the code): nothing below MIN_STORE_VOLUME_USD of
+volume that day; Telegram alerts only from MIN_ALERT_VOLUME_USD.
+
 Only coins with at least MIN_HISTORY_DAYS earlier days of volume qualify
 (snapshots started 2026-10-05, so the first coins qualify ~2026-10-20). A
 coin is alerted at most once every REALERT_DAYS days. The table, badge and
@@ -22,6 +25,11 @@ import logging
 from datetime import timedelta
 
 log = logging.getLogger("volume_anomaly")
+
+# DOLLAR FLOORS (tune here). A big multiple on a tiny base is noise
+# (edeXa $40 -> $138 = 3.5x):
+MIN_STORE_VOLUME_USD = 5_000    # that day's volume below this: nothing stored, no badge, no alert
+MIN_ALERT_VOLUME_USD = 20_000   # 🚨 / ⚠️ Telegram alert only at or above this (badge from $5K)
 
 AVG_DAYS = 30              # the average covers the previous 30 days
 MIN_HISTORY_DAYS = 14      # earlier days with volume needed to qualify
@@ -88,8 +96,8 @@ def run_volume_anomaly_detection():
                 continue
             stats["qualified"] += 1
             row = existing.get(coin.id)
-            if sp["severity"] is None:
-                if row is not None:                    # a same-day re-run fell below 2x
+            if sp["severity"] is None or sp["volume_today"] < MIN_STORE_VOLUME_USD:
+                if row is not None:                    # a same-day re-run fell below 2x / the floor
                     session.delete(row)
                 continue
             stats[sp["severity"]] += 1
@@ -98,7 +106,8 @@ def run_volume_anomaly_detection():
                 session.add(row)
             row.volume_today, row.volume_avg_30d = sp["volume_today"], sp["volume_avg_30d"]
             row.spike_ratio, row.severity = sp["spike_ratio"], sp["severity"]
-            if sp["severity"] in ALERT_LEVELS and not row.alerted and coin.id not in recently_alerted:
+            if (sp["severity"] in ALERT_LEVELS and sp["volume_today"] >= MIN_ALERT_VOLUME_USD
+                    and not row.alerted and coin.id not in recently_alerted):
                 row.alerted = True
                 stats["alerts"].append((coin.name, sp["severity"], sp["spike_ratio"],
                                         sp["volume_today"], sp["volume_avg_30d"]))
