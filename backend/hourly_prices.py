@@ -48,6 +48,7 @@ log = logging.getLogger("hourly_prices")
 MAX_AGE_MIN = 90           # API: live price used only while younger than this
 SANITY_X = 3.0             # skip a live price > 3x away from the daily price
 ALERT_SHARE = 0.5          # alert if fewer than 50% of active coins updated
+GUARD_MIN = 50             # skip a run if live prices were updated less than this ago (duplicate run)
 CODEX_BATCH = 25           # tokens per Codex getTokenPrices request
 CODEX_PRICES_QUERY = """query ($inputs: [GetPriceInput]) {
   getTokenPrices(inputs: $inputs) { address networkId priceUsd } }"""
@@ -219,8 +220,43 @@ def run():
     return stats
 
 
+def minutes_since_last_update():
+    """Minutes since the newest coins.live_price_at, or None (never / error)."""
+    try:
+        from sqlalchemy import func
+        from database import SessionLocal, utcnow
+        from models import Coin
+        session = SessionLocal()
+        try:
+            last = session.query(func.max(Coin.live_price_at)).scalar()
+        finally:
+            session.close()
+        return None if last is None else (utcnow() - last).total_seconds() / 60
+    except Exception:
+        return None
+
+
+def _set_output(key, value):
+    """GitHub Actions step output (no-op outside Actions)."""
+    import os
+    path = os.getenv("GITHUB_OUTPUT")
+    if path:
+        with open(path, "a") as f:
+            f.write(f"{key}={value}\n")
+
+
 def main():
+    import os
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    # Duplicate-run guard (self-chaining + cron backup): prices updated less
+    # than GUARD_MIN minutes ago -> another run just did it; exit cleanly.
+    if os.getenv("FORCE_RUN", "").lower() != "true":
+        ago = minutes_since_last_update()
+        if ago is not None and ago < GUARD_MIN:
+            print(f"Hourly prices: skipped - live prices were updated {ago:.0f} min ago (< {GUARD_MIN} min).")
+            _set_output("skipped", "true")
+            return 0
+    _set_output("skipped", "false")
     st = run()
     print(f"Hourly prices: {st['updated']}/{st['active']} active coins updated (cmc {st['cmc']}, dexscreener "
           f"{st['dexscreener']}, codex {st['codex']}) | skipped: no price {st['missing']}, >{SANITY_X:g}x off daily "

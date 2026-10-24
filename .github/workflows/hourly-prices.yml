@@ -1,25 +1,50 @@
 name: Hourly live prices
 
-# Every hour at minute 17 (off-peak - top-of-hour schedules get delayed or
-# dropped by GitHub): refresh coins.live_price / live_price_at for the
-# active coins (backend/hourly_prices.py): CoinMarketCap first (~2 credits),
-# DexScreener for coins CMC can't price, then Codex (~1 request), < 1 min.
+# Refresh coins.live_price / live_price_at for the active coins
+# (backend/hourly_prices.py): CoinMarketCap first (~2 credits), DexScreener
+# for coins CMC can't price, then Codex (~1 request), < 1 min.
 # Touches nothing else - the daily pipeline owns every other field. The
 # script always exits 0; it alerts on Telegram only if the run fails or
 # fewer than half of the active coins were updated.
+#
+# SELF-CHAINING: GitHub's scheduler drops / delays the hourly cron on this
+# repo, so each run starts the next one itself: the "chain" job waits ~59
+# minutes, then dispatches this workflow again (GITHUB_TOKEN may trigger
+# workflow_dispatch). The cron below stays as a backup that restarts the
+# chain if it ever breaks. Duplicate runs are harmless: one run at a time per
+# branch (concurrency), and the update step skips if prices were refreshed
+# less than 50 minutes ago (then that run does not chain either).
+# Public repo -> Actions minutes are free, so the long wait costs nothing.
+# To STOP the chain: cancel the run that is waiting in its "chain" job (or
+# run the workflow manually with chain = false).
 on:
   schedule:
-    - cron: "17 * * * *"   # minute 17: GitHub delays / drops runs scheduled on the hour
-  workflow_dispatch: {}
+    - cron: "17 * * * *"   # backup only; minute 17: GitHub delays / drops runs on the hour
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: "Start the next run ~1 hour after this one"
+        type: boolean
+        default: true
+      force:
+        description: "Update even if prices were refreshed < 50 min ago"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write          # lets the chain job dispatch the next run
 
 concurrency:
-  group: hourly-prices
+  group: hourly-prices-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   hourly-prices:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      skipped: ${{ steps.update.outputs.skipped }}
     steps:
       - name: Check out the code
         uses: actions/checkout@v4
@@ -35,6 +60,7 @@ jobs:
         run: pip install -r backend/requirements.txt
 
       - name: Update live prices
+        id: update
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -42,4 +68,27 @@ jobs:
           CODEX_API_KEY: ${{ secrets.CODEX_API_KEY }}   # fallback for coins DexScreener can't price
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FORCE_RUN: ${{ github.event.inputs.force || 'false' }}
         run: python hourly_prices.py
+
+  chain:
+    # Runs even if the update job failed (always()), but not when the update
+    # was skipped as a duplicate (another run is already chaining) or when a
+    # manual run asked for chain = false.
+    needs: hourly-prices
+    if: >-
+      always() &&
+      needs.hourly-prices.outputs.skipped != 'true' &&
+      github.event.inputs.chain != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - name: Wait ~59 minutes
+        run: sleep 3540
+
+      - name: Start the next run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run hourly-prices.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
+          echo "Dispatched the next hourly run on ${{ github.ref_name }}"
