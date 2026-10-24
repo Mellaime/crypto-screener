@@ -5,8 +5,10 @@ Batched price lookups for the hourly live price and the daily sanity check.
 
   CoinMarketCap - the hourly LIVE price. /v1/cryptocurrency/quotes/latest by
       CMC id, 100 ids per call (1 credit per call). Ids come from coins.cmc_id,
-      filled by the daily job from /v1/cryptocurrency/map (contract -> id; the
-      same call rank_check already makes, 1 credit).
+      resolved by CONTRACT + CHAIN only (never name / symbol): the daily job
+      re-verifies every stored id (/info by id), then fills missing ones from
+      /v1/cryptocurrency/map (our chain's platform only) or /info?address=.
+      0 = CMC has no entry for our contract on our chain.
   CoinGecko - the daily SANITY price. /simple/token_price/{platform}, one
       call per blockchain per 100 contracts (~13 calls a day).
 
@@ -39,11 +41,35 @@ def _cmc_key():
 
 
 # ---------------------------------------------------------------- CoinMarketCap
+# Our chain -> CoinMarketCap platform name (contract_address[].platform.name).
+# A CMC id is only accepted when it lists OUR contract on OUR chain; chains not
+# listed here accept our contract on any platform (EVM addresses are unique).
+CMC_PLATFORMS = {"ethereum": "Ethereum", "bsc": "BNB Smart Chain (BEP20)", "base": "Base", "solana": "Solana",
+                 "polygon": "Polygon", "arbitrum": "Arbitrum", "optimism": "Optimism", "cronos": "Cronos",
+                 "ton": "TON", "avalanche": "Avalanche C-Chain", "zksync": "zkSync Era", "sui": "Sui Network",
+                 "fantom": "Fantom", "tron": "Tron20", "linea": "Linea", "mantle": "Mantle", "blast": "Blast"}
+
+
+def _addr_key(contract, chain):
+    """Solana (and other non-EVM) addresses are case-sensitive; EVM ones aren't."""
+    return contract if (chain or "").lower() == "solana" else (contract or "").lower()
+
+
+def cmc_matches(entry, contract, chain):
+    """True if a CMC /info entry lists OUR contract on OUR chain."""
+    want, platform = _addr_key(contract, chain), CMC_PLATFORMS.get((chain or "").lower())
+    for x in entry.get("contract_address") or []:
+        if _addr_key(x.get("contract_address"), chain) == want and \
+                (platform is None or (x.get("platform") or {}).get("name") == platform):
+            return True
+    return False
+
+
 def cmc_id_map():
-    """{"exact": {address: cmc id}, "lower": {address lower: cmc id}} from
-    /v1/cryptocurrency/map (active listings, primary-platform address).
-    Empty on failure. 1 credit."""
-    out = {"exact": {}, "lower": {}}
+    """{(CMC platform name, address key): cmc id} from /v1/cryptocurrency/map
+    (active listings, each coin's primary-platform address). Empty on
+    failure. 1 credit."""
+    out = {}
     if not _cmc_key():
         return out
     try:
@@ -54,37 +80,67 @@ def cmc_id_map():
         log.warning("CMC map failed (%s)", type(e).__name__)
         return out
     for e in data:
-        addr = (e.get("platform") or {}).get("token_address")
-        if addr and e.get("id"):
-            out["exact"][addr] = e["id"]
-            out["lower"][addr.lower()] = e["id"]
+        plat = e.get("platform") or {}
+        if plat.get("token_address") and e.get("id"):
+            out[(plat.get("name"), plat["token_address"])] = e["id"]
+            out[(plat.get("name"), plat["token_address"].lower())] = e["id"]
     return out
 
 
-def cmc_id_for(contract, m):
-    """A contract's CMC id from cmc_id_map() (exact first: Solana is case-sensitive)."""
-    if not contract:
+def cmc_id_for(contract, chain, m):
+    """A contract's CMC id from cmc_id_map() - only on OUR chain's platform."""
+    platform = CMC_PLATFORMS.get((chain or "").lower())
+    if not contract or not platform:
         return None
-    return m["exact"].get(contract) or m["lower"].get(contract.lower())
+    return m.get((platform, _addr_key(contract, chain)))
 
 
 def cmc_id_by_address(contract, chain):
-    """CMC id for any of a coin's contract addresses (/v2/cryptocurrency/info,
-    1 credit; the map only lists each coin's main-chain address). None if not
-    on CMC / on error."""
+    """CMC id of the entry that lists OUR contract on OUR chain
+    (/v2/cryptocurrency/info?address=, 1 credit). None if CMC has no such
+    entry or on error - never a name / symbol match."""
     if not contract or not _cmc_key():
         return None
-    tries = [contract] if (chain or "").lower() == "solana" else [contract.lower()]
-    for addr in tries:
-        try:
-            r = requests.get(f"{CMC_BASE}/v2/cryptocurrency/info", params={"address": addr},
-                             headers={"X-CMC_PRO_API_KEY": _cmc_key(), "Accept": "application/json"}, timeout=20)
-            d = (r.json().get("data") or {}) if r.status_code == 200 else {}
-            if d:
-                return int(next(iter(d)))
-        except Exception:
-            pass
+    try:
+        r = requests.get(f"{CMC_BASE}/v2/cryptocurrency/info", params={"address": _addr_key(contract, chain)},
+                         headers={"X-CMC_PRO_API_KEY": _cmc_key(), "Accept": "application/json"}, timeout=20)
+        d = (r.json().get("data") or {}) if r.status_code == 200 else {}
+    except Exception:
+        return None
+    for cid, entry in d.items():
+        entry = entry[0] if isinstance(entry, list) else entry
+        if cmc_matches(entry, contract, chain):
+            return int(cid)
     return None
+
+
+def verify_cmc_ids(coins):
+    """Check every stored cmc_id still lists the coin's contract on its chain
+    (/v2/cryptocurrency/info by id, 100 ids per call = 1 credit). A wrong id
+    is reset to None (re-resolved by address). Returns (reset names, calls)."""
+    ids = sorted({c.cmc_id for c in coins if c.cmc_id})
+    if not ids or not _cmc_key():
+        return [], 0
+    info, calls = {}, 0
+    for i in range(0, len(ids), CMC_BATCH):
+        calls += 1
+        try:
+            r = requests.get(f"{CMC_BASE}/v2/cryptocurrency/info",
+                             params={"id": ",".join(map(str, ids[i:i + CMC_BATCH])), "skip_invalid": "true"},
+                             headers={"X-CMC_PRO_API_KEY": _cmc_key(), "Accept": "application/json"}, timeout=60)
+            if r.status_code != 200:
+                return [], calls                          # can't verify today - change nothing
+            info.update(r.json().get("data") or {})
+        except Exception:
+            return [], calls
+    reset = []
+    for c in coins:
+        if c.cmc_id and not cmc_matches(info.get(str(c.cmc_id)) or {}, c.contract, c.chain):
+            log.warning("%s: CMC id %s doesn't list contract %s on %s - re-resolving by address",
+                        c.name, c.cmc_id, c.contract, c.chain)
+            reset.append(c.name)
+            c.cmc_id = None
+    return reset, calls
 
 
 CHANGES_24H = {}           # {cmc id: 24h price change %} from the last cmc_quotes call
@@ -185,10 +241,13 @@ def run_price_sanity():
         stats["dropped"] = len(coins) - stats["active"]
         m = cmc_id_map()
         cg, stats["cg_calls"] = coingecko_token_prices([(c.chain, c.contract) for c in coins])
+        # Ids by CONTRACT + CHAIN only: stored ids re-verified, the map only on
+        # our chain's platform, then /info by address (never by name).
+        stats["cmc_reset"], stats["cmc_verify_calls"] = verify_cmc_ids(coins)
         info_left = CMC_INFO_BUDGET
         for c in coins:
-            if m["lower"]:
-                cid = cmc_id_for(c.contract, m)
+            if m and c.cmc_id is None:
+                cid = cmc_id_for(c.contract, c.chain, m)
                 if cid:
                     c.cmc_id = cid
             if c.cmc_id is None and info_left > 0:            # not in the map: ask by address once

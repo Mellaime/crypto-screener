@@ -101,8 +101,9 @@ def _coingecko(contract, chain):
     return data if status == 200 and isinstance(data, dict) else None
 
 
-def _cmc(contract):
-    """(info, quote) from CoinMarketCap by contract (2 calls), or (None, None)."""
+def _cmc(contract, chain=None):
+    """(info, quote) from CoinMarketCap by contract (2 calls), or (None, None).
+    Only the entry listing this contract on `chain` (never a name match)."""
     from discovery import CMC_KEY
     if not CMC_KEY:
         return None, None
@@ -111,10 +112,13 @@ def _cmc(contract):
     data, status = _get(CMC_INFO_URL, {"address": contract.lower() if _evm(contract) else contract}, h)
     if status != 200 or not isinstance(data, dict):
         return None, None
+    from price_sources import cmc_matches
     info = None
     for v in (data.get("data") or {}).values():
-        info = v[0] if isinstance(v, list) else v
-        break
+        v = v[0] if isinstance(v, list) else v
+        if not chain or cmc_matches(v, contract, chain):
+            info = v
+            break
     if not info:
         return None, None
     q, status = _get(CMC_QUOTES_URL, {"id": info["id"]}, h)
@@ -189,7 +193,7 @@ def run_check(contract):
     # another): first CoinGecko + CMC together (name, market cap, tags)...
     from concurrent.futures import ThreadPoolExecutor
     pool = ThreadPoolExecutor(max_workers=7)
-    f_cg, f_cmc = pool.submit(_coingecko, contract, chain), pool.submit(_cmc, contract)
+    f_cg, f_cmc = pool.submit(_coingecko, contract, chain), pool.submit(_cmc, contract, chain)
     cg = f_cg.result() or {}
     cmc_info, cmc_q = f_cmc.result()
     cmc_info, cmc_q = cmc_info or {}, cmc_q or {}
