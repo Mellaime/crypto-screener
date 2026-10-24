@@ -41,10 +41,9 @@ CODEX_URL = "https://graph.codex.io/graphql"
 WINDOW_DAYS = 30          # compare against ~30 days ago (or creation if younger)
 MAX_DROP_PCT = 5.0        # a fall of more than 5% drops the coin
 
-# MINIMUM LIQUIDITY: below this on BOTH Codex and DexScreener the coin is too
-# thin to analyze (its on-chain volume / transactions are near-empty - it
-# trades mostly on exchanges we can't see). Codex sometimes under-reports
-# (Magma: Codex $7.7K vs DexScreener $1.5M), so the HIGHER of the two counts.
+# MINIMUM LIQUIDITY: a coin needs this on at least 2 of its 3 liquidity
+# sources (DexScreener, Codex, Birdeye) - the 3-source rule in
+# liquidity_verify.py (entry filter, daily drop logic, Check a Coin).
 MIN_LIQUIDITY_USD = 5_000
 
 
@@ -93,15 +92,6 @@ def best_liquidity(codex_liq, dex_liq, label=None):
     return (max(vals) if vals else None), False
 
 
-def too_thin(codex_liq, dex_liq, label=None):
-    """(is_too_thin, liquidity). Too thin when the liquidity that counts
-    (best_liquidity: the higher of Codex and DexScreener, or DexScreener alone
-    on a source mismatch) is under MIN_LIQUIDITY_USD. No reading from either
-    source = unknown -> not too thin (unknown passes)."""
-    best, _ = best_liquidity(codex_liq, dex_liq, label)
-    if best is None:
-        return False, None
-    return best < MIN_LIQUIDITY_USD, best
 REQUEST_DELAY = 0.3       # small pause between calls (free tier: 10k req/month)
 
 # Our chain name -> Codex networkId (from Codex getNetworks).

@@ -167,6 +167,16 @@ _NEW_COLUMNS += [
     ("coins", "coingecko_daily_price", "FLOAT", None),
 ]
 
+# 3-source liquidity verification (liquidity_verify.py) - nullable.
+_NEW_COLUMNS += [
+    ("coins", "birdeye_liquidity", "FLOAT", None),
+    ("coins", "birdeye_updated_at", "TIMESTAMP", None),
+    ("coins", "birdeye_checked_at", "TIMESTAMP", None),
+    ("coins", "liquidity_verdict", "VARCHAR", None),
+    ("coins", "liquidity_sources_count", "INTEGER", None),
+    ("daily_snapshots", "birdeye_liquidity", "FLOAT", None),
+]
+
 # Favorites portfolio (added after the favorites tables were created).
 _NEW_COLUMNS += [
     ("favorite_profiles", "tracking_since", "TIMESTAMP",

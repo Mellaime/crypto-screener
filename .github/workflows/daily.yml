@@ -43,4 +43,7 @@ jobs:
           DROPSTAB_API_KEY: ${{ secrets.DROPSTAB_API_KEY }}
           # Futures Data (coinalyze.py); missing -> that step is skipped.
           COINALYZE_API_KEY: ${{ secrets.COINALYZE_API_KEY }}
+          # 3-source liquidity verification (birdeye.py); missing -> every
+          # Birdeye reading counts as failed (no liquidity decision needing it).
+          BIRDEYE_API_KEY: ${{ secrets.BIRDEYE_API_KEY }}
         run: python scheduler.py --once

@@ -65,6 +65,13 @@ DUST_DROP_RATIO = 10           # ... if yesterday's liquidity was >= 10x higher
 DUST_MIN_PREV_USD = 10_000     # ... and at least this much
 PRICE_SANITY_PCT = 50          # DexScreener price may differ this much from a reference
 
+# For the 3-source liquidity verification (liquidity_verify.py), this run's
+# TODAY-only DexScreener liquidity per coin id (the snapshot carries
+# yesterday's forward when DexScreener returns nothing) and whether a
+# source had request failures (then a missing reading isn't "no data").
+LAST_DEX_LIQ = {}
+LAST_HEALTH = {}
+
 BULK_QUERY = """
 query ($tokens: [String]) {
   filterTokens(tokens: $tokens, limit: %d) {
@@ -242,6 +249,11 @@ def run_daily_tracking():
         records = build_token_records(fetch_pairs_for_candidates(cands),
                                       keep_addresses={c.contract.lower() for c in coins})
         dex = {r["contract"].lower(): r for r in records}
+        from fetch_dexscreener import LAST_FETCH_STATS
+        LAST_DEX_LIQ.clear()
+        LAST_HEALTH.clear()
+        LAST_HEALTH.update({"ran": True, "codex_failed": bool(stats["codex_failed_batches"]) or not CODEX_KEY,
+                            "dex_lost": bool(LAST_FETCH_STATS.get("lost_batches"))})
 
         for coin in coins:
             key = coin.contract.lower()
@@ -301,6 +313,7 @@ def run_daily_tracking():
                     print(f"[WARN] {coin.name}: {why}")
                 snap.volume = _to_float(rec.get("volume_24h"))
                 snap.liquidity = _to_float(rec.get("liquidity_usd"))
+                LAST_DEX_LIQ[coin.id] = snap.liquidity
                 if price is not None:
                     snap.price_usd = price
                     coin.price_usd = price

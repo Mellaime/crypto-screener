@@ -38,11 +38,12 @@ MAX_LEN = 4000              # Telegram's limit is 4096 characters
 MAX_NAMES = 15              # names listed per section, then "+N"
 
 # Monthly free-tier limits (CMC's comes from its own counter).
-LIMITS = {"Codex": 10_000, "CoinGecko": 10_000, "CoinMarketCap": 15_000, "DropsTab": 500_000}
+LIMITS = {"Codex": 10_000, "CoinGecko": 10_000, "CoinMarketCap": 15_000, "DropsTab": 500_000,
+          "Birdeye": 30_000}      # Birdeye: compute units (3 CU per call), not calls
 NEAR_LIMIT_SHARE = 0.8      # warn when the month is projected past 80% of a limit
 HOSTS = {"graph.codex.io": "Codex", "api.coingecko.com": "CoinGecko", "public-api.dropstab.com": "DropsTab", "api.coinalyze.net": "Coinalyze",
          "pro-api.coinmarketcap.com": "CoinMarketCap", "api.dexscreener.com": "DexScreener",
-         "api.llama.fi": "DefiLlama", "api.gopluslabs.io": "GoPlus"}
+         "api.llama.fi": "DefiLlama", "api.gopluslabs.io": "GoPlus", "public-api.birdeye.so": "Birdeye"}
 MASS_DROP_SHARE = 0.5       # more than half of the checked coins dropped -> flag
 
 # ---------------------------------------------------------------- counting
@@ -85,6 +86,7 @@ class RunReport:
         self.listings = None        # listings.run_listings_update() stats
         self.volume = None          # volume_anomaly.run_volume_anomaly_detection() stats
         self.price_check = None     # price_sources.run_price_sanity() stats
+        self.birdeye = None         # liquidity_verify.run_birdeye_fetch() stats
 
 
 def _new_coin_names(session, since):
@@ -111,6 +113,8 @@ def _reason_kind(reason):
         return "الفوليم"
     if r.startswith("Liquidity under"):
         return "سيولة أقل من $5K"
+    if r.startswith("Low liquidity confirmed by only 1 source"):
+        return "سيولة: مصدر واحد فوق $5K"
     if r.startswith("Liquidity down"):
         return "السيولة"
     if r.startswith("Holders down"):
@@ -118,6 +122,23 @@ def _reason_kind(reason):
     if r.startswith("Honeypot"):
         return "honeypot"
     return "أخرى"
+
+
+def liquidity_reason_ar(reason):
+    """The 3-source liquidity removal / drop reason in Darija."""
+    r = reason or ""
+    out = r
+    for en, ar in (("No liquidity data available", "ما كاين حتى مصدر فيه داتا ديال السيولة"),
+                   ("Insufficient liquidity sources (chain not supported)",
+                    "غير مصدر واحد فيه السيولة (الشبكة ما مدعوماش)"),
+                   ("Dead liquidity across all sources", "السيولة ميتة ف كاع المصادر"),
+                   ("Low liquidity confirmed by only 1 source", "غير مصدر واحد فوق $5K")):
+        if r.startswith(en):
+            out = ar
+            break
+    if "(abandoned:" in r:
+        out += " — متروكة (Birdeye ما تحدّثش 48 ساعة+)"
+    return out
 
 
 def _api_usage(session, today):
@@ -128,6 +149,10 @@ def _api_usage(session, today):
     from models import ApiUsage
     from sqlalchemy import func
     rows = {r.source: r for r in session.query(ApiUsage).filter(ApiUsage.day == today)}
+    # Birdeye: billable calls only (a 429 retry isn't charged) = CU / 3.
+    import birdeye
+    if birdeye.CU_USED or CALLS.get("Birdeye"):
+        CALLS["Birdeye"] = birdeye.CU_USED // birdeye.CU_PER_CALL
     for source, n in CALLS.items():
         row = rows.get(source)
         if row is None:
@@ -144,6 +169,10 @@ def _api_usage(session, today):
     for source in ("Codex", "CoinGecko", "DropsTab"):
         used = int(month.get(source) or 0)
         out.append((source, CALLS.get(source, 0), used, LIMITS[source], int(days.get(source) or 1)))
+    # Birdeye: compute units = calls x 3 (the daily job's calls only).
+    from birdeye import CU_PER_CALL
+    out.append(("Birdeye (CU)", CALLS.get("Birdeye", 0) * CU_PER_CALL,
+                int(month.get("Birdeye") or 0) * CU_PER_CALL, LIMITS["Birdeye"], int(days.get("Birdeye") or 1)))
     # CoinMarketCap: its own exact credit counter (free).
     try:
         key = os.getenv("COINMARKETCAP_API_KEY")
@@ -193,6 +222,21 @@ def build_message(rep, session):
     # ✅ recovered
     rec = det.get("recovered") or []
     lines.append(f"\n✅ راجعين لـActive: {len(rec)}" + (f"\n{_names(rec)}" if rec else ""))
+
+    # 🧹 removed for good by the 3-source liquidity check (with the reason)
+    gone = det.get("removed_liquidity") or []
+    if gone:
+        lines.append(f"\n🧹 تحيدو نهائياً (السيولة — 3 مصادر): {len(gone)}")
+        lines.extend(f"• {n} — {liquidity_reason_ar(r)}\n  {readings}" for n, r, readings in gone[:MAX_NAMES])
+        if len(gone) > MAX_NAMES:
+            lines.append(f"و{len(gone) - MAX_NAMES} أخرى")
+    liq_drops = [(n, r) for n, r in dropped if (r or "").startswith("Low liquidity confirmed by only 1 source")]
+    if liq_drops:
+        lines.append(f"⚠️ تحيدو لـDropped (غير مصدر واحد فوق $5K، عندهم 7 أيام): {_names([n for n, _ in liq_drops])}")
+    # 🔄 back in active after a liquidity drop (each also sent as its own alert)
+    back = det.get("liq_recovered") or []
+    if back:
+        lines.append(f"\n🔄 عملات رجعت (السيولة طلعت فوق $5K): {_names([n for n, _ in back])}")
 
     # 🏦 exchange listings (new / scheduled / delisted), only when there's news
     lst = rep.listings or {}
@@ -245,6 +289,11 @@ def build_message(rep, session):
     checked = drop.get("checked") or 0
     if checked and len(dropped) > MASS_DROP_SHARE * checked:
         issues.append(f"بزاف ديال الحذف: {len(dropped)} من {checked} — خاصها مراجعة")
+    be = rep.birdeye or {}
+    if be.get("error") or be.get("skipped_cap"):
+        issues.append(f"Birdeye: {be.get('error', 0) + be.get('skipped_cap', 0)} طلبات فشلات — ما تقررش فيهم")
+    if drop.get("liq_unknown"):
+        issues.append(f"السيولة (3 مصادر): {drop['liq_unknown']} عملات بلا قرار (مصدر فشل)")
     flags = (f"🧪 جودة البيانات: dust pool {trk.get('dust_refetched', 0)} · سعر مصحّح "
              f"{trk.get('price_replaced', 0)} · fix-4 {drop.get('liq_source_mismatch', 0)} · "
              f"انهيار مصدر واحد {drop.get('crash_suspects', 0)}")
@@ -271,6 +320,8 @@ def build_message(rep, session):
         if flag:
             near.append(source)
         note = " (التشغيل اليومي فقط)" if source != "CoinMarketCap" else ""
+        if source.startswith("Birdeye"):
+            note = " (التشغيل اليومي فقط، بلا Check a Coin)"
         lines.append(f"• {source}: {run_n if run_n is not None else '—'} / {month:,} / {limit:,}{note}{flag}")
 
     # خلاصة
@@ -280,6 +331,7 @@ def build_message(rep, session):
     else:
         summary = (f"التشغيل داز{' مزيان' if not issues else ' ولكن كاين ملاحظات'}: "
                    f"{len(new)} دخلو، {len(dropped)} تحيدو، {len(rec)} رجعو"
+                   + (f"، {len(gone)} تحيدو نهائياً (السيولة)" if gone else "")
                    + (f" — دابا {active} عملة ف Active." if active is not None else "."))
         if near:
             summary += f" انتبه للاستهلاك ديال {'، '.join(near)}."
@@ -320,5 +372,9 @@ def send_report(rep):
             session.close()
         if send_message(text):
             log.info("Telegram report sent (%d characters)", len(text))
+        # 🔄 one alert per coin back in Active after a liquidity drop.
+        for name, alert in ((rep.drop or {}).get("details") or {}).get("liq_recovered") or []:
+            if send_message(alert):
+                log.info("Telegram recovery alert sent (%s)", name)
     except Exception as e:
         log.warning("Telegram report failed - run unaffected (%s)", type(e).__name__)

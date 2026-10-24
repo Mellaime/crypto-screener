@@ -173,7 +173,7 @@ def run_check(contract):
     from revenue_check import check_revenue
     from volume_check import check_volume_rising, VOLUME_MIN_RISE
     from security_check import check_token_security
-    from liquidity_check import check_liquidity_trend, MAX_DROP_PCT, too_thin, MIN_LIQUIDITY_USD
+    from liquidity_check import check_liquidity_trend, MAX_DROP_PCT, MIN_LIQUIDITY_USD
     from narrative_check import _pick_category
     from queue_view import narrative_from_tags
     from tx_bars import fetch_from_codex
@@ -219,6 +219,14 @@ def run_check(contract):
     f_vol = pool.submit(check_volume_rising, contract, chain)
     f_sec = pool.submit(check_token_security, contract, chain)
     f_liq = pool.submit(check_liquidity_trend, contract, chain)
+    # Liquidity Sources: the Codex daily reading (same cached series as the
+    # trend step) + DexScreener + a LIVE Birdeye lookup (3 CU).
+    from liquidity_verify import live_sources
+
+    def sources_live():
+        return live_sources(chain, contract, _num(dex_rec.get("liquidity_usd")),
+                            f_liq.result().get("today_liq"))
+    f_src = pool.submit(sources_live)
     f_tx = pool.submit(fetch_from_codex, contract, chain)
     from entry_zone import build as entry_zone_build
     # A coin we track: the detail page's own Entry Zone (stored history,
@@ -338,16 +346,26 @@ def run_check(contract):
     else:
         step("liquidity", "Liquidity not down > 5%", "pass", f"unknown ({liq.get('reason')}) - passes")
 
-    # Minimum liquidity (part of step 7): under $5K on BOTH sources = too thin.
-    thin, best_liq = too_thin(liq.get("today_liq"), dex_rec.get("liquidity_usd"))
+    # Minimum liquidity (part of step 7): the 3-source rule (DexScreener +
+    # Codex + a live Birdeye lookup) - 2+ sources with a reading and 2+ at
+    # the minimum or more. A failed Birdeye request -> decided without it.
+    sources = f_src.result()
+    best_liq = sources["value"]
+    thin = sources["verdict"] not in ("healthy", "unknown")
     ez = stored_ez or f_ez.result()   # Entry Zone (also the score's price position)
+    from liquidity_verify import money as usd0
+    src_text = (f"DexScreener {usd0(sources['dexscreener'])} / Codex {usd0(sources['codex'])}"
+                f" / Birdeye {usd0(sources['birdeye'])}")
     if thin:
-        step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,}", "fail",
-             f"${best_liq:,.0f} (Codex + DexScreener)",
-             f"السيولة أقل من الحد الأدنى لدينا {money(MIN_LIQUIDITY_USD)} ({money(best_liq)}) — ضعيفة جداً للتحليل")
+        why = {"removed_insufficient_sources": "مصادر السيولة غير كافية (أقل من مصدرين فيهم داتا)",
+               "removed_dead": "السيولة ميتة في كل المصادر",
+               "dropped_low_liquidity": f"السيولة فوق {money(MIN_LIQUIDITY_USD)} في مصدر واحد فقط"}[sources["verdict"]]
+        step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,} (2 of 3 sources)", "fail",
+             f"{sources['reason']} ({src_text})", f"{why} ({_ltr(src_text)})")
     else:
-        step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,}", "pass",
-             "unknown - passes" if best_liq is None else f"${best_liq:,.0f} (higher of Codex / DexScreener)")
+        step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,} (2 of 3 sources)", "pass",
+             (f"undecided - {sources['reason']} - passes ({src_text})" if sources["verdict"] == "unknown"
+              else f"{sources['n_above']} of 3 sources at ${sources['threshold']:,}+ ({src_text})"))
 
     first_fail = next((s for s in steps if s["status"] == "fail"), None)
     pending = any(s["status"] == "unknown" for s in steps)
@@ -388,6 +406,8 @@ def run_check(contract):
                     "annual": revd.get("annual_revenue"), "protocol": revd.get("protocol"),
                     "filter_verdict": rev["verdict"]},
         "honeypot": sec["verdict"],
+        # Liquidity Sources section (DexScreener / Codex / live Birdeye + verdict).
+        "liquidity_sources": sources,
         # Display only: from the CoinGecko response above (no extra call).
         "price_range": from_market_data(md) if md else
                        {"status": "unknown", "reason": "CoinGecko doesn't list this contract"},
@@ -609,7 +629,8 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike")   # result layout: has these display sections
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike"
+            "|liq3src")   # result layout: has these display sections
 
 
 def get_check(session, contract):

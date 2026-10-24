@@ -20,6 +20,9 @@ THE FILTER - exactly these 7 steps, in this order:
                     because free GoPlus is rate-limited (~20-30 calls/min).
     7. Liquidity  - Codex daily liquidity over min(30d, age); down > 5% ->
                     DROP; unknown -> PASS (liquidity_check.py). LAST step.
+                    Then the 3-source minimum (DexScreener + Codex + a live
+                    Birdeye lookup, liquidity_verify.evaluate): only a
+                    "healthy" verdict enters (a failed request -> passes).
 Steps 1-2 run inside discover_tokens(); steps 3-7 run in save_tokens() below.
 
 Holders are NOT a filter: the holder count is only stored for display.
@@ -48,7 +51,9 @@ from volume_check import check_volume_rising       # step 5
 from rotation import (pick_batch, mark_checked, analyzed_keys, is_analyzed,
                       ROTATION_BUDGET)              # entry queue for steps 4-7
 from security_check import check_token_security     # step 6 (honeypot)
-from liquidity_check import check_liquidity_trend, too_thin, MIN_LIQUIDITY_USD   # step 7 (LAST)
+from liquidity_check import check_liquidity_trend   # step 7 (LAST)
+import birdeye                                                             # step 7's 3rd source
+from liquidity_verify import evaluate, describe, HEALTHY, UNKNOWN
 from narrative_check import lookup_category, CATEGORY_BUDGET
 from holders_check import get_holder_count          # stored only - NOT a filter
 
@@ -226,7 +231,7 @@ def save_tokens(tokens):
         "passed_liquidity": 0,       # Codex liquidity trend (step 7)
         "skipped_liq_falling": 0,    # down more than 5% over the window
         "liquidity_unknown": 0,      # no Codex data -> passed, not dropped
-        "skipped_thin": 0,           # under $5K on both Codex and DexScreener
+        "skipped_thin": 0,           # failed the 3-source liquidity minimum
         "passed_revenue": 0,
         "skipped_no_revenue": 0,
         "revenue_has": 0,
@@ -350,13 +355,19 @@ def save_tokens(tokens):
                 continue
             if liq["verdict"] == "unknown":
                 stats["liquidity_unknown"] += 1
-            # ...and a minimum: under $5K on BOTH Codex and DexScreener -> too
-            # thin to analyze (the higher reading counts).
-            thin, _ = too_thin(liq.get("today_liq"), t.get("liquidity_usd"),
-                               label=t.get("name") or t.get("symbol") or t["contract"])
-            if thin:
+            # ...and the 3-source minimum (DexScreener + Codex + Birdeye, the
+            # same rule drop_logic applies daily): 2+ sources with a reading
+            # and 2+ at $5K or more. One live Birdeye lookup (3 CU) per coin
+            # reaching this point (a handful a day).
+            be = birdeye.lookup(t["chain"], t["contract"])
+            ev = evaluate({"dexscreener": to_float(t.get("liquidity_usd")), "codex": liq.get("today_liq"),
+                           "birdeye": be["liquidity"]}, be["updated_at"],
+                          {"birdeye"} if be["status"] == "error" else ())
+            if ev["verdict"] not in (HEALTHY, UNKNOWN):
                 stats["skipped_thin"] += 1
+                print(f"[INFO] {t.get('name') or t['contract']}: not saved - {ev['reason']} ({describe(ev)})")
                 continue
+            t["_birdeye"] = be
             stats["passed_liquidity"] += 1  # passed ALL 7 steps -> save it
             saved.append(t)
 
@@ -409,6 +420,13 @@ def save_tokens(tokens):
             if price is not None:
                 coin.price_usd = price
                 coin.price_updated_at = utcnow()
+
+            # Birdeye reading from step 7 (the daily verification reuses it).
+            be = t.get("_birdeye") or {}
+            if be.get("status") in ("ok", "no_data", "unsupported"):
+                coin.birdeye_liquidity = be.get("liquidity")
+                coin.birdeye_updated_at = be.get("updated_at")
+                coin.birdeye_checked_at = utcnow()
 
             # Real category/narrative from CoinGecko - looked up ONCE per coin:
             #   None -> not looked up yet (the dashboard shows the generic
@@ -537,7 +555,7 @@ def print_summary(stats):
     print(f"  7. Liquidity trend (Codex) - passed ........ {stats['passed_liquidity']:>6}")
     print(f"       - dropped (down > 5%) ................. {stats['skipped_liq_falling']:>6}")
     print(f"       - passed as unknown ................... {stats['liquidity_unknown']:>6}")
-    print(f"       - dropped (under ${MIN_LIQUIDITY_USD:,} on both) ........ {stats['skipped_thin']:>6}")
+    print(f"       - dropped (3-source liquidity minimum) . {stats['skipped_thin']:>6}")
     print(sub)
     print(f"  SAVED -> NEW coins ......................... {stats['new_coins']:>6}")
     print(f"         + already existed (re-saved) ........ {stats['existing_coins']:>6}")

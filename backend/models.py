@@ -78,6 +78,15 @@ class Coin(Base):
     cmc_id = Column(Integer)
     cmc_live_price = Column(Float)
     coingecko_daily_price = Column(Float)
+    # 3-source liquidity verification (liquidity_verify.py): the latest
+    # Birdeye liquidity (None = no market / chain not on Birdeye), Birdeye's
+    # own last price update (> 48h old = "abandoned"), when WE last asked
+    # Birdeye (active: daily, dropped: every 3 days), and the daily verdict.
+    birdeye_liquidity = Column(Float)
+    birdeye_updated_at = Column(DateTime)                     # UTC
+    birdeye_checked_at = Column(DateTime)                     # UTC
+    liquidity_verdict = Column(String)        # healthy / dropped_low_liquidity / removed_insufficient_sources / removed_dead
+    liquidity_sources_count = Column(Integer)  # 0-3 sources with a reading
 
     # Security info (from GoPlus, filter #7) - stored so the dashboard shows it.
     security_verdict = Column(String)   # "safe" / "unsafe" / "unknown"
@@ -127,6 +136,7 @@ class DailySnapshot(Base):
     # separate, consistent source from the display volume/liquidity above.
     codex_liquidity = Column(Float)
     codex_volume24 = Column(Float)
+    birdeye_liquidity = Column(Float)   # Birdeye's reading that day (liquidity_verify.py)
     score = Column(Float)       # our computed ranking score
 
     coin = relationship("Coin", back_populates="snapshots")
@@ -152,6 +162,28 @@ class DroppedCoin(Base):
 
     def __repr__(self):
         return f"<DroppedCoin coin_id={self.coin_id} reason={self.reason!r}>"
+
+
+class LiquidityCheckLog(Base):
+    """
+    Every 3-source liquidity decision (liquidity_verify.py, drop_logic.py):
+    the three readings, the verdict and what was done - for debugging. No
+    foreign key: the log outlives coins that were removed.
+    """
+    __tablename__ = "liquidity_check_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    coin_id = Column(Integer, index=True)
+    coin_name = Column(String)
+    chain = Column(String)
+    check_date = Column(Date, index=True)
+    ds_liq = Column(Float)
+    codex_liq = Column(Float)
+    birdeye_liq = Column(Float)
+    verdict = Column(String)          # healthy / dropped_low_liquidity / removed_* / unknown
+    action_taken = Column(String)     # kept / dropped / removed / recovered / still_dropped / none
+    reason = Column(Text)
+    created_at = Column(DateTime, default=utcnow)
 
 
 class RankHistory(Base):

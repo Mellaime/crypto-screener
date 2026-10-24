@@ -26,7 +26,9 @@ liquidity), DELETED by drop_logic after its 7 unhealthy days, or BLOCKED by
 drop_logic for a confirmed PRICE CRASH (outcome "crashed") becomes
 eligible again RECHECK_AFTER_DAYS (15) after that, for ONE more pass through
 the entry filter (MAX_ATTEMPTS = 2 analyses in total). If it fails again it's
-locked for good. Never-analyzed coins are always picked before re-checks.
+locked for good. A coin REMOVED by the 3-source liquidity verification
+(outcome "removed_liquidity": too few liquidity sources, or dead liquidity
+on all of them) gets no second chance - locked for good right away. Never-analyzed coins are always picked before re-checks.
 (Coins that fail AGE never enter this queue, so they are simply re-checked
 every run until they're old enough - unchanged.)
 """

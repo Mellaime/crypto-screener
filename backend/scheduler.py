@@ -113,6 +113,20 @@ def run_pipeline(raise_on_error=False):
         log.info("Daily tracking (Codex readings + prices, active + dropped)...")
         report.tracking = run_daily_tracking()
 
+        # 3-source liquidity verification: today's Birdeye readings (active
+        # coins daily, dropped coins every 3 days; ~3 CU each) - drop_logic
+        # then decides on DexScreener + Codex + Birdeye. If this step fails,
+        # drop_logic makes no liquidity decision that would need Birdeye.
+        log.info("Birdeye liquidity readings (3-source verification)...")
+        try:
+            from liquidity_verify import run_birdeye_fetch
+            report.birdeye = run_birdeye_fetch()
+        except Exception:
+            log.exception("Birdeye fetch failed - liquidity decisions needing it are skipped today.")
+            import liquidity_verify
+            liquidity_verify.FETCH_FAILED = True
+            report.step_errors.append("Birdeye")
+
         log.info("Running drop/recovery/cleanup pass...")
         drop_stats = run_drop_logic()
         report.drop = drop_stats
