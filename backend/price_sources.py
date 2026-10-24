@@ -10,9 +10,11 @@ Batched price lookups for the hourly live price and the daily sanity check.
   CoinGecko - the daily SANITY price. /simple/token_price/{platform}, one
       call per blockchain per 100 contracts (~13 calls a day).
 
-The daily job compares the latest CMC live price with CoinGecko's price and
-puts coins more than MISMATCH_X apart in the Telegram report - ALERT ONLY:
-nothing is dropped, no price or status is changed.
+The daily job (BEFORE the drop logic) fetches fresh CMC + CoinGecko prices
+for every active and dropped coin (price_verify.FRESH). price_verify then
+REMOVES a coin whose CMC / CoinGecko / daily prices disagree by more than 2x
+(applied in drop_logic); coins whose worst pair is between 1.5x and 2x are
+only warned about in the Telegram report.
 """
 
 import os
@@ -29,7 +31,6 @@ CMC_BASE = "https://pro-api.coinmarketcap.com"
 CG_BASE = "https://api.coingecko.com/api/v3"
 CMC_BATCH = 100
 CG_BATCH = 100
-MISMATCH_X = 3.0           # CMC vs CoinGecko more than 3x apart -> Telegram alert
 CMC_INFO_BUDGET = 40       # per daily run: /v2/info lookups (1 credit each) for coins the map misses
 
 
@@ -161,19 +162,27 @@ def ratio(a, b):
 
 # ---------------------------------------------------------------- daily sanity step
 def run_price_sanity():
-    """Daily job step: refresh coins.cmc_id (CMC map, 1 credit), store
-    coins.coingecko_daily_price (CoinGecko, ~13 calls), and list active coins
-    whose latest CMC live price and CoinGecko price are more than MISMATCH_X
-    apart. ALERT ONLY - nothing else changes. Returns stats with
-    "mismatches" = [(name, cmc, coingecko, ratio)]."""
-    from database import SessionLocal
+    """Daily job step (before drop_logic): refresh coins.cmc_id (CMC map, 1
+    credit + up to CMC_INFO_BUDGET /v2/info lookups), then FRESH CMC quotes
+    (~3 credits) and CoinGecko prices (~15 calls) for every active and dropped
+    coin -> price_verify.FRESH (+ coins.cmc_live_price / coingecko_daily_price).
+    Returns stats; "mismatches" = the WARNINGS: active coins (and dropped coins
+    due their 3-day re-check) whose worst price pair is between
+    price_verify.WARN_X and REMOVE_X - [(name, source_a, a, source_b, b, ratio)].
+    Over REMOVE_X is drop_logic's removal, not a warning."""
+    from database import SessionLocal, utcnow
     from models import Coin
-    stats = {"active": 0, "cmc_mapped": 0, "coingecko_priced": 0, "compared": 0, "mismatches": [],
-             "cg_calls": 0, "cmc_info_calls": 0}
+    import price_verify
+    from liquidity_verify import DROPPED_RECHECK_DAYS
+    stats = {"active": 0, "dropped": 0, "cmc_mapped": 0, "coingecko_priced": 0, "cmc_priced": 0, "compared": 0,
+             "mismatches": [], "to_remove": 0, "cg_calls": 0, "cmc_info_calls": 0, "cmc_calls": 0}
+    price_verify.FRESH.clear()
+    today = utcnow().date()
     session = SessionLocal()
     try:
-        coins = session.query(Coin).filter(Coin.status == "active").all()
-        stats["active"] = len(coins)
+        coins = session.query(Coin).filter(Coin.status.in_(["active", "dropped"])).all()
+        stats["active"] = sum(c.status == "active" for c in coins)
+        stats["dropped"] = len(coins) - stats["active"]
         m = cmc_id_map()
         cg, stats["cg_calls"] = coingecko_token_prices([(c.chain, c.contract) for c in coins])
         info_left = CMC_INFO_BUDGET
@@ -188,24 +197,40 @@ def run_price_sanity():
                 time.sleep(1.3)                               # CMC: 50 requests / minute
             stats["cmc_mapped"] += bool(c.cmc_id)
         stats["cmc_info_calls"] = CMC_INFO_BUDGET - info_left
+        q, stats["cmc_calls"], cmc_failed = cmc_quotes([c.cmc_id for c in coins if c.cmc_id])
+        if cmc_failed:
+            raise RuntimeError("CMC quotes failed - no price mismatch decisions this run")
         for c in coins:
-            p = cg.get((c.contract or "").lower())
-            if p is not None:
-                c.coingecko_daily_price = p
+            p_cg = cg.get((c.contract or "").lower())
+            p_cmc = q.get(c.cmc_id) if c.cmc_id else None
+            if p_cg is not None:
+                c.coingecko_daily_price = p_cg
                 stats["coingecko_priced"] += 1
-            r = ratio(c.cmc_live_price, p)
-            if r is not None:
-                stats["compared"] += 1
-                if r > MISMATCH_X:
-                    stats["mismatches"].append((c.name, c.cmc_live_price, p, round(r, 1)))
+            if p_cmc is not None:
+                c.cmc_live_price = p_cmc
+                stats["cmc_priced"] += 1
+            price_verify.FRESH[c.id] = {"CMC": p_cmc, "CoinGecko": p_cg}
+            checked = c.birdeye_checked_at.date() if c.birdeye_checked_at else None
+            due = c.status == "active" or checked is None or (today - checked).days >= DROPPED_RECHECK_DAYS
+            wp = price_verify.worst_pair(price_verify.readings(c))
+            if wp is None or not due:
+                continue
+            stats["compared"] += 1
+            if wp[4] > price_verify.REMOVE_X:
+                stats["to_remove"] += 1
+            elif wp[4] > price_verify.WARN_X:
+                stats["mismatches"].append((c.name, wp[0], wp[1], wp[2], wp[3], round(wp[4], 2)))
         session.commit()
     except Exception:
         session.rollback()
+        price_verify.FRESH.clear()                            # nothing decided on partial data
         raise
     finally:
         session.close()
-    stats["mismatches"].sort(key=lambda x: -x[3])
-    log.info("Price sanity: %d active, %d with a CMC id, %d priced by CoinGecko (%d calls), %d compared, %d mismatches > %gx.",
-             stats["active"], stats["cmc_mapped"], stats["coingecko_priced"], stats["cg_calls"], stats["compared"],
-             len(stats["mismatches"]), MISMATCH_X)
+    stats["mismatches"].sort(key=lambda x: -x[5])
+    log.info("Price check: %d active + %d dropped | CMC id %d, CMC priced %d, CoinGecko priced %d (%d calls) | "
+             "%d compared, %d to remove (> %gx), %d warnings (%g-%gx)", stats["active"], stats["dropped"],
+             stats["cmc_mapped"], stats["cmc_priced"], stats["coingecko_priced"], stats["cg_calls"], stats["compared"],
+             stats["to_remove"], price_verify.REMOVE_X, len(stats["mismatches"]), price_verify.WARN_X,
+             price_verify.REMOVE_X)
     return stats

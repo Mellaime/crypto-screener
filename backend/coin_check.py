@@ -358,8 +358,10 @@ def run_check(contract):
                 f" / Birdeye {usd0(sources['birdeye'])}")
     if thin:
         why = {"removed_insufficient_sources": "مصادر السيولة غير كافية (أقل من مصدرين فيهم داتا)",
-               "removed_dead": "السيولة ميتة في كل المصادر",
-               "dropped_low_liquidity": f"السيولة فوق {money(MIN_LIQUIDITY_USD)} في مصدر واحد فقط"}[sources["verdict"]]
+               "removed_dead": f"السيولة أقل من {money(3_000)} (ميتة)",
+               "dropped_low_liquidity": (f"السيولة بين {money(3_000)} و{money(MIN_LIQUIDITY_USD)} (حدّية)"
+                                         if (sources["reason"] or "").startswith("Liquidity between")
+                                         else f"السيولة فوق {money(MIN_LIQUIDITY_USD)} في مصدر واحد فقط")}[sources["verdict"]]
         step("min_liquidity", f"Liquidity at least ${MIN_LIQUIDITY_USD:,} (2 of 3 sources)", "fail",
              f"{sources['reason']} ({src_text})", f"{why} ({_ltr(src_text)})")
     else:
@@ -630,7 +632,7 @@ def rules_signature():
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
             "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike"
-            "|liq3src")   # result layout: has these display sections
+            "|liq3src|liq3k")   # result layout: has these display sections
 
 
 def get_check(session, contract):

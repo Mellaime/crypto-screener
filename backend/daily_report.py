@@ -115,6 +115,8 @@ def _reason_kind(reason):
         return "سيولة أقل من $5K"
     if r.startswith("Low liquidity confirmed by only 1 source"):
         return "سيولة: مصدر واحد فوق $5K"
+    if r.startswith("Liquidity between $3K-"):
+        return "سيولة borderline ($3K–$5K)"
     if r.startswith("Liquidity down"):
         return "السيولة"
     if r.startswith("Holders down"):
@@ -131,7 +133,8 @@ def liquidity_reason_ar(reason):
     for en, ar in (("No liquidity data available", "ما كاين حتى مصدر فيه داتا ديال السيولة"),
                    ("Insufficient liquidity sources (chain not supported)",
                     "غير مصدر واحد فيه السيولة (الشبكة ما مدعوماش)"),
-                   ("Dead liquidity across all sources", "السيولة ميتة ف كاع المصادر"),
+                   ("Liquidity below $3K (dead)", "السيولة تحت $3K (ميتة)"),
+                   ("Liquidity between $3K-", "السيولة borderline (بين $3K والحد الأدنى)"),
                    ("Low liquidity confirmed by only 1 source", "غير مصدر واحد فوق $5K")):
         if r.startswith(en):
             out = ar
@@ -223,13 +226,22 @@ def build_message(rep, session):
     rec = det.get("recovered") or []
     lines.append(f"\n✅ راجعين لـActive: {len(rec)}" + (f"\n{_names(rec)}" if rec else ""))
 
-    # 🧹 removed for good by the 3-source liquidity check (with the reason)
+    # 🧹 / 🗑️ removed for good by the 3-source liquidity check: too few
+    # sources (presence rule) and effective liquidity under $3K, separately
     gone = det.get("removed_liquidity") or []
-    if gone:
-        lines.append(f"\n🧹 تحيدو نهائياً (السيولة — 3 مصادر): {len(gone)}")
-        lines.extend(f"• {n} — {liquidity_reason_ar(r)}\n  {readings}" for n, r, readings in gone[:MAX_NAMES])
-        if len(gone) > MAX_NAMES:
-            lines.append(f"و{len(gone) - MAX_NAMES} أخرى")
+    dead = [g for g in gone if (g[1] or "").startswith("Liquidity below $3K")]
+    few = [g for g in gone if g not in dead]
+    if few:
+        lines.append(f"\n🧹 تحيدو نهائياً (مصادر السيولة ما كافياش): {len(few)}")
+        lines.extend(f"• {n} — {liquidity_reason_ar(r)}\n  {readings}" for n, r, readings, _ in few[:MAX_NAMES])
+        if len(few) > MAX_NAMES:
+            lines.append(f"و{len(few) - MAX_NAMES} أخرى")
+    if dead:
+        lines.append(f"\n🗑️ عملات حيدات نهائياً (سيولة < $3K): {len(dead)}")
+        lines.extend(f"• {n} — ${v or 0:,.0f}" + (" (متروكة)" if "(abandoned:" in (r or "") else "")
+                     for n, r, _, v in dead[:MAX_NAMES])
+        if len(dead) > MAX_NAMES:
+            lines.append(f"و{len(dead) - MAX_NAMES} أخرى")
     # 💥 24h crash (2 liquidity sources -15%+ / price -30%+) - removed for good
     c24 = det.get("crash_24h") or []
     if c24:
@@ -244,9 +256,19 @@ def build_message(rep, session):
         lines.extend(crash_line(*x) for x in c24[:MAX_NAMES])
         if len(c24) > MAX_NAMES:
             lines.append(f"و{len(c24) - MAX_NAMES} أخرى")
-    liq_drops = [(n, r) for n, r in dropped if (r or "").startswith("Low liquidity confirmed by only 1 source")]
+    # 🚫 price mismatch (> 2x between two sources) - removed for good
+    pmm = det.get("price_mismatch") or []
+    if pmm:
+        lines.append("\n🚫 عملات حيدات بسبب اختلاف السعر:")
+        lines.extend(f"• {n} — {a} ${pa:.4g} / {b} ${pb:.4g} ({r:.1f}x فرق)" for n, a, pa, b, pb, r in pmm[:MAX_NAMES])
+        if len(pmm) > MAX_NAMES:
+            lines.append(f"و{len(pmm) - MAX_NAMES} أخرى")
+    liq_drops = [(n, r) for n, r in dropped
+                 if (r or "").startswith(("Low liquidity confirmed by only 1 source", "Liquidity between $3K-"))]
     if liq_drops:
-        lines.append(f"⚠️ تحيدو لـDropped (غير مصدر واحد فوق $5K، عندهم 7 أيام): {_names([n for n, _ in liq_drops])}")
+        lines.append("⚠️ تمشات لـ Dropped (السيولة، عندهم 7 أيام): " + "، ".join(
+            f"{n} ({'borderline liquidity' if r.startswith('Liquidity between') else 'مصدر واحد فوق $5K'})"
+            for n, r in liq_drops[:MAX_NAMES]))
     # 🔄 back in active after a liquidity drop (each also sent as its own alert)
     back = det.get("liq_recovered") or []
     if back:
@@ -273,14 +295,14 @@ def build_message(rep, session):
         lines.extend(f"• {'🚨' if sev == 'big' else '⚠️'} {n} — {ratio:.1f}x ({usd(today)} مقابل متوسط {usd(avg)})"
                      for n, sev, ratio, today, avg in vol["alerts"][:MAX_NAMES])
 
-    # ⚠️ CMC vs CoinGecko price disagreement (alert only - nothing changed)
+    # ⚠️ borderline price disagreement, 1.5x-2x (warning only; > 2x = removed)
     pc = rep.price_check or {}
     if pc.get("mismatches"):
         def px(v):
             return f"${v:.6g}"
-        lines.append("\n⚠️ تحذير: اختلاف في السعر")
-        lines.extend(f"• {n} — CMC {px(a)} / CoinGecko {px(b)} ({r:,.1f}x فرق)"
-                     for n, a, b, r in pc["mismatches"][:MAX_NAMES])
+        lines.append("\n⚠️ تحذير: اختلاف في السعر (1.5x–2x)")
+        lines.extend(f"• {n} — {a} {px(pa)} / {b} {px(pb)} ({r:,.1f}x فرق)"
+                     for n, a, pa, b, pb, r in pc["mismatches"][:MAX_NAMES])
 
     # ⚠️ problems / data-quality flags
     issues = []
@@ -345,7 +367,8 @@ def build_message(rep, session):
     else:
         summary = (f"التشغيل داز{' مزيان' if not issues else ' ولكن كاين ملاحظات'}: "
                    f"{len(new)} دخلو، {len(dropped)} تحيدو، {len(rec)} رجعو"
-                   + (f"، {len(gone) + len(c24)} تحيدو نهائياً (السيولة / crash)" if gone or c24 else "")
+                   + (f"، {len(gone) + len(c24) + len(pmm)} تحيدو نهائياً (السيولة / crash / السعر)"
+                      if gone or c24 or pmm else "")
                    + (f" — دابا {active} عملة ف Active." if active is not None else "."))
         if near:
             summary += f" انتبه للاستهلاك ديال {'، '.join(near)}."

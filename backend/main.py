@@ -142,6 +142,11 @@ def reason_ar(reason):
     if m:
         return (f"السيولة أقل من {_ltr(m.group(1))} ({_ltr(m.group(2))} على {_ltr('DexScreener')}؛ "
                 f"قراءة {_ltr('Codex')} غير موثوقة)")
+    m = re.fullmatch(r"Liquidity between \$3K-(\$\d+K) \(borderline\)( \(abandoned:[^)]*\))? \((.+)\)", r)
+    if m:
+        return ("السيولة بين " + _ltr("$3K") + " و" + _ltr(m.group(1)) + " (حدّية)"
+                + (" (عملة متروكة: لا تحديث للسعر منذ أكثر من 48 ساعة)" if m.group(2) else "")
+                + f" ({_ltr(m.group(3))})")
     m = re.fullmatch(r"Low liquidity confirmed by only 1 source( \(abandoned:[^)]*\))? \((.+)\)", r)
     if m:
         return ("السيولة فوق الحد الأدنى في مصدر واحد فقط من 3"
