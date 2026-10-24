@@ -86,8 +86,13 @@ def cmc_id_by_address(contract, chain):
     return None
 
 
+CHANGES_24H = {}           # {cmc id: 24h price change %} from the last cmc_quotes call
+
+
 def cmc_quotes(ids):
-    """({cmc id: USD price}, calls, all_failed) for CMC ids, 100 per call."""
+    """({cmc id: USD price}, calls, all_failed) for CMC ids, 100 per call.
+    Also fills CHANGES_24H with each coin's 24h price change (%)."""
+    CHANGES_24H.clear()
     ids = sorted({int(i) for i in ids if i})
     if not ids or not _cmc_key():
         return {}, 0, False
@@ -112,6 +117,9 @@ def cmc_quotes(ids):
                 continue
             if p > 0:
                 out[int(cid)] = p
+                chg = ((d.get("quote") or {}).get("USD") or {}).get("percent_change_24h")
+                if isinstance(chg, (int, float)):
+                    CHANGES_24H[int(cid)] = float(chg)
     return out, calls, bool(calls) and failed == calls
 
 

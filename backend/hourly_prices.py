@@ -166,7 +166,9 @@ def run():
             if p is not None:
                 raw_cmc.append({"id": c.id, "cmc_live_price": p})
             if p is not None and sane(c, p):
-                updates.append({"id": c.id, "live_price": p, "live_price_at": now, "live_source": "cmc"})
+                from price_sources import CHANGES_24H
+                updates.append({"id": c.id, "live_price": p, "live_price_at": now, "live_source": "cmc",
+                                "cmc_change_24h": CHANGES_24H.get(c.cmc_id), "cmc_change_at": now})
                 stats["cmc"] += 1
                 log.info("%s: cmc %.6g", c.name, p)
             else:

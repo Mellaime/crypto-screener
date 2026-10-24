@@ -176,6 +176,8 @@ _NEW_COLUMNS += [
     ("coins", "liquidity_sources_count", "INTEGER", None),
     ("daily_snapshots", "birdeye_liquidity", "FLOAT", None),
     ("daily_snapshots", "majority_liquidity", "FLOAT", None),
+    ("coins", "cmc_change_24h", "FLOAT", None),
+    ("coins", "cmc_change_at", "TIMESTAMP", None),
 ]
 
 # Favorites portfolio (added after the favorites tables were created).

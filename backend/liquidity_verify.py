@@ -34,13 +34,17 @@ A source whose request FAILED (outage, not "no data") makes any verdict
 other than healthy "unknown" - nothing is removed or dropped on missing
 data caused by our own fetch problems.
 
-24-HOUR CRASH (crash_24h, active coins, right after the 3-source verdict):
-today's majority liquidity more than CRASH_24H_PCT (20%) below YESTERDAY's
-(daily_snapshots.majority_liquidity, stored every run) -> removed for good,
-"Liquidity crashed >20% in 24h (was $X, now $Y)". Skipped when there is no
-majority for yesterday (coin new today, or the first run after this rule
-existed), when a source request failed today, and when both days are already
-under MIN_LIQ (the amount rule handles those).
+24-HOUR CRASH RULES (crash_rules_24h; active AND dropped coins, right after
+the 3-source verdict; independent - either one = removed for good, no grace,
+no Dropped detour; only coins with a snapshot for yesterday too):
+  LIQUIDITY - 2 of the 3 sources EACH more than LIQ_CRASH_PCT (15%) below
+              their own reading yesterday (the 3rd: anything). Birdeye counts
+              only when it was read today (dropped coins: every 3 days).
+              "Liquidity crashed: 2 sources confirmed -15%+ in 24h"
+  PRICE     - price more than PRICE_CRASH_PCT (30%) down in 24h: CMC's own
+              24h change (hourly run, coins.cmc_change_24h, if < 3h old),
+              else today's daily snapshot price vs yesterday's.
+              "Price crashed: -30%+ in 24h"
 
 drop_logic.py applies the verdicts (removed_* = deleted for good: the entry
 queue's "removed_liquidity" outcome is never re-checked); save_to_db.py
@@ -60,7 +64,9 @@ ABANDONED_MIN_LIQ = 10_000     # stricter minimum for an "abandoned" coin
 ABANDONED_HOURS = 48           # Birdeye's last price update older than this = abandoned
 AGREE_X = 3.0                  # two readings within 3x of each other agree
 DROPPED_RECHECK_DAYS = 3       # Birdeye refresh for dropped coins
-CRASH_24H_PCT = 20             # majority liquidity down more than this vs yesterday -> removed
+LIQ_CRASH_PCT = 15             # 2 sources each down more than this in 24h -> removed
+PRICE_CRASH_PCT = 30           # price down more than this in 24h -> removed
+CMC_CHANGE_MAX_AGE_H = 3       # CMC's 24h change counts while this fresh
 MAX_CALLS_PER_RUN = 320        # Birdeye safety cap (~175 active + ~25 dropped a day)
 
 SOURCES = ("dexscreener", "codex", "birdeye")
@@ -219,28 +225,48 @@ def store_verdict(coin, ev, session=None, today=None):
             snap.majority_liquidity = ev["value"]
 
 
-def crash_24h(session, coin, today, ev):
-    """(yesterday, today, pct_down) when today's majority liquidity is more
-    than CRASH_24H_PCT below yesterday's; None otherwise (see docstring)."""
+def crash_rules_24h(session, coin, today, ev):
+    """The two 24h crash rules (see docstring). Returns {"liquidity":
+    {source label: % change} or None, "price": (% change, source) or None,
+    "reason": text} when either fires, else None."""
     from models import DailySnapshot
-    now_v = ev["value"] if ev["sources_count"] >= 2 else None
-    if not now_v or ev["failed"]:
+    if coin.first_seen is not None and coin.first_seen.date() >= today:
+        return None                                          # brand new coin
+    snaps = {s.date: s for s in session.query(DailySnapshot).filter(
+        DailySnapshot.coin_id == coin.id, DailySnapshot.date.in_([today, today - timedelta(days=1)]))}
+    y, t = snaps.get(today - timedelta(days=1)), snaps.get(today)
+    if y is None:
+        return None                                          # under 2 days of data
+    # Liquidity: each source vs its own reading yesterday.
+    be_today = (coin.birdeye_liquidity if coin.birdeye_checked_at is not None
+                and coin.birdeye_checked_at.date() == today else None)
+    pairs = {"DexScreener": (y.liquidity, ev["readings"]["dexscreener"]),
+             "Codex": (y.codex_liquidity, ev["readings"]["codex"]),
+             "Birdeye": (y.birdeye_liquidity, be_today)}
+    deltas = {lbl: (now_v / prev - 1) * 100 for lbl, (prev, now_v) in pairs.items() if prev and now_v}
+    fell = {lbl: d for lbl, d in deltas.items() if d < -LIQ_CRASH_PCT}
+    liq = fell if len(fell) >= 2 else None
+    # Price: CMC's 24h change while fresh, else the daily snapshots.
+    price = None
+    fresh = (coin.cmc_change_at is not None and coin.cmc_change_24h is not None
+             and utcnow() - coin.cmc_change_at < timedelta(hours=CMC_CHANGE_MAX_AGE_H))
+    if fresh:
+        pct, src = coin.cmc_change_24h, "CMC"
+    elif t is not None and t.price_usd and y.price_usd:
+        pct, src = (t.price_usd / y.price_usd - 1) * 100, "daily"
+    else:
+        pct = None
+    if pct is not None and pct < -PRICE_CRASH_PCT:
+        price = (pct, src)
+    if not liq and not price:
         return None
-    if coin.active_since is not None and coin.active_since.date() >= today:
-        return None                                      # entered active today
-    prev = (session.query(DailySnapshot.majority_liquidity)
-            .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date == today - timedelta(days=1))
-            .scalar())
-    if not prev:
-        return None
-    if prev < MIN_LIQ and now_v < MIN_LIQ:
-        return None                                      # the amount rule's job
-    pct = (prev - now_v) / prev * 100
-    return (prev, now_v, pct) if pct > CRASH_24H_PCT else None
-
-
-def crash_reason(prev, now_v):
-    return f"Liquidity crashed >{CRASH_24H_PCT}% in 24h (was {money(prev)}, now {money(now_v)})"
+    parts = []
+    if liq:
+        parts.append(f"Liquidity crashed: 2 sources confirmed -{LIQ_CRASH_PCT}%+ in 24h ("
+                     + ", ".join(f"{k} {v:+.0f}%" for k, v in sorted(liq.items(), key=lambda kv: kv[1])) + ")")
+    if price:
+        parts.append(f"Price crashed: -{PRICE_CRASH_PCT}%+ in 24h ({price[0]:+.0f}%, {price[1]})")
+    return {"liquidity": liq, "price": price, "reason": "; ".join(parts)}
 
 
 def log_decision(session, coin, today, ev, action):

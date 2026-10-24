@@ -77,6 +77,10 @@ class Coin(Base):
     # for the hourly cascade and the daily CMC-vs-CoinGecko sanity alert.
     cmc_id = Column(Integer)
     cmc_live_price = Column(Float)
+    # CoinMarketCap's 24h price change (%) from the latest hourly run (only
+    # when the CMC price was used) - the 24h price-crash rule.
+    cmc_change_24h = Column(Float)
+    cmc_change_at = Column(DateTime)                          # UTC
     coingecko_daily_price = Column(Float)
     # 3-source liquidity verification (liquidity_verify.py): the latest
     # Birdeye liquidity (None = no market / chain not on Birdeye), Birdeye's
