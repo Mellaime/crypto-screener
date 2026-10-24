@@ -1816,7 +1816,7 @@
     const min = "$" + Math.round((s.threshold || 5000) / 1000) + "K";
     const V = {
       healthy: ["up", `✅ Healthy (${agree})`],
-      dropped_low_liquidity: ["down", (s.reason || "").startswith("Liquidity between")
+      dropped_low_liquidity: ["down", (s.reason || "").startsWith("Liquidity between")
         ? `⚠️ Borderline — ${fmtMoney(s.value)}, between $3K and ${min}` : `⚠️ Low — only 1 source at ${min}+ (${agree})`],
       removed_dead: ["down", `❌ Dead — ${fmtMoney(s.value)}, under $3K`],
       removed_insufficient_sources: ["down", `❌ ${s.sources_count ? "Only 1 source has liquidity data" : "No liquidity data on any source"}`],
