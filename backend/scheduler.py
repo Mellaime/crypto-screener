@@ -195,6 +195,16 @@ def run_pipeline(raise_on_error=False):
             log.exception("Volume anomaly detection failed")
             report.step_errors.append("Volume Anomaly")
 
+        # Price sanity (Telegram alert only): CoinGecko's price vs the latest
+        # CoinMarketCap live price; also refreshes coins.cmc_id. Nothing is
+        # dropped and no price / status changes.
+        try:
+            from price_sources import run_price_sanity
+            report.price_check = run_price_sanity()
+        except Exception:
+            log.exception("Price sanity check failed - continuing.")
+            report.step_errors.append("Price sanity")
+
         # Favorites profiles: refresh each favorite's snapshot (price / market
         # cap / P&L); coins deleted from our database keep their last one.
         try:

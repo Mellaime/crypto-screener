@@ -6,7 +6,15 @@ every hour on the hour). Writes ONLY coins.live_price + coins.live_price_at;
 the daily price (coins.price_usd), snapshots, highest / lowest, scores and
 every aggregate (Overview, Portfolio Performance) stay daily.
 
-Source: DexScreener /tokens/v1/{chain}/{addresses} (30 coins per request,
+Cascade (price_sources.py for CMC):
+  1. CoinMarketCap quotes/latest by coins.cmc_id - 100 per call (~2 credits a run)
+  2. coins CMC can't price -> DexScreener (below)
+  3. still missing -> Codex (below)
+  4. nothing -> the previous live price is kept (never nulled)
+The raw CMC price is also stored in coins.cmc_live_price (the daily
+CMC-vs-CoinGecko sanity check compares it).
+
+DexScreener: /tokens/v1/{chain}/{addresses} (30 coins per request,
 free, no key) - the SAME source as the daily price, so a coin's live P&L is
 measured against an entry price from the same feed. Each coin takes its
 highest-liquidity pool. (CoinGecko's contract-price endpoint takes one chain
@@ -133,21 +141,43 @@ def run():
     from database import SessionLocal, utcnow
     from models import Coin
     stats = {"active": 0, "updated": 0, "missing": 0, "insane": 0, "requests": 0, "failed_requests": 0, "error": None,
-             "dexscreener": 0, "codex": 0, "codex_requests": 0, "codex_failed": False}
+             "dexscreener": 0, "codex": 0, "codex_requests": 0, "codex_failed": False,
+             "cmc": 0, "cmc_requests": 0, "cmc_failed": False}
     session = SessionLocal()
     try:
-        coins = (session.query(Coin.id, Coin.chain, Coin.contract, Coin.price_usd, Coin.name)
+        coins = (session.query(Coin.id, Coin.chain, Coin.contract, Coin.price_usd, Coin.name, Coin.cmc_id)
                  .filter(Coin.status == "active").all())
         stats["active"] = len(coins)
-        prices, stats["requests"], stats["failed_requests"] = fetch_live_prices(
-            [((c.chain or "").lower(), (c.contract or "").lower()) for c in coins])
         now = utcnow()
 
         def sane(c, p):
             return not c.price_usd or 1 / SANITY_X <= p / c.price_usd <= SANITY_X
 
-        updates, missed = [], []
-        for c in coins:                                       # 1. DexScreener
+        updates, raw_cmc, todo = [], [], []
+        try:                                                  # 1. CoinMarketCap
+            from price_sources import cmc_quotes
+            q, stats["cmc_requests"], stats["cmc_failed"] = cmc_quotes([c.cmc_id for c in coins if c.cmc_id])
+        except Exception as e:
+            log.warning("CMC stage failed (%s) - DexScreener / Codex only this run", type(e).__name__)
+            q, stats["cmc_failed"] = {}, True
+        for c in coins:
+            p = q.get(c.cmc_id) if c.cmc_id else None
+            if p is not None:
+                raw_cmc.append({"id": c.id, "cmc_live_price": p})
+            if p is not None and sane(c, p):
+                updates.append({"id": c.id, "live_price": p, "live_price_at": now, "live_source": "cmc"})
+                stats["cmc"] += 1
+                log.info("%s: cmc %.6g", c.name, p)
+            else:
+                if p is not None:
+                    log.info("%s: cmc %.6g rejected (daily %.6g)", c.name, p, c.price_usd)
+                todo.append(c)
+        coins_for_dex = todo
+        prices, stats["requests"], stats["failed_requests"] = fetch_live_prices(
+            [((c.chain or "").lower(), (c.contract or "").lower()) for c in coins_for_dex])
+
+        missed = []
+        for c in coins_for_dex:                               # 2. DexScreener
             p = prices.get((c.contract or "").lower())
             if p is not None and sane(c, p):
                 updates.append({"id": c.id, "live_price": p, "live_price_at": now, "live_source": "dexscreener"})
@@ -157,7 +187,7 @@ def run():
                 if p is not None:
                     log.info("%s: dexscreener %.6g rejected (daily %.6g)", c.name, p, c.price_usd)
                 missed.append(c)
-        if missed:                                            # 2. Codex, only for the missed coins
+        if missed:                                            # 3. Codex, only for the missed coins
             try:
                 cx, stats["codex_requests"], stats["codex_failed"] = fetch_codex_prices(
                     [((c.chain or "").lower(), c.contract) for c in missed])
@@ -173,8 +203,11 @@ def run():
                 else:
                     stats["insane" if p is not None else "missing"] += 1
                     log.info("%s: skipped (%s)", c.name, f"codex {p:.6g} vs daily {c.price_usd:.6g}" if p is not None else "no price")
-        if updates:
-            session.bulk_update_mappings(Coin, updates)
+        if updates or raw_cmc:
+            if updates:
+                session.bulk_update_mappings(Coin, updates)
+            if raw_cmc:
+                session.bulk_update_mappings(Coin, raw_cmc)
             session.commit()
         stats["updated"] = len(updates)
     except Exception as e:
@@ -189,9 +222,10 @@ def run():
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     st = run()
-    print(f"Hourly prices: {st['updated']}/{st['active']} active coins updated (dexscreener {st['dexscreener']}, "
-          f"codex {st['codex']}) | skipped: no price {st['missing']}, >{SANITY_X:g}x off daily {st['insane']} | "
-          f"DexScreener requests {st['requests']} (failed {st['failed_requests']}) | Codex requests {st['codex_requests']}"
+    print(f"Hourly prices: {st['updated']}/{st['active']} active coins updated (cmc {st['cmc']}, dexscreener "
+          f"{st['dexscreener']}, codex {st['codex']}) | skipped: no price {st['missing']}, >{SANITY_X:g}x off daily "
+          f"{st['insane']} | CMC requests {st['cmc_requests']}" + (" (ALL FAILED)" if st["cmc_failed"] else "")
+          + f" | DexScreener requests {st['requests']} (failed {st['failed_requests']}) | Codex requests {st['codex_requests']}"
           + (" (ALL FAILED)" if st["codex_failed"] else "") + (f" | ERROR {st['error']}" if st["error"] else ""))
     if st["codex_failed"] and not st["error"]:
         try:

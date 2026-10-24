@@ -84,6 +84,7 @@ class RunReport:
         self.scored = None          # number of coins scored
         self.listings = None        # listings.run_listings_update() stats
         self.volume = None          # volume_anomaly.run_volume_anomaly_detection() stats
+        self.price_check = None     # price_sources.run_price_sanity() stats
 
 
 def _new_coin_names(session, since):
@@ -213,6 +214,15 @@ def build_message(rep, session):
         lines.append(f"\n📊 فوليوم غير عادي: {len(vol['alerts'])}")
         lines.extend(f"• {'🚨' if sev == 'big' else '⚠️'} {n} — {ratio:.1f}x ({usd(today)} مقابل متوسط {usd(avg)})"
                      for n, sev, ratio, today, avg in vol["alerts"][:MAX_NAMES])
+
+    # ⚠️ CMC vs CoinGecko price disagreement (alert only - nothing changed)
+    pc = rep.price_check or {}
+    if pc.get("mismatches"):
+        def px(v):
+            return f"${v:.6g}"
+        lines.append("\n⚠️ تحذير: اختلاف في السعر")
+        lines.extend(f"• {n} — CMC {px(a)} / CoinGecko {px(b)} ({r:,.1f}x فرق)"
+                     for n, a, b, r in pc["mismatches"][:MAX_NAMES])
 
     # ⚠️ problems / data-quality flags
     issues = []

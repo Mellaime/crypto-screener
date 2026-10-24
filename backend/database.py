@@ -162,6 +162,9 @@ _NEW_COLUMNS += [
     ("coins", "live_price", "FLOAT", None),
     ("coins", "live_price_at", "TIMESTAMP", None),
     ("coins", "live_source", "VARCHAR", None),
+    ("coins", "cmc_id", "INTEGER", None),
+    ("coins", "cmc_live_price", "FLOAT", None),
+    ("coins", "coingecko_daily_price", "FLOAT", None),
 ]
 
 # Favorites portfolio (added after the favorites tables were created).
