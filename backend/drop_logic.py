@@ -31,14 +31,17 @@ or keep out, on missing data. Revenue is NOT part of this.
      fewer than 2 sources with a reading, or 0 sources >= $5K
          -> REMOVED for good (deleted; the entry queue's "removed_liquidity"
             outcome is never re-checked)
-     only 1 source >= $5K -> dropped ("Low liquidity confirmed by only 1
-            source"), the normal 7-day recovery window
+     only 1 source >= $5K, or effective liquidity $3K-$5K -> dropped, the
+            normal 7-day recovery window; effective under $3K -> removed
      2+ sources >= $5K    -> healthy; a dropped coin needs this to recover
    A source whose request failed today -> no liquidity decision ("unknown").
    Then the two 24-HOUR CRASH rules (liquidity_verify.crash_rules_24h): 2 of
    3 liquidity sources each down > 15%, OR the price down > 30%, in 24h ->
    removed for good (no grace, no Dropped). Both run before the 3-day crash
    check below, so a permanent removal wins over its 15-day block.
+   Then the PRICE MISMATCH (price_verify.check): CMC / CoinGecko / daily
+   price - any two more than 2x apart -> removed for good (active coins
+   every run, dropped coins on their 3-day re-check day).
 
 0. CRASH OVERRIDE (checked first, on EVERY active coin - even in grace):
    price OR liquidity down CRASH_PCT (70%) or more vs its highest reading in
@@ -308,24 +311,35 @@ def _block_crashed(session, coin, reason, when):
     _delete_coin(session, coin, outcome="crashed", when=when)
 
 
-def _remove_for_good(session, coin, snap_day, ev, now, stats, removed_liq, crashed_24h):
-    """3-source removal, else the 24h crash rules: delete the coin for good
-    (entry-queue outcome "removed_liquidity", never re-checked), log it once.
-    True if the coin was removed."""
+def _remove_for_good(session, coin, snap_day, ev, now, stats, removed_liq, crashed_24h, price_mm):
+    """3-source removal, else the 24h crash rules, else the price mismatch
+    (active coins; dropped coins only on their 3-day re-check day): delete the
+    coin for good (entry-queue outcome "removed_liquidity", never re-checked),
+    log it once. True if the coin was removed."""
     from liquidity_verify import (crash_rules_24h, log_decision, describe,
                                   REMOVED_SOURCES, REMOVED_DEAD)
     if ev["verdict"] in (REMOVED_SOURCES, REMOVED_DEAD):
         log_decision(session, coin, snap_day, ev, "removed")
-        removed_liq.append((coin.name, ev["reason"], describe(ev)))
+        removed_liq.append((coin.name, ev["reason"], describe(ev), ev["value"]))
         stats["removed_liquidity"] += 1
     else:
         crash = crash_rules_24h(session, coin, snap_day, ev)
-        if not crash:
-            return False
-        ev["reason"] = crash["reason"]
-        log_decision(session, coin, snap_day, ev, "removed_crash_24h")
-        crashed_24h.append((coin.name, crash["liquidity"], crash["price"]))
-        stats["crash_24h"] += 1
+        if crash:
+            ev["reason"] = crash["reason"]
+            log_decision(session, coin, snap_day, ev, "removed_crash_24h")
+            crashed_24h.append((coin.name, crash["liquidity"], crash["price"]))
+            stats["crash_24h"] += 1
+        else:
+            import price_verify
+            due = coin.status == "active" or (coin.birdeye_checked_at is not None
+                                              and coin.birdeye_checked_at.date() == now.date())
+            mm = price_verify.check(coin) if due else None
+            if not mm:
+                return False
+            ev["reason"] = mm["reason"]
+            log_decision(session, coin, snap_day, ev, "removed_price_mismatch")
+            price_mm.append((coin.name, *mm["pair"]))
+            stats["price_mismatch"] += 1
     _delete_coin(session, coin, outcome="removed_liquidity", when=now)
     return True
 
@@ -485,11 +499,12 @@ def run_drop_logic():
     now = utcnow()
     today = now.date()
     from liquidity_verify import (coin_evaluation, store_verdict, log_decision, describe, recovery_alert,
-                                  HEALTHY, DROPPED, REASON_LOW)
+                                  HEALTHY, DROPPED, REASON_LOW, BORDERLINE_PREFIX)
     stats = {"active_remaining": 0, "in_grace": 0, "checked": 0, "newly_dropped": 0, "crashed": 0,
              "crash_blocked": 0, "recovered": 0, "still_dropped": 0, "removed_7d": 0,
              "removed_never_qualified": 0, "removed_liquidity": 0, "liq_dropped": 0, "liq_unknown": 0,
-             "crash_24h": 0}
+             "crash_24h": 0, "price_mismatch": 0}
+    price_mm = []                # (name, source_a, a, source_b, b, ratio) - price mismatch, removed for good
     crashed_24h = []             # (name, {source: %} or None, (price %, src) or None) - removed for good
     removed_liq = []             # (name, reason, readings) - 3-source removals, for good
     liq_recovered = []           # (name, Arabic alert) - liquidity drops back in active
@@ -512,7 +527,7 @@ def run_drop_logic():
             # grace): removed for good.
             ev = coin_evaluation(session, coin, snap_day)
             store_verdict(coin, ev, session, snap_day)
-            if _remove_for_good(session, coin, snap_day, ev, now, stats, removed_liq, crashed_24h):
+            if _remove_for_good(session, coin, snap_day, ev, now, stats, removed_liq, crashed_24h, price_mm):
                 continue
             # Crash override (3 days, two sources) - applies even during grace.
             kind, reason = crash_check(session, coin, snap_day, crash_suspects)
@@ -570,7 +585,7 @@ def run_drop_logic():
             # liquidity must be healthy to recover.
             ev = coin_evaluation(session, coin, snap_day)
             store_verdict(coin, ev, session, snap_day)
-            if _remove_for_good(session, coin, snap_day, ev, now, stats, removed_liq, crashed_24h):
+            if _remove_for_good(session, coin, snap_day, ev, now, stats, removed_liq, crashed_24h, price_mm):
                 continue
             kind, reason = crash_check(session, coin, snap_day, crash_suspects)
             if kind == "price":
@@ -598,7 +613,7 @@ def run_drop_logic():
                 stats["recovered"] += 1
                 recovered_details.append(coin.name)
                 log_decision(session, coin, snap_day, ev, "recovered")
-                if last and (last[1] or "").startswith((REASON_LOW, "Liquidity under")):
+                if last and (last[1] or "").startswith((REASON_LOW, BORDERLINE_PREFIX, "Liquidity under")):
                     liq_recovered.append((coin.name, recovery_alert(
                         coin.name, ev["readings"], ev["threshold"], days, last[0])))
             elif days >= RECOVERY_DAYS:                    # failed all 7 days -> DELETE
@@ -630,14 +645,16 @@ def run_drop_logic():
     stats["details"] = {"dropped": dropped_details, "recovered": recovered_details,
                         "deleted": removed_details, "blocked": blocked_details,
                         "suspects": crash_suspects, "removed_liquidity": removed_liq,
-                        "liq_recovered": liq_recovered, "crash_24h": crashed_24h}
+                        "liq_recovered": liq_recovered, "crash_24h": crashed_24h,
+                        "price_mismatch": price_mm}
     _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects,
-                   blocked_details, held_details, mismatches, removed_liq, crashed_24h)
+                   blocked_details, held_details, mismatches, removed_liq, crashed_24h, price_mm)
     return stats
 
 
 def _print_summary(stats, dropped_details, recovered_details, removed_details, crash_suspects=(),
-                   blocked_details=(), held_details=(), mismatches=None, removed_liq=(), crashed_24h=()):
+                   blocked_details=(), held_details=(), mismatches=None, removed_liq=(), crashed_24h=(),
+                   price_mm=()):
     line = "=" * 52
     print(line)
     print("  DROP LOGIC SUMMARY")
@@ -648,14 +665,17 @@ def _print_summary(stats, dropped_details, recovered_details, removed_details, c
     for name, reason in blocked_details:
         print(f"      x {(name or 'unknown')[:18]:<18}  ({reason})")
     print(f"  3-source liquidity -> removed ..... {stats.get('removed_liquidity', 0):>5}   (for good)")
-    for name, reason, readings in removed_liq:
+    for name, reason, readings, _ in removed_liq:
         print(f"      x {(name or 'unknown')[:18]:<18}  ({reason}: {readings})")
     print(f"  24h crash -> removed .............. {stats.get('crash_24h', 0):>5}   (2 sources -15%+ or price -30%+)")
     for name, liq, price in crashed_24h:
         bits = ([" + ".join(f"{k} {v:+.0f}%" for k, v in liq.items())] if liq else []) + \
                ([f"price {price[0]:+.0f}% ({price[1]})"] if price else [])
         print(f"      x {(name or 'unknown')[:18]:<18}  ({'; '.join(bits)})")
-    print(f"  3-source liquidity -> dropped ..... {stats.get('liq_dropped', 0):>5}   (1 source >= $5K)")
+    print(f"  Price mismatch -> removed ......... {stats.get('price_mismatch', 0):>5}   (two prices > 2x apart)")
+    for name, a, pa, b, pb, r in price_mm:
+        print(f"      x {(name or 'unknown')[:18]:<18}  ({a} ${pa:.6g} vs {b} ${pb:.6g}, {r:.1f}x)")
+    print(f"  3-source liquidity -> dropped ..... {stats.get('liq_dropped', 0):>5}   (1 source >= $5K, or $3K-$5K)")
     print(f"  3-source liquidity undecided ...... {stats.get('liq_unknown', 0):>5}   (a source request failed)")
     print(f"  Liquidity crash (normal drop) .... {stats['crashed']:>5}")
     print(f"  Suspect crash readings (1 source) . {len(crash_suspects):>5}   (not dropped - re-checked tomorrow)")

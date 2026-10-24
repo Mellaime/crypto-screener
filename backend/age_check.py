@@ -62,7 +62,7 @@ CHAIN_TO_CG_PLATFORM = {
     "avalanche": "avalanche", "fantom": "fantom", "cronos": "cronos",
     "zksync": "zksync", "linea": "linea", "scroll": "scroll",
     "mantle": "mantle", "blast": "blast", "sui": "sui", "aptos": "aptos",
-    "ton": "the-open-network", "tron": "tron",
+    "ton": "the-open-network", "tron": "tron", "hyperevm": "hyperevm",
 }
 
 # Coins per run that may spend a live fallback call (CMC /info).

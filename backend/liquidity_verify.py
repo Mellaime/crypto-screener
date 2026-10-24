@@ -22,14 +22,18 @@ evaluate() decides, in this order:
        one outlier            -> it is ignored; the agreeing two count
        a chain (A~B, B~C)     -> all count; value = median (shown with ⚠️)
        no two agree           -> the LOWEST reading decides (conservative)
-  3. AMOUNT - how many counted readings are >= MIN_LIQ ($5K; $10K for an
-     "abandoned" coin - Birdeye's last price update older than
-     ABANDONED_HOURS):
-       2 or 3 -> healthy (stays / may recover)
-       1      -> dropped_low_liquidity "Low liquidity confirmed by only
-                 1 source" (the normal 7-day recovery window)
-       0      -> removed_dead "Dead liquidity across all sources"
+  3. AMOUNT - on the EFFECTIVE liquidity (the agreed value from step 2) and
+     how many counted readings are >= MIN_LIQ ($5K; $10K for an "abandoned"
+     coin - Birdeye's last price update older than ABANDONED_HOURS):
+       effective >= minimum, 2+ sources >= minimum -> healthy
+       effective >= minimum, only 1 source         -> dropped_low_liquidity
+                 "Low liquidity confirmed by only 1 source" (7-day recovery)
+       $3K <= effective < minimum                  -> dropped_low_liquidity
+                 "Liquidity between $3K-$5K (borderline)" (7-day recovery)
+       effective < MIN_PERMANENT_REMOVAL_USD ($3K) -> removed_dead
+                 "Liquidity below $3K (dead)"
      (no two agree: healthy only if the lowest reading is >= the minimum)
+     A dropped coin still needs 2+ sources >= $5K to recover.
 A source whose request FAILED (outage, not "no data") makes any verdict
 other than healthy "unknown" - nothing is removed or dropped on missing
 data caused by our own fetch problems.
@@ -59,7 +63,8 @@ from database import utcnow
 
 log = logging.getLogger("liquidity_verify")
 
-from liquidity_check import MIN_LIQUIDITY_USD as MIN_LIQ   # $5K
+from liquidity_check import MIN_LIQUIDITY_USD as MIN_LIQ   # $5K: healthy needs 2+ sources at this
+MIN_PERMANENT_REMOVAL_USD = 3_000   # effective liquidity under this -> removed for good ($3K-$5K -> dropped)
 ABANDONED_MIN_LIQ = 10_000     # stricter minimum for an "abandoned" coin
 ABANDONED_HOURS = 48           # Birdeye's last price update older than this = abandoned
 AGREE_X = 3.0                  # two readings within 3x of each other agree
@@ -81,7 +86,8 @@ UNKNOWN = "unknown"
 REASON_NO_DATA = "No liquidity data available"
 REASON_ONE_SOURCE = "Insufficient liquidity sources (chain not supported)"
 REASON_LOW = "Low liquidity confirmed by only 1 source"
-REASON_DEAD = "Dead liquidity across all sources"
+BORDERLINE_PREFIX = "Liquidity between $3K-"   # + "$5K (borderline)", "$10K ..." when abandoned
+REASON_DEAD = "Liquidity below $3K (dead)"
 
 # Coin ids whose Birdeye request failed in THIS process's run (not "no data").
 BIRDEYE_ERRORS = set()
@@ -150,12 +156,15 @@ def evaluate(readings, birdeye_updated_at=None, failed=(), now=None):
         if c["no_majority"] and min(clean[s] for s in c["kept"]) < threshold:
             n = min(n, 1)                              # the lowest reading decides
         out["n_above"] = n
-        if n >= 2:
-            verdict, reason = HEALTHY, None
-        elif n == 1:
-            verdict, reason = DROPPED, REASON_LOW
-        else:
+        eff = c["value"]
+        if eff < MIN_PERMANENT_REMOVAL_USD:
             verdict, reason = REMOVED_DEAD, REASON_DEAD
+        elif eff < threshold:
+            verdict, reason = DROPPED, f"{BORDERLINE_PREFIX}${threshold // 1000}K (borderline)"
+        elif n >= 2:
+            verdict, reason = HEALTHY, None
+        else:
+            verdict, reason = DROPPED, REASON_LOW
         if abandoned and verdict != HEALTHY:
             reason += f" (abandoned: no Birdeye price update for {ABANDONED_HOURS}h+, minimum ${threshold:,})"
     if verdict != HEALTHY and failed:

@@ -113,6 +113,18 @@ def run_pipeline(raise_on_error=False):
         log.info("Daily tracking (Codex readings + prices, active + dropped)...")
         report.tracking = run_daily_tracking()
 
+        # Prices for the price-mismatch removal (drop_logic): fresh CMC +
+        # CoinGecko prices for active + dropped coins, compared with today's
+        # daily price; also refreshes coins.cmc_id. If this step fails,
+        # drop_logic makes no price-mismatch decision today.
+        log.info("Price check (CMC + CoinGecko vs daily price)...")
+        try:
+            from price_sources import run_price_sanity
+            report.price_check = run_price_sanity()
+        except Exception:
+            log.exception("Price check failed - no price-mismatch removals today.")
+            report.step_errors.append("Price check")
+
         # 3-source liquidity verification: today's Birdeye readings (active
         # coins daily, dropped coins every 3 days; ~3 CU each) - drop_logic
         # then decides on DexScreener + Codex + Birdeye. If this step fails,
@@ -209,15 +221,6 @@ def run_pipeline(raise_on_error=False):
             log.exception("Volume anomaly detection failed")
             report.step_errors.append("Volume Anomaly")
 
-        # Price sanity (Telegram alert only): CoinGecko's price vs the latest
-        # CoinMarketCap live price; also refreshes coins.cmc_id. Nothing is
-        # dropped and no price / status changes.
-        try:
-            from price_sources import run_price_sanity
-            report.price_check = run_price_sanity()
-        except Exception:
-            log.exception("Price sanity check failed - continuing.")
-            report.step_errors.append("Price sanity")
 
         # Favorites profiles: refresh each favorite's snapshot (price / market
         # cap / P&L); coins deleted from our database keep their last one.

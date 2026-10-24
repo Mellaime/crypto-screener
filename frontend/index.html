@@ -1816,14 +1816,15 @@
     const min = "$" + Math.round((s.threshold || 5000) / 1000) + "K";
     const V = {
       healthy: ["up", `✅ Healthy (${agree})`],
-      dropped_low_liquidity: ["down", `⚠️ Low — only 1 source at ${min}+ (${agree})`],
-      removed_dead: ["down", `❌ Dead liquidity — no source at ${min}+`],
+      dropped_low_liquidity: ["down", (s.reason || "").startswith("Liquidity between")
+        ? `⚠️ Borderline — ${fmtMoney(s.value)}, between $3K and ${min}` : `⚠️ Low — only 1 source at ${min}+ (${agree})`],
+      removed_dead: ["down", `❌ Dead — ${fmtMoney(s.value)}, under $3K`],
       removed_insufficient_sources: ["down", `❌ ${s.sources_count ? "Only 1 source has liquidity data" : "No liquidity data on any source"}`],
       unknown: ["flat", "? Undecided — a source couldn't be reached"],
     }[s.verdict] || ["flat", "—"];
     return `<div class="ratiocard"><h3>💧 Liquidity Sources</h3>
       <div class="note">${live ? "DexScreener + Codex now, Birdeye looked up live." : "Today's daily readings."}
-        A coin needs ${min}+ on at least 2 of the 3 sources; a source more than 3x away from the other two is ignored.</div>
+        A coin needs ${min}+ on at least 2 of the 3 sources ($3K–${min}: Dropped; under $3K: removed); a source more than 3x away from the other two is ignored.</div>
       <ul class="supply">${rows}</ul>
       <div class="note" style="margin:8px 0 0">${be}</div>
       <div class="liqverdict dir ${V[0]}">Verdict: ${V[1]}</div></div>`;
