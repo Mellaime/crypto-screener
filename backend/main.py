@@ -142,6 +142,11 @@ def reason_ar(reason):
     if m:
         return (f"السيولة أقل من {_ltr(m.group(1))} ({_ltr(m.group(2))} على {_ltr('DexScreener')}؛ "
                 f"قراءة {_ltr('Codex')} غير موثوقة)")
+    m = re.fullmatch(r"Low liquidity confirmed by only 1 source( \(abandoned:[^)]*\))? \((.+)\)", r)
+    if m:
+        return ("السيولة فوق الحد الأدنى في مصدر واحد فقط من 3"
+                + (" (عملة متروكة: لا تحديث للسعر منذ أكثر من 48 ساعة)" if m.group(1) else "")
+                + f" ({_ltr(m.group(2))})")
     m = re.fullmatch(r"Holders down ([\d.]+)% \((.+) -> (.+)\)", r)
     if m:
         return f"عدد الحاملين انخفض {pct(m.group(1))} ({_ltr(m.group(2) + ' → ' + m.group(3))})"
@@ -233,6 +238,9 @@ def get_coins():
                 "liquidity": snap.liquidity,
                 "volume": snap.volume,
                 "vol_liq": b["vol_liq_ratio"],     # e.g. 4.10 (means 4.10x)
+                # 3-source liquidity (Liquidity column): consensus value, ⚠️ when
+                # the sources disagree, each source for the tooltip.
+                **_liq_row(coin, snap),
                 "vol_mcap": b["vol_mcap_pct"],      # e.g. 25.4 (means 25.4%)
                 "is_new": bool(new_from and coin.first_seen
                                and new_from <= coin.first_seen <= new_to),
@@ -294,6 +302,17 @@ def get_coins():
         return {"count": len(rows), "coins": rows}
     finally:
         session.close()
+
+
+def _liq_row(coin, snap):
+    """Active table: the 3-source liquidity (stored readings, no API call)."""
+    from liquidity_verify import stored_sources
+    s = stored_sources(coin, snap)
+    return {"birdeye_liquidity": coin.birdeye_liquidity,
+            "liquidity_sources_count": coin.liquidity_sources_count,
+            "liq_value": s["value"], "liq_disagree": s["disagree"], "liq_outlier": s["outlier"],
+            "liq_sources": {"dexscreener": s["dexscreener"], "codex": s["codex"], "birdeye": s["birdeye"],
+                            "birdeye_status": s["birdeye_status"]}}
 
 
 def _add_symbols(session, rows, coins):
@@ -466,6 +485,11 @@ def _live_performance(coin, p):
     return {**p, "current_price": price, "change_pct": round(pct, 2), "change_usd": price - p["entry_price"],
             "status": "flat" if abs(pct) < 1 else "up" if pct > 0 else "down",
             "is_live": is_live, "live_price_at": _iso(at) if at else None}
+
+
+def _liquidity_sources(coin, snap):
+    from liquidity_verify import stored_sources
+    return stored_sources(coin, snap)
 
 
 HOLDER_BAR_DAYS = 30        # holders bars: up to the last 30 stored days
@@ -649,6 +673,8 @@ def get_coin(contract: str):
             "ranks": {"coingecko": rank_box("coingecko", coin.cg_rank),
                       "cmc": rank_box("cmc", coin.cmc_rank)},
             "liquidity_now": liq_now if liq_now is not None else liq,
+            # Liquidity Sources section: DexScreener / Codex / Birdeye + verdict (stored).
+            "liquidity_sources": _liquidity_sources(coin, snap),
             "liq_growth_pct": {"4h": live["liq_chg_4h"], "24h": live["liq_chg_24h"],
                                "7d": growth_7d},
             "liq_mcap_pct": {"this_week": this_week, "last_week": last_week,

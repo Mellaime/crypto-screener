@@ -507,6 +507,10 @@
   .prends { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted);
             font-variant-numeric: tabular-nums; margin: 0 0 12px; }
 
+  /* Liquidity Sources (3-source verification) */
+  .liqwarn { margin-right: 4px; font-size: 12px; }
+  .liqverdict { font-size: 14px; margin-top: 8px; }
+
   /* Liquidity section */
   .liqtotal { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0 12px; }
   .subhead { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 12px 0 6px; }
@@ -566,7 +570,7 @@
           <th class="num" data-sort="live_pnl.change_pct" aria-sort="none" title="Price change since the coin entered the Active list"><button type="button" class="sorth">P&amp;L<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="mcap" aria-sort="none"><button type="button" class="sorth">Market Cap<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="revenue" aria-sort="none"><button type="button" class="sorth">Revenue/day<span class="arr" aria-hidden="true"></span></button></th>
-          <th class="num" data-sort="vol_liq" aria-sort="none"><button type="button" class="sorth">Vol / Liq<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="liq_value" aria-sort="none" title="Liquidity agreed by DexScreener, Codex and Birdeye (⚠️ = the sources disagree; hover a value for each source)"><button type="button" class="sorth">Liquidity<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="holders" aria-sort="none"><button type="button" class="sorth">Holders<span class="arr" aria-hidden="true"></span></button></th>
           <th>Narrative</th>
         </tr>
@@ -624,7 +628,7 @@
           <th class="num" data-sort="_fav.days_held" aria-sort="none"><button type="button" class="sorth">Held<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="mcap" aria-sort="none"><button type="button" class="sorth">Market Cap<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="revenue" aria-sort="none"><button type="button" class="sorth">Revenue/day<span class="arr" aria-hidden="true"></span></button></th>
-          <th class="num" data-sort="vol_liq" aria-sort="none"><button type="button" class="sorth">Vol / Liq<span class="arr" aria-hidden="true"></span></button></th>
+          <th class="num" data-sort="liq_value" aria-sort="none" title="Liquidity agreed by DexScreener, Codex and Birdeye (⚠️ = the sources disagree; hover a value for each source)"><button type="button" class="sorth">Liquidity<span class="arr" aria-hidden="true"></span></button></th>
           <th class="num" data-sort="holders" aria-sort="none"><button type="button" class="sorth">Holders<span class="arr" aria-hidden="true"></span></button></th>
           <th>Narrative</th>
         </tr>
@@ -1050,10 +1054,25 @@
         ${pnlCell(c._fav ? c.performance : livePerf(c))}${favCells(c)}
         <td class="num">${fmtMoney(c.mcap)}</td>
         <td class="num">${c.revenue == null ? "—" : fmtMoney(c.revenue)}</td>
-        <td class="num">${fmtX(c.vol_liq)}</td>
+        ${liqCell(c)}
         <td class="num">${fmtNum(c.holders)}</td>
         <td class="narrative">${c.category ? `<span class="tag">${esc(c.category)}</span>` : esc(c.narrative)}</td>
       </tr>`;
+  }
+  // Liquidity column: the 3-source value (median / agreeing pair, the lowest
+  // when no two agree); ⚠️ when the sources disagree; tooltip = each source.
+  const LIQ_SRC = [["dexscreener", "DexScreener"], ["codex", "Codex"], ["birdeye", "Birdeye"]];
+  function liqSourceText(s, src) {
+    const v = s[src];
+    if (v != null) return fmtMoney(v);
+    if (src === "birdeye") return {unsupported: "chain not covered", no_data: "no market"}[s.birdeye_status] || "not checked yet";
+    return "no data";
+  }
+  function liqCell(c) {
+    const s = c.liq_sources || {};
+    const tip = LIQ_SRC.map(([k, label]) => `${label}: ${liqSourceText(s, k)}${c.liq_outlier === k ? " (outlier, ignored)" : ""}`).join("\n");
+    const warn = c.liq_disagree ? `<span class="liqwarn" aria-label="sources disagree">⚠️</span>` : "";
+    return `<td class="num" title="${esc(tip)}">${warn}${fmtMoney(c.liq_value)}</td>`;
   }
   // A favorite that has been dropped: same columns, only what we still have.
   function droppedFavRow(d) {
@@ -1549,6 +1568,7 @@
       ${volumeAlertCard(c.volume_spike)}
       ${performanceCard(c.performance)}
       ${liquidityCard(c)}
+      ${liquiditySourcesCard(c.liquidity_sources, c.chain)}
       ${rankCard(c)}
       ${holdersCard(c)}
       ${revenueCard(c)}
@@ -1750,6 +1770,7 @@
                  rv.status === "ok" ? "last 30 days" + (rv.all_time != null ? " · " + fmtMoney(rv.all_time) + " total" : "") : esc(rv.reason || ""))}
           ${tile("Honeypot", r.honeypot === "safe" ? "✓ sellable" : r.honeypot === "unsafe" ? "✗ not sellable" : "unknown")}
         </div></div>
+      ${liquiditySourcesCard(r.liquidity_sources, r.chain, true)}
       ${checkScoreCard(r.score)}
       ${volumeAlertCard(r.volume_spike)}
       <div style="margin-top:12px">${txChart(r, "ck")}</div>
@@ -1766,6 +1787,46 @@
         <div dir="rtl" lang="ar" style="font-size:15px;line-height:1.8;text-align:right">${esc(r.summary || "")}</div>
         <div class="opinion rtl" dir="rtl" lang="ar">${esc(r.opinion || "")}</div></div>`;
     wireChart(r.tx_bars || [], "ck");
+  }
+
+  // 💧 Liquidity Sources: DexScreener / Codex / Birdeye, Birdeye's last price
+  // update and the 3-source verdict (2 of 3 sources at $5K+ = healthy).
+  function liqAgo(iso) {
+    const m = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
+    return m < 60 ? m + "m ago" : m < 2880 ? Math.floor(m / 60) + "h ago" : Math.floor(m / 1440) + " days ago";
+  }
+  function liquiditySourcesCard(s, chain, live) {
+    if (!s) return "";
+    const rows = LIQ_SRC.map(([k, label]) => {
+      const v = s[k], out = s.outlier === k;
+      const cls = v == null ? " soon" : "";
+      const tag = out ? ` <span class="note" style="font-size:12px">outlier — ignored</span>` : "";
+      return `<li class="${cls.trim()}"><span class="lbl">${label}${tag}</span><span class="val">${esc(liqSourceText(s, k))}</span></li>`;
+    }).join("");
+    let be;
+    if (s.birdeye_status === "unsupported") be = `Birdeye doesn't cover ${esc(chain)}`;
+    else if (s.birdeye_status === "error") be = "Birdeye lookup failed — decided on the other two sources";
+    else if (s.birdeye_updated_at) be = `Last Birdeye update: ${esc(liqAgo(s.birdeye_updated_at))}`
+      + (s.abandoned ? ` <span class="dir down">· over 48h — treated as abandoned ($10K minimum)</span>` : "");
+    else if (s.birdeye_status === "no_data") be = "Birdeye has no market for this token";
+    else be = "Birdeye not checked yet (next daily run)";
+    const agree = s.sources_count < 2 ? `${s.sources_count}/3 sources have data`
+      : s.outlier ? `2/3 agree`
+      : !s.disagree ? `${s.sources_count}/3 agree` : "sources disagree";
+    const min = "$" + Math.round((s.threshold || 5000) / 1000) + "K";
+    const V = {
+      healthy: ["up", `✅ Healthy (${agree})`],
+      dropped_low_liquidity: ["down", `⚠️ Low — only 1 source at ${min}+ (${agree})`],
+      removed_dead: ["down", `❌ Dead liquidity — no source at ${min}+`],
+      removed_insufficient_sources: ["down", `❌ ${s.sources_count ? "Only 1 source has liquidity data" : "No liquidity data on any source"}`],
+      unknown: ["flat", "? Undecided — a source couldn't be reached"],
+    }[s.verdict] || ["flat", "—"];
+    return `<div class="ratiocard"><h3>💧 Liquidity Sources</h3>
+      <div class="note">${live ? "DexScreener + Codex now, Birdeye looked up live." : "Today's daily readings."}
+        A coin needs ${min}+ on at least 2 of the 3 sources; a source more than 3x away from the other two is ignored.</div>
+      <ul class="supply">${rows}</ul>
+      <div class="note" style="margin:8px 0 0">${be}</div>
+      <div class="liqverdict dir ${V[0]}">Verdict: ${V[1]}</div></div>`;
   }
 
   // Volume ratio section: 4h · 24h · 7d · Total side by side.
