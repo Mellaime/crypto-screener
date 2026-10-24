@@ -1,6 +1,7 @@
 name: Hourly live prices
 
-# Every hour on the hour: refresh coins.live_price / live_price_at for the
+# Every hour at minute 17 (off-peak - top-of-hour schedules get delayed or
+# dropped by GitHub): refresh coins.live_price / live_price_at for the
 # active coins (backend/hourly_prices.py): CoinMarketCap first (~2 credits),
 # DexScreener for coins CMC can't price, then Codex (~1 request), < 1 min.
 # Touches nothing else - the daily pipeline owns every other field. The
@@ -8,7 +9,7 @@ name: Hourly live prices
 # fewer than half of the active coins were updated.
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "17 * * * *"   # minute 17: GitHub delays / drops runs scheduled on the hour
   workflow_dispatch: {}
 
 concurrency:
