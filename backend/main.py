@@ -35,7 +35,7 @@ from sqlalchemy import func
 
 from database import SessionLocal
 from models import Coin, DailySnapshot, DroppedCoin
-from scoring import score_snapshot, score_inputs, previous_scores, score_history
+from scoring import display_ratios, score_changes, score_history
 from socials import x_url
 
 app = FastAPI(title="Crypto Screener API", version="0.1")
@@ -215,17 +215,13 @@ def get_coins():
 
         rows = []
         snaps = {c.id: latest_snapshot(session, c.id) for c in coins}
-        # Score inputs saved by the daily scoring step (recomputed only for a
-        # coin whose saved row isn't from its latest snapshot day).
-        from scoring import stored_score_inputs
-        inputs = stored_score_inputs(session, coins, {cid: s.date for cid, s in snaps.items() if s})
         for coin in coins:
             snap = snaps[coin.id]
             if snap is None:
                 continue
 
-            # fresh score + ratios
-            b = score_snapshot(snap, coin, inputs.get(coin.id))
+            # The daily run's stored score (scoring.score_all); display ratios.
+            vol_liq, vol_mcap = display_ratios(snap)
 
             # A single rank to display = average of the sources we have.
             rank_vals = [x for x in (coin.cg_rank, coin.cmc_rank) if x is not None]
@@ -233,7 +229,6 @@ def get_coins():
 
             rows.append({
                 "id": coin.id,
-                "_snap_day": snap.date,
                 "name": coin.name,
                 "chain": coin.chain,
                 "contract": coin.contract,
@@ -242,21 +237,21 @@ def get_coins():
                 "mcap": snap.mcap,
                 "liquidity": snap.liquidity,
                 "volume": snap.volume,
-                "vol_liq": b["vol_liq_ratio"],     # e.g. 4.10 (means 4.10x)
+                "vol_liq": vol_liq,                # e.g. 4.10 (means 4.10x)
                 # 3-source liquidity (Liquidity column): consensus value, ⚠️ when
                 # the sources disagree, each source for the tooltip.
                 **_liq_row(coin, snap),
-                "vol_mcap": b["vol_mcap_pct"],      # e.g. 25.4 (means 25.4%)
+                "vol_mcap": vol_mcap,               # e.g. 25.4 (means 25.4%)
                 "is_new": bool(new_from and coin.first_seen
                                and new_from <= coin.first_seen <= new_to),
                 "holders": snap.holders,            # None until we have a source
                 "revenue": snap.revenue,            # DefiLlama daily revenue (None if unknown)
-                "score": b["total"],
+                "score": snap.score,                # daily run's V3 score (None until scored)
                 "market_rank": rank_display,        # avg market rank, or None
                 "rank_change": coin.rank_change,     # places moved vs last week (+ = up)
                 "rank_signal": coin.rank_signal,     # strong_up / up / neutral / down
                 "category": coin.category,          # real CoinGecko tag, or None
-                "narrative": make_narrative(coin.chain, snap.mcap, b["vol_liq_ratio"]),
+                "narrative": make_narrative(coin.chain, snap.mcap, vol_liq),
                 # Security info (filter #7), stored on the coin.
                 "security": coin.security_verdict,  # "safe" / "unsafe" / "unknown" / None
                 "verified": coin.verified,
@@ -264,13 +259,13 @@ def get_coins():
                 "mint_disabled": coin.mint_disabled,
             })
 
-        # Score vs the previous daily run (score_history: the latest recorded
-        # day before this coin's snapshot day) -> the table's delta arrow.
-        prev = previous_scores(session, {r["id"]: r.pop("_snap_day") for r in rows})
+        # Score change vs the previous daily run - only the parts that had
+        # real data on both days (scoring.score_changes) -> the delta arrow.
+        chg = score_changes(session, [r["id"] for r in rows])
         for r in rows:
-            y = prev.get(r["id"])
+            y, d = chg.get(r["id"], (None, None))
             r["score_yesterday"] = None if y is None else round(y, 1)
-            r["score_delta"] = None if y is None else round(r["score"] - y, 1)
+            r["score_delta"] = d
 
         # Exchange listing badges (🆕 new listing / 📅 scheduled), stored.
         from listings import badges
@@ -300,7 +295,7 @@ def get_coins():
             r["live_pnl"] = None if pct is None else {"change_pct": round(pct, 2), "is_live": is_live}
 
         # Highest score first, then attach a rank number.
-        rows.sort(key=lambda r: r["score"], reverse=True)
+        rows.sort(key=lambda r: (r["score"] is not None, r["score"] or 0), reverse=True)
         for i, r in enumerate(rows, start=1):
             r["rank"] = i
 
@@ -514,8 +509,7 @@ def get_coin(contract: str):
         if coin is None:
             raise HTTPException(status_code=404, detail="coin not found")
         snap = latest_snapshot(session, coin.id)
-        from scoring import stored_score_inputs
-        b = score_snapshot(snap, coin, stored_score_inputs(session, [coin], {coin.id: snap.date}).get(coin.id)) if snap else None
+        vol_liq_ratio = display_ratios(snap)[0]
         q = (session.query(CoinQueue.symbol)
              .filter_by(chain=(coin.chain or "").lower(), contract=coin.contract.lower())
              .first())
@@ -632,13 +626,13 @@ def get_coin(contract: str):
             "price": coin.price_usd,
             "price_updated": _iso(coin.price_updated_at),
             "mcap": snap.mcap if snap else None,
-            "score": b["total"] if b else None,
+            "score": snap.score if snap else None,   # daily run's V3 score (active coins)
             "score_history": score_history(session, coin.id),   # last 7 days, newest first
             "category": coin.category,
             "twitter": x_url(coin.twitter_handle),  # https://x.com/<handle>, or None
             "twitter_handle": coin.twitter_handle,
             "narrative": make_narrative(coin.chain, snap.mcap if snap else None,
-                                        b["vol_liq_ratio"] if b else None, arabic=True),
+                                        vol_liq_ratio, arabic=True),
             "security": coin.security_verdict,
             "tx_window_days": WINDOW_DAYS,
             "tx_bars": tx["bars"],

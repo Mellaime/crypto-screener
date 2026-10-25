@@ -114,6 +114,12 @@ LAST_MCAPS = {}
 # None when CMC didn't say.
 LAST_SUPPLY = {}
 
+# The coin's ALL-EXCHANGE 24h volume, keyed like LAST_MCAPS: CoinGecko's
+# total_volume, CMC's volume_24h only where CoinGecko has none (never the
+# larger of the two, so the source doesn't flip day to day). tracking.py
+# stores it on today's snapshot (daily_snapshots.total_volume) for the score.
+LAST_VOLUMES = {}
+
 
 # Retry a failed discovery request with back-off before giving up on it.
 RETRY_WAITS = [5, 15, 30]
@@ -206,6 +212,8 @@ def from_coingecko(max_pages=30):
                 continue
             for addr in id_platforms.get(coin["id"], {}).values():
                 LAST_MCAPS[addr.lower()] = mc
+                if coin.get("total_volume"):
+                    LAST_VOLUMES[addr.lower()] = coin["total_volume"]
                 LAST_SUPPLY[addr.lower()] = {
                     "total": coin.get("total_supply"),
                     "circulating": coin.get("circulating_supply"),
@@ -275,6 +283,7 @@ def from_coinmarketcap(limit=5000):
             "contract": plat["token_address"],
             "chain": CMC_PLATFORM_TO_CHAIN.get(name, (name or "").lower()),
             "mcap": usd.get("market_cap"),
+            "volume_24h": usd.get("volume_24h"),
             "name": x.get("name"),
             "symbol": x.get("symbol"),
             "price": usd.get("price"),
@@ -340,6 +349,7 @@ def discover_candidates(verbose=True):
     LAST_CG_RANKS.clear()
     LAST_MCAPS.clear()
     LAST_SUPPLY.clear()
+    LAST_VOLUMES.clear()
     cg = from_coingecko()
     cmc = from_coinmarketcap()
 
@@ -372,6 +382,8 @@ def discover_candidates(verbose=True):
     for c in cmc:                            # CMC global mcap, by contract
         if c.get("mcap"):
             LAST_MCAPS.setdefault(c["contract"].lower(), c["mcap"])
+        if c.get("volume_24h"):
+            LAST_VOLUMES.setdefault(c["contract"].lower(), c["volume_24h"])
         # Supply: CMC fills whatever CoinGecko didn't give (and says uncapped).
         sup = LAST_SUPPLY.setdefault(c["contract"].lower(),
                                      {"total": None, "circulating": None, "max": None,

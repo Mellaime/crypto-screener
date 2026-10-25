@@ -177,6 +177,15 @@ _NEW_COLUMNS += [
     ("daily_snapshots", "birdeye_liquidity", "FLOAT", None),
     ("daily_snapshots", "majority_liquidity", "FLOAT", None),
     ("coins", "cmc_change_24h", "FLOAT", None),
+    # V3 score: all-exchange volume + the score's new parts.
+    ("daily_snapshots", "total_volume", "FLOAT", None),
+    ("score_history", "turnover", "FLOAT", None),
+    ("score_history", "absorption", "FLOAT", None),
+    ("score_history", "holders", "FLOAT", None),
+    ("score_history", "holder_vel", "FLOAT", None),
+    ("score_history", "liquidity", "FLOAT", None),
+    ("score_history", "structure", "FLOAT", None),
+    ("score_history", "missing", "VARCHAR", None),
     ("coins", "cmc_change_at", "TIMESTAMP", None),
 ]
 
