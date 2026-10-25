@@ -94,7 +94,29 @@ def init_db():
 
     Base.metadata.create_all(bind=engine)
     _add_missing_columns()
+    _enable_rls()
     return DB_DESCRIPTION
+
+
+def _enable_rls():
+    """Row Level Security ON for every table in Supabase's public schema, so
+    the REST API (anon / authenticated keys) can't read or write them. Our
+    app connects directly as the tables' owner (postgres, BYPASSRLS), which
+    RLS doesn't restrict. Covers tables create_all() just made. Postgres
+    only; never fails startup."""
+    if DB_FILE is not None:
+        return
+    from sqlalchemy import text
+    try:
+        with engine.begin() as conn:
+            tables = conn.execute(text(
+                "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity")).scalars().all()
+            for name in tables:
+                conn.execute(text(f'ALTER TABLE public."{name}" ENABLE ROW LEVEL SECURITY'))
+                print(f"[DB] row level security enabled on {name}")
+    except Exception as e:
+        print(f"[DB] could not enable row level security ({type(e).__name__}) - continuing")
 
 
 # Columns added to EXISTING tables after they were first created. create_all()
