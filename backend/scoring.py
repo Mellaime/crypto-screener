@@ -403,7 +403,8 @@ def score_history(session, coin_id, days=SCORE_HISTORY_SHOW_DAYS):
     [{"date", "score", "parts": {component: points} or None (before V3),
       "first": True when there is no earlier recorded day,
       "changes": [{"label", "delta"}] per component vs the previous day,
-                 real-data parts only, biggest first; None when not comparable}].
+                 real-data parts only, biggest first; None when not comparable,
+      "delta": the day's score change over those parts (None when not comparable)}].
     Never raises (-> [])."""
     from models import ScoreHistory
     try:
@@ -430,7 +431,10 @@ def score_history(session, coin_id, days=SCORE_HISTORY_SHOW_DAYS):
             changes = sorted(({"label": k, "delta": v} for k, v in comp.items() if abs(v) >= 0.05),
                              key=lambda c: -abs(c["delta"]))
         out.append({"date": row.recorded_at.isoformat(), "score": round(row.score, 1), "parts": parts,
-                    "first": prev is None, "changes": changes})
+                    "first": prev is None, "changes": changes,
+                    "delta": None if ch is None else round(sum(ch.values()), 1),
+                    "estimated": sorted({comp for col, _, comp, _ in PARTS                # median-filled
+                                         if col in (row.missing or "").split(",")})})
     return out
 
 

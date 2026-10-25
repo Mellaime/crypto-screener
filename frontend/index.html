@@ -2252,14 +2252,29 @@
   }
   // "All Score": the coin's last 7 recorded daily scores, one column per day
   // (dates across the top, oldest left; scrolls sideways on narrow screens).
+  // The score's 6 components (scoring.COMPONENTS) with their maxima.
+  const SCORE_COMPONENTS = [["Turnover & absorption", 30], ["Buyers", 25], ["Holders", 20],
+                            ["Liquidity & structure", 15], ["Rank", 5], ["Cheapness", 5]];
   function allScoreCard(hist) {
     hist = hist || [];
     const days = hist.slice().reverse();          // oldest on the left, newest on the right
+    const num = v => v % 1 ? v.toFixed(1) : String(v);
     const head = days.map(h => `<th>${esc(shortDate(h.date))}</th>`).join("");
-    const cells = days.map((h, i) => `<td class="pick" data-i="${i}" title="What changed this day">${Number(h.score).toFixed(1)}</td>`).join("");
+    // ▲/▼ = the change of the parts that had real data on both days (none when not comparable).
+    const arrow = h => h.delta == null || Math.abs(h.delta) < 0.05 ? ""
+      : `<small class="arr ${h.delta > 0 ? "up" : "down"}">${h.delta > 0 ? "▲" : "▼"}${num(Math.abs(h.delta))}</small>`;
+    const cells = days.map((h, i) => `<td class="pick" data-i="${i}" title="What changed this day"><b>${Number(h.score).toFixed(1)}</b>${arrow(h)}</td>`).join("");
+    const rows = SCORE_COMPONENTS.map(([name, mx]) => `<tr><td class="rowlbl">${esc(name)} <small class="na">/ ${mx}</small></td>${days.map(h => {
+      const v = h.parts && h.parts[name];
+      if (v == null) return `<td><span class="na">—</span></td>`;
+      return (h.estimated || []).includes(name)
+        ? `<td class="na" title="No data that day - active coins' median used (not counted in ▲/▼)">${num(v)}*</td>` : `<td>${num(v)}</td>`;
+    }).join("")}</tr>`).join("");
     return `<div class="ratiocard"><h3>All Score</h3>
-      <div class="note">The coin's score from each daily run (last 7 days).</div>
-      ${hist.length ? `<div class="scorewrap"><table class="scoretable" id="scoretable"><thead><tr>${head}</tr></thead><tbody><tr>${cells}</tr></tbody></table></div>
+      <div class="note">The coin's score from each daily run (last 7 days) and its 6 components. Click a day's score to see what changed.
+        * = no data that day, the active coins' median is used; ▲/▼ only counts parts with data on both days.</div>
+      ${hist.length ? `<div class="scorewrap"><table class="scoretable" id="scoretable"><thead><tr><th class="rowlbl"></th>${head}</tr></thead>
+        <tbody><tr><td class="rowlbl">Score <small class="na">/ 100</small></td>${cells}</tr>${rows}</tbody></table></div>
         <div class="scorewhy" id="scorewhy" hidden></div>`
         : `<div class="note" style="margin:0">No score history yet - it starts with the next daily run.</div>`}</div>`;
   }
@@ -2291,6 +2306,8 @@
       box.innerHTML = scoreWhy(days[+td.dataset.i]);
       box.hidden = false;
     });
+    const picks = table.querySelectorAll("td.pick");   // open on the newest day's explanation
+    if (picks.length) picks[picks.length - 1].click();
   }
   // Futures Data: Coinalyze open interest / funding / long-short for the
   // coin's main perpetual market, one column per day (oldest left).
