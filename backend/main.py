@@ -414,6 +414,51 @@ async def fav_delete_profile(name: str, request: Request):
     return _fav(delete_profile, name, b.get("pin"), _client_ip(request))
 
 
+# ---------------------------------------------------------------- Paper Trading Challenge
+@app.get("/api/challenge/leaderboard")
+def challenge_leaderboard():
+    from challenge import leaderboard
+    return _fav(leaderboard)
+
+
+@app.get("/api/challenge/{name}")
+def challenge_get(name: str):
+    from challenge import get_state
+    return _fav(get_state, name)
+
+
+@app.post("/api/challenge/start")
+async def challenge_start(request: Request):
+    from challenge import start
+    b = await _body(request)
+    return _fav(start, b.get("profile"), b.get("duration_days"), token=b.get("session_token"), pin=b.get("pin"),
+                ip=_client_ip(request))
+
+
+@app.post("/api/challenge/buy")
+async def challenge_buy(request: Request):
+    from challenge import buy
+    b = await _body(request)
+    return _fav(buy, b.get("profile"), b.get("contract"), b.get("amount_usd"), token=b.get("session_token"),
+                pin=b.get("pin"), ip=_client_ip(request))
+
+
+@app.post("/api/challenge/sell")
+async def challenge_sell(request: Request):
+    from challenge import sell
+    b = await _body(request)
+    return _fav(sell, b.get("profile"), b.get("position_id"), token=b.get("session_token"), pin=b.get("pin"),
+                ip=_client_ip(request))
+
+
+@app.post("/api/challenge/reset")
+async def challenge_reset(request: Request):
+    """Delete the profile's challenge (PIN always required); favorites untouched."""
+    from challenge import reset
+    b = await _body(request)
+    return _fav(reset, b.get("profile"), b.get("pin"), _client_ip(request))
+
+
 @app.get("/api/compare")
 def compare_coins(coins: str = ""):
     """Compare Coins page: up to 5 tracked coins side by side, by slug

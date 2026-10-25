@@ -212,6 +212,8 @@ def delete_profile(session, name, pin, ip):
     _check_pin(session, p, pin, ip)                           # always the PIN, never a token
     session.query(FavoriteProfileCoin).filter_by(profile_id=p.id).delete(synchronize_session=False)
     session.query(FavoriteSession).filter_by(profile_id=p.id).delete(synchronize_session=False)
+    from challenge import delete_for_profile
+    delete_for_profile(session, p.id)                         # its paper trading challenge too
     session.delete(p)
     session.commit()
     return {"deleted": p.name}
