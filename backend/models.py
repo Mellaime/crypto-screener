@@ -774,6 +774,46 @@ class FavoritePinAttempt(Base):
     at = Column(DateTime, nullable=False, default=utcnow, index=True)
 
 
+class Challenge(Base):
+    """A favorites profile's Paper Trading Challenge (challenge.py): $300
+    virtual cash for 7 or 14 days; final_balance is set when it ends. One
+    per profile (Reset deletes it)."""
+    __tablename__ = "challenges"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    profile_id = Column(Integer, ForeignKey("favorite_profiles.id"), nullable=False, unique=True, index=True)
+    start_date = Column(DateTime, nullable=False, default=utcnow)
+    duration_days = Column(Integer, nullable=False)           # 7 or 14
+    end_date = Column(DateTime, nullable=False)
+    status = Column(String, nullable=False, default="active")  # active / ended
+    starting_capital = Column(Float, nullable=False, default=300.0)
+    final_balance = Column(Float)                             # None until it ends
+
+
+class ChallengePosition(Base):
+    """One buy in a challenge; exit / P&L filled when sold ("closed") or
+    sold automatically at the end ("auto_closed"). last_price = the coin's
+    latest known price (hourly), so a coin removed from our database can
+    still be valued and sold."""
+    __tablename__ = "challenge_positions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    challenge_id = Column(Integer, ForeignKey("challenges.id"), nullable=False, index=True)
+    contract = Column(String, nullable=False)
+    chain = Column(String)
+    coin_name = Column(String)
+    entry_price = Column(Float, nullable=False)
+    entry_amount_usd = Column(Float, nullable=False)
+    entry_date = Column(DateTime, nullable=False, default=utcnow)
+    exit_price = Column(Float)
+    exit_date = Column(DateTime)
+    pnl_usd = Column(Float)
+    pnl_pct = Column(Float)
+    status = Column(String, nullable=False, default="open")   # open / closed / auto_closed
+    last_price = Column(Float)
+    last_price_at = Column(DateTime)
+
+
 class UnlocksDisplayCache(Base):
     """The Token Unlocks page's finished list (dropstab.all_unlocks() output,
     ~0.3 MB JSON), built once by the daily run instead of from the ~4.3 MB of

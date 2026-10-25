@@ -259,6 +259,20 @@
   .pf-board { margin-top: 12px; font-size: 13px; }
   .pf-board ol { margin: 4px 0 0; padding-left: 22px; }
   .pf-board li { margin: 2px 0; }
+  /* Paper Trading Challenge */
+  .fp-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .ch-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .ch-badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor;
+    vertical-align: 2px; margin-left: 6px; text-transform: uppercase; letter-spacing: .4px; }
+  .ch-badge.live { color: #3fb950; } .ch-badge.ended { color: var(--muted); }
+  .ch-sub { font-size: 13px; color: var(--muted); margin: 14px 0 6px; font-weight: 600; }
+  .ch-table { overflow-x: auto; }
+  .ch-table table { width: 100%; font-size: 13px; }
+  .ch-table th, .ch-table td { padding: 6px 7px; white-space: nowrap; }
+  .ch-table .btn { padding: 4px 10px; font-size: 13px; }
+  .ch-fame { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin-top: 10px; }
+  .btn[disabled] { opacity: .45; cursor: not-allowed; }
+  .modal select { width: 100%; padding: 9px 10px; font-size: 15px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
   .pf-board li.me { font-weight: 700; }
   .favcol { font-size: 12px; color: var(--muted); white-space: nowrap; }
   @media (max-width: 560px) { .pf-grid { grid-template-columns: 1fr; } .pf-big { font-size: 34px; } }
@@ -614,8 +628,13 @@
   <div class="fp-bar" id="fp-bar" role="tablist" aria-label="Favorites profiles"></div>
   <div id="fp-banner"></div>
   <div class="fp-head" id="fp-head"></div>
+  <div class="fp-tabs" id="fp-tabs" role="tablist" aria-label="Favorites sections">
+    <button type="button" class="fp-pill" role="tab" data-fptab="portfolio">📈 Portfolio</button>
+    <button type="button" class="fp-pill" role="tab" data-fptab="challenge">🏆 Challenge · <bdi>تحدي</bdi></button>
+  </div>
   <div id="fp-portfolio"></div>
-  <div class="card">
+  <div id="fp-challenge" hidden></div>
+  <div class="card" id="fp-table-card">
     <table data-table="favorites">
       <thead>
         <tr>
@@ -636,6 +655,7 @@
       <tbody id="fav-body"></tbody>
     </table>
   </div>
+  <div id="ch-board"></div>
   </section>
 
   <section class="view" id="view-queue" role="tabpanel" aria-labelledby="tab-queue" hidden>
@@ -927,6 +947,7 @@
     await loadMyFavs();
     await fpFetchView();
     renderFavorites();
+    chLoad();
   }
   async function fpFetchView() {
     fpData = null;
@@ -1215,6 +1236,148 @@
       });
   }
 
+  // ---- Paper Trading Challenge: $300 virtual cash for 7 or 14 days per
+  // profile (challenge.py). Viewing is open to all; trading needs the
+  // profile's session (or its PIN, asked in the dialog when the session expired).
+  let fpTab = store("favTab", "portfolio");
+  let chData = null, chBoard = null;
+  const usd2 = v => v == null ? "—" : (v < 0 ? "−$" : "$") + Math.abs(v).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const pctCls = v => v == null || Math.abs(v) < 0.05 ? "flat" : v > 0 ? "up" : "down";
+  const pctTxt = v => v == null ? "—" : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(2) + "%";
+  function timeLeft(end) {
+    const ms = new Date(end + (end.endsWith("Z") ? "" : "Z")) - Date.now();
+    if (ms <= 0) return "ending…";
+    const h = Math.floor(ms / 3.6e6);
+    return h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h left` : `${h}h ${Math.floor(ms / 6e4) % 60}m left`;
+  }
+  const chAuthField = () => tokenValid() ? "" : pinInput("pin", "PIN (your session expired)");
+  const chAuth = f => tokenValid() ? {session_token: myProfile.token} : {pin: f.pin.value};
+  async function chLoad() {
+    if (!fpView) { chData = chBoard = null; return renderChallenge(); }
+    const [st, bd] = await Promise.all([
+      api("GET", `/api/challenge/${encodeURIComponent(fpView)}`).catch(e => ({error: e.message})),
+      api("GET", "/api/challenge/leaderboard").catch(() => null)]);
+    chData = st; chBoard = bd;
+    renderChallenge();
+  }
+  function renderChallenge() {
+    document.querySelectorAll("#fp-tabs [data-fptab]").forEach(b => {
+      const on = b.dataset.fptab === fpTab;
+      b.classList.toggle("on", on); b.setAttribute("aria-selected", on);
+    });
+    const ch = fpTab === "challenge";
+    document.getElementById("fp-portfolio").hidden = ch;
+    document.getElementById("fp-table-card").hidden = ch;
+    const box = document.getElementById("fp-challenge");
+    box.hidden = !ch;
+    box.innerHTML = ch && fpView ? challengeCard(chData, ownsView()) : "";
+    document.getElementById("ch-board").innerHTML = chBoardCard(chBoard);
+  }
+  function challengeCard(d, mine) {
+    if (!d) return `<div class="pf"><div class="pf-sub">Loading the challenge…</div></div>`;
+    if (d.error) return `<div class="pf"><div class="pf-sub">${esc(d.error)}</div></div>`;
+    const c = d.challenge;
+    if (!c) return `<div class="pf"><h3>🏆 Paper Trading Challenge</h3>
+      <div class="pf-big">${usd2(d.starting_capital)}</div>
+      <div class="pf-sub">Virtual cash to trade Active coins for 7 or 14 days. No top-ups; the result is locked at the end and ranked on the leaderboard below.</div>
+      ${mine ? `<div class="ch-actions"><button type="button" class="btn primary" data-ch="start" data-days="7">▶ Start · 7 days</button>
+        <button type="button" class="btn primary" data-ch="start" data-days="14">▶ Start · 14 days</button></div>`
+        : `<div class="pf-sub" style="margin-top:8px">${esc(fpView)} hasn't started a challenge.</div>`}</div>`;
+    const live = c.status === "active", can = mine && live;
+    const open = c.positions.filter(p => p.status === "open"), closed = c.positions.filter(p => p.status !== "open");
+    const coinCell = p => `<a data-open="${esc(p.contract)}">${esc(p.coin_name)}</a>${p.coin_status !== "active" ? ` <span class="pf-sub">(${esc(p.coin_status)})</span>` : ""}`;
+    const openRows = open.map(p => `<tr><td>${coinCell(p)}</td><td class="num">${fmtPrice(p.entry_price)}</td><td class="num">${fmtPrice(p.current_price)}</td>
+      <td class="num">${usd2(p.entry_amount_usd)}</td><td class="num">${usd2(p.value)}</td><td class="num"><span class="pnl ${pctCls(p.pnl_pct)}">${pctTxt(p.pnl_pct)}</span></td>
+      <td class="num">${can ? `<button type="button" class="btn" data-ch="sell" data-id="${p.id}">Sell</button>` : ""}</td></tr>`).join("");
+    const closedRows = closed.map(p => `<tr><td>${coinCell(p)}</td><td class="num">${fmtPrice(p.entry_price)} → ${fmtPrice(p.exit_price)}</td>
+      <td class="num">${usd2(p.entry_amount_usd)}</td><td class="num"><span class="pnl ${pctCls(p.pnl_usd)}">${usd2(p.pnl_usd)} (${pctTxt(p.pnl_pct)})</span></td>
+      <td>${p.status === "auto_closed" ? "auto-closed at the end" : "sold"} · ${esc(perfDay(p.exit_date.slice(0, 10)))}</td></tr>`).join("");
+    return `<div class="pf ${pctCls(c.pnl_pct)}">
+      <div class="pf-top"><div><h3>🏆 Paper Trading Challenge${mine ? "" : " · " + esc(fpView)}
+          <span class="ch-badge ${live ? "live" : "ended"}">${live ? "Running" : "Challenge ended"}</span></h3>
+        <div class="pf-big">${usd2(c.balance)}</div>
+        <div class="pf-sub">${live ? "Balance now" : "Final balance"} · ${pctTxt(c.pnl_pct)} vs ${usd2(d.starting_capital)} · ${c.duration_days}-day challenge ·
+          ${live ? esc(timeLeft(c.end_date)) : "ended " + esc(perfDay(c.end_date.slice(0, 10)))}</div></div></div>
+      <div class="pf-grid">
+        <div class="pf-cell">Available cash<b>${usd2(c.cash)}</b></div>
+        <div class="pf-cell">Invested<b>${usd2(c.invested)}</b></div>
+        <div class="pf-cell">Open P&amp;L<b class="pnl ${pctCls(c.unrealized_pnl)}">${usd2(c.unrealized_pnl)}</b></div>
+        <div class="pf-cell">Realized P&amp;L<b class="pnl ${pctCls(c.realized_pnl)}">${usd2(c.realized_pnl)}</b></div>
+      </div>
+      ${mine ? `<div class="ch-actions"><button type="button" class="btn primary" data-ch="trade"${live && c.cash >= 1 ? "" : " disabled"}>+ New trade</button></div>` : ""}
+      <div class="ch-sub">Open positions (${open.length})</div>
+      ${open.length ? `<div class="ch-table"><table><thead><tr><th>Coin</th><th class="num">Bought at</th><th class="num">Now</th><th class="num">Invested</th>
+        <th class="num">Value</th><th class="num">P&amp;L</th><th></th></tr></thead><tbody>${openRows}</tbody></table></div>`
+        : `<div class="pf-sub">${live ? "No open positions." : "None — everything was closed at the end."}</div>`}
+      <div class="ch-sub">Closed positions (${closed.length})</div>
+      ${closed.length ? `<div class="ch-table"><table><thead><tr><th>Coin</th><th class="num">Entry → exit</th><th class="num">Invested</th>
+        <th class="num">P&amp;L</th><th>How</th></tr></thead><tbody>${closedRows}</tbody></table></div>` : `<div class="pf-sub">No closed trades yet.</div>`}
+      <div class="pf-sub" style="margin-top:10px">Prices = the hourly live price shown on the site (no fees, no slippage).</div>
+      ${mine ? `<div class="ch-actions"><button type="button" class="btn danger" data-ch="reset">↺ Reset challenge</button></div>` : ""}</div>`;
+  }
+  function chBoardCard(b) {
+    if (!b || !b.rows || !b.rows.length) return "";
+    const medal = r => ["🥇", "🥈", "🥉"][r.rank - 1] || r.rank;
+    const rows = b.rows.map(r => `<tr class="${fpView && r.profile.toLowerCase() === fpView.toLowerCase() ? "me" : ""}"><td class="rank">${medal(r)}</td>
+      <td>${esc(r.profile)}</td><td class="num">#${r.challenge_id}</td><td class="num">${usd2(r.starting_capital)}</td><td class="num"><b>${usd2(r.balance)}</b></td>
+      <td class="num"><span class="pnl ${pctCls(r.pnl_pct)}">${pctTxt(r.pnl_pct)}</span></td><td class="num">${r.trades}</td>
+      <td>${r.status === "active" ? `<span class="ch-badge live">running</span> ${esc(timeLeft(r.end_date))}` : `<span class="ch-badge ended">ended</span>`}</td></tr>`).join("");
+    const fame = (t, label) => t ? `<div class="pf-cell">${label}<b>${esc(t.coin_name)} <span class="pnl ${pctCls(t.pnl_pct)}">${pctTxt(t.pnl_pct)}</span></b>
+      <span class="pf-sub">by ${esc(t.profile)} · ${fmtPrice(t.entry_price)} → ${fmtPrice(t.exit_price)}</span></div>` : `<div class="pf-cell">${label}<b>—</b></div>`;
+    return `<div class="card" style="margin-top:12px;padding:14px 16px"><h3 style="margin:0 0 8px">🏆 Challenge leaderboard</h3>
+      <div class="ch-table"><table><thead><tr><th class="rank">#</th><th>Profile</th><th class="num">Challenge</th><th class="num">Start</th>
+        <th class="num">Balance</th><th class="num">P&amp;L</th><th class="num">Trades</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="ch-sub">Hall of Fame</div><div class="ch-fame">${fame(b.best_trade, "🚀 Best trade")}${fame(b.worst_trade, "💀 Worst trade")}</div></div>`;
+  }
+  document.getElementById("fp-tabs").addEventListener("click", e => {
+    const b = e.target.closest("[data-fptab]");
+    if (!b) return;
+    fpTab = b.dataset.fptab; save("favTab", fpTab);
+    renderChallenge();
+    if (fpTab === "challenge" && !chData) chLoad();
+  });
+  async function chDone(d, msg) { chData = d; await chLoad(); toast(msg); }
+  document.getElementById("fp-challenge").addEventListener("click", e => {
+    const a = e.target.closest("a[data-open]");
+    if (a) { backTo = "favorites"; document.getElementById("back").textContent = "← Back to Favorites"; return showView("coin/" + encodeURIComponent(a.dataset.open)); }
+    const b = e.target.closest("[data-ch]");
+    if (!b || b.disabled || !myProfile) return;
+    const name = myProfile.name, c = chData && chData.challenge;
+    if (b.dataset.ch === "start") {
+      const days = +b.dataset.days;
+      modal(`<h3>Start a ${days}-day challenge?</h3><p>${usd2(300)} of virtual cash, no top-ups. The result is locked after ${days} days.</p>${chAuthField()}
+        <div class="row"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Start</button></div>`,
+        async (f, close) => { const d = await api("POST", "/api/challenge/start", {profile: name, duration_days: days, ...chAuth(f)}); close(); await chDone(d, "Challenge started — good luck!"); });
+    } else if (b.dataset.ch === "trade") {
+      const coins = (activeData ? activeData.coins : []).slice().sort((x, y) => x.name.localeCompare(y.name));
+      const label = x => `${x.name}${x.symbol ? " (" + x.symbol + ")" : ""} · ${x.chain}`;
+      modal(`<h3>+ New trade</h3><p>Buy an Active coin at its current price. Available: <b>${usd2(c.cash)}</b>.</p>
+        <label for="ch-coin">Coin</label><input id="ch-coin" name="coin" list="ch-coins" autocomplete="off" placeholder="Type to search" required>
+        <datalist id="ch-coins">${coins.map(x => `<option value="${esc(label(x))}"></option>`).join("")}</datalist>
+        <label for="ch-amt">Amount ($)</label><input id="ch-amt" name="amount" type="number" min="1" max="${c.cash}" step="0.01" required>
+        <p style="margin-top:6px"><a class="fp-link" data-max>Use all ${usd2(c.cash)}</a></p>${chAuthField()}
+        <div class="row"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Buy</button></div>`,
+        async (f, close) => {
+          const coin = coins.find(x => label(x) === f.coin.value.trim());
+          if (!coin) throw new Error("Pick a coin from the list.");
+          const d = await api("POST", "/api/challenge/buy", {profile: name, contract: coin.contract, amount_usd: +f.amount.value, ...chAuth(f)});
+          close(); await chDone(d, `Bought ${usd2(+f.amount.value)} of ${coin.name}.`);
+        });
+      const mx = document.querySelector(".modal [data-max]");
+      if (mx) mx.addEventListener("click", () => { document.getElementById("ch-amt").value = c.cash; });
+    } else if (b.dataset.ch === "sell") {
+      const p = c.positions.find(x => x.id === +b.dataset.id);
+      modal(`<h3>Sell ${esc(p.coin_name)}?</h3><p>At the current price (~${fmtPrice(p.current_price)}): ${usd2(p.value)}, P&amp;L ${usd2(p.pnl_usd)} (${pctTxt(p.pnl_pct)}).</p>${chAuthField()}
+        <div class="row"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Sell</button></div>`,
+        async (f, close) => { const d = await api("POST", "/api/challenge/sell", {profile: name, position_id: p.id, ...chAuth(f)}); close(); await chDone(d, `Sold ${p.coin_name}.`); });
+    } else if (b.dataset.ch === "reset") {
+      modal(`<h3>↺ Reset challenge?</h3><p>This can't be undone. All positions and history are deleted and the balance goes back to ${usd2(300)}.
+        Your favorites and portfolio stay. Enter the PIN to confirm.</p>${pinInput("pin", "PIN")}
+        <div class="row"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn danger">Reset</button></div>`,
+        async (f, close) => { const d = await api("POST", "/api/challenge/reset", {profile: name, pin: f.pin.value}); close(); await chDone(d, "Challenge reset."); });
+    }
+  });
+
   // A favorite whose coin was deleted from our database: last known data, greyed.
   function delistedFavRow(f) {
     const when = f.delisted_at ? " on " + perfDay(f.delisted_at) : "";
@@ -1266,6 +1429,7 @@
          <button type="button" data-act="signout">Sign out here</button><button type="button" data-act="delete">Delete profile</button>`
       : `<span>Viewing ${esc(fpView)}'s favorites (view only).</span><button type="button" data-act="claim">🔑 This is my profile</button>`;
     document.getElementById("fp-portfolio").innerHTML = fpData ? portfolioCard(fpData.portfolio, mine) : "";
+    renderChallenge();
     if (!fpData) { body.innerHTML = '<tr><td colspan="12" class="empty">Loading…</td></tr>'; return; }
     if (!fpData.coins.length) {
       body.innerHTML = `<tr><td colspan="12" class="empty">${mine ? "No favorites yet — click the ☆ star next to any coin to add it here." : esc(fpView) + " hasn't added any favorites yet."}</td></tr>`;

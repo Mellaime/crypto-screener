@@ -280,6 +280,18 @@ def main():
                          f"skipped {st['insane']}). Live prices fall back to the daily price after 90 min."))
         except Exception as e:
             print(f"Telegram alert not sent ({type(e).__name__})")
+    # Paper Trading Challenge: refresh open positions' last price and end
+    # expired challenges, from the prices just stored (no API calls).
+    try:
+        from database import SessionLocal
+        from challenge import hourly_update
+        s = SessionLocal()
+        try:
+            print(f"Challenges: {hourly_update(s)} ended this run.")
+        finally:
+            s.close()
+    except Exception as e:
+        print(f"Challenge update skipped ({type(e).__name__})")
     return 0                                  # never fail the workflow (no Actions spam)
 
 
