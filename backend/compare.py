@@ -5,10 +5,10 @@ compare.py
 no API calls (the same tables the Active table and detail page read):
 
   price / market cap / volume / liquidity  latest daily snapshot
-  score, vol/liq, vol/mcap                 scoring.score_snapshot (as the table)
+  score, vol/liq, vol/mcap                 the daily run's stored score (as the table)
   rank                                     position in the Active table (active only)
   entry zone                               entry_zone.get_entry_zone (stored history)
-  price position (60 days)                 scoring.score_inputs price_pos (Price Cheapness)
+  price position (60 days)                 the Entry Zone's position (stored daily closes)
   volume spike                             volume_anomaly (last 7 days)
   holders + weekly change                  daily snapshots
   revenue 30d                              revenue_cache (last saved; never fetched here)
@@ -124,7 +124,7 @@ def _ranks(session):
 def build(session, tokens):
     """The /api/compare payload (stored data only)."""
     from main import latest_snapshot
-    from scoring import score_snapshot, previous_scores
+    from scoring import display_ratios, score_changes
     from entry_zone import get_entry_zone, ZONE_RANK, ZONES as ZONE_LABEL
     from volume_anomaly import get_recent_spike
     from listings import get_listings, _tickers
@@ -142,15 +142,12 @@ def build(session, tokens):
             continue
         seen.add(c.id)
         snap = latest_snapshot(session, c.id)
-        from scoring import stored_score_inputs
-        inp = (stored_score_inputs(session, [c], {c.id: snap.date}).get(c.id) if snap else None) or {}
-        # Score + ratios exactly as the Active table computes them (a dropped
-        # coin: from its last snapshot, no delta / rank).
-        b = score_snapshot(snap, c, inp) if snap else None
-        prev = previous_scores(session, {c.id: snap.date}).get(c.id) if snap and c.status == "active" else None
-        score = {"total": b["total"] if b else None,
-                 "delta": round(b["total"] - prev, 1) if b and prev is not None else None}
-        vol_liq, vol_mcap = (b or {}).get("vol_liq_ratio"), (b or {}).get("vol_mcap_pct")
+        # Score exactly as the Active table shows it: the daily run's stored
+        # score and change (active coins only).
+        active = c.status == "active"
+        score = {"total": snap.score if snap and active else None,
+                 "delta": score_changes(session, [c.id]).get(c.id, (None, None))[1] if active else None}
+        vol_liq, vol_mcap = display_ratios(snap)
         mcap, liq, vol = (snap.mcap, snap.liquidity, snap.volume) if snap else (None, None, None)
         ez = get_entry_zone(session, c)
         zone = ez.get("zone") if ez.get("status") == "ok" else None
@@ -164,7 +161,7 @@ def build(session, tokens):
             "volume_24h": vol, "vol_liq_ratio": vol_liq, "vol_mcap_pct": vol_mcap, "liquidity": liq,
             "entry_zone": {"zone": zone, "label": ZONE_LABEL.get(zone) if zone else None,
                            "rank": ZONE_RANK.get(zone) if zone else None},
-            "price_position_pct": inp.get("price_pos"),
+            "price_position_pct": ez.get("position_pct") if ez.get("status") == "ok" else None,
             "volume_spike": get_recent_spike(session, c.id),
             "holders": _holders(session, c.id),
             "revenue_30d": _revenue_30d(session, c),

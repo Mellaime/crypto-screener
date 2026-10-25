@@ -421,7 +421,7 @@ def run_check(contract):
                         {"status": "unknown", "reason": "CoinGecko doesn't list this contract"},
         # Entry Zone (Codex daily bars; no holders history for an unlisted coin).
         "entry_zone": ez,
-        "score": check_score(dex_rec, mcap, ez, contract, chain, liq, daily),
+        "score": check_score(md, mcap, ez, contract, chain, liq, daily, _num(dex_rec.get("liquidity_usd"))),
         "supply": check_supply(md),
         # Futures Data (Coinalyze OI / funding / long-short; nothing stored).
         "futures": f_fut.result(),
@@ -485,11 +485,11 @@ def summarize(r):
     else:
         parts.append(f"لا توجد بيانات إيرادات (لا يتتبّعه {llama}).")
     sc = r.get("score") or {}
-    if sc.get("max_computable"):
-        tot, mx = sc["total"], sc["max_computable"]
-        if tot >= 60:
+    if sc.get("full_max"):
+        tot, mx = sc["total"], sc["full_max"]
+        if tot >= 32:                      # the site's green badge (about the top 20%)
             parts.append(f"تقدير النقاط مرتفع ({_ltr(f'{tot}/{mx}')})."); plus += 1
-        elif tot < 30:
+        elif tot < 15:                     # red badge (about the bottom 40%)
             parts.append(f"تقدير النقاط منخفض ({_ltr(f'{tot}/{mx}')}) — إشارات الشراء ضعيفة حالياً."); minus += 1
     vd = r["verdict"]
     parts.append("يجتاز خطوات الفلتر السبع كلها." if vd["passes"] else
@@ -508,65 +508,67 @@ def summarize(r):
     return " ".join(parts), opinion + " هذا وصف للبيانات على السلسلة فقط — وليس نصيحة مالية."
 
 
-def check_score(dex_rec, mcap, ez, contract, chain, liq, daily):
-    """Score for an untracked coin, from the SAME data sources as the detail
-    page's score (scoring.py) - 5 of the 6 parts, all from data the check
-    already fetched (no extra API calls):
-      Volume/Liquidity = DexScreener 24h volume / DexScreener liquidity
-      Volume/MCap      = DexScreener 24h volume / global market cap
-      Liq. Growth      = Codex daily liquidity, today vs 7 days ago (the
-                         filter step's own series; scoring._change_over).
-                         NOT the filter's own % - that is over 30 days.
-      Price Cheapness  = position in the 60-day price range (Entry Zone)
-      Buyers           = Codex daily buy / sell volume, last 15 complete
-                         days (the Transactions chart's bars)
-      Rank Change      = needs weekly tracking -> not available.
-    Fix 4 as on the detail page: Codex unreliable for the coin (> 10x
-    DexScreener) -> no Liq. Growth / Buyers from Codex. A part without data
-    is unavailable and leaves max_computable."""
-    from scoring import (score_vol_liq, score_vol_mcap, score_cheapness, score_liquidity_growth,
-                         score_buyers, _change_over, BUYERS_DAYS, BUYERS_MIN_DAYS)
+def check_score(md, mcap, ez, contract, chain, liq, daily, dex_liq):
+    """The V3 score for any coin, with the SAME point functions as the daily
+    score (scoring.py), from data the check already fetched (no extra API
+    calls). Live here: turnover (CoinGecko all-exchange volume / market cap),
+    15-day buyers (Codex daily bars), 7-day liquidity growth (Codex daily
+    liquidity, the filter step's series), price cheapness and structure
+    (our stored daily closes for a tracked coin, else the live Entry Zone
+    position). Not available live (need our daily history): quiet
+    absorption, holder growth / velocity, rank change - these take the
+    latest daily run's median, as a tracked coin's missing parts do.
+    Fix 4: Codex unreliable for the coin (> 10x DexScreener) -> no buyers /
+    liquidity from Codex."""
+    import scoring as S
+    from database import SessionLocal
     from liquidity_check import get_liquidity_series, codex_unreliable
-    volume, liquidity = _num(dex_rec.get("volume_24h")), _num(dex_rec.get("liquidity_usd"))
-    unreliable = codex_unreliable(liq.get("today_liq"), liquidity)
-    parts = []
-
-    def part(label, mx, pts=None, detail=None, reason=None):
-        ok = pts is not None
-        parts.append({"label": label, "pts": pts if ok else None, "max": mx, "available": ok,
-                      "detail": detail if ok else reason})
-
-    vl_pts, vl_ratio = score_vol_liq(volume, liquidity)
-    part("Volume/Liquidity", 25, vl_pts if vl_ratio is not None else None,
-         f"{vl_ratio:.2f}x" if vl_ratio is not None else None, "no DexScreener volume / liquidity")
-    vm_pts, vm_pct = score_vol_mcap(volume, mcap)
-    part("Volume/MCap", 15, vm_pts if vm_pct is not None else None,
-         f"{vm_pct:.1f}%" if vm_pct is not None else None, "no volume / market cap")
-    # Liquidity growth: the same Codex daily series the filter step read
-    # (cached in this process - no new request), today vs 7 days ago.
-    growth = None if unreliable else _change_over(get_liquidity_series(contract, chain) or [])
-    part("Liq. Growth", 15, score_liquidity_growth(growth) if growth is not None else None,
-         f"{growth:+.1f}% over 7 days" if growth is not None else None,
-         "Codex unreliable for this coin" if unreliable else "not enough liquidity history")
-    # A coin we already track: the SAME stored 60-day closes and function as
-    # its detail page score (the run's daily price), so both pages agree.
-    # Otherwise the live Entry Zone (Codex's price right now).
-    stored = _stored_price_pos(contract)
-    pos = stored if stored is not None else (
+    stored = _stored_score(contract)
+    if stored is not None:          # an active coin we score daily: exactly its stored score
+        return stored
+    unreliable = codex_unreliable(liq.get("today_liq"), dex_liq)
+    raw, detail = {}, {}
+    vol = ((md or {}).get("total_volume") or {}).get("usd")
+    turnover = vol / mcap * 100 if vol and mcap else None
+    raw["turnover"] = S.pts_turnover(turnover)
+    detail["turnover"] = f"{turnover:.2f}% of market cap traded (all exchanges, 24h)" if turnover is not None else None
+    bars = [b for b in ((daily or {}).get("bars") or []) if b.get("buy_volume") is not None][-S.BUYERS_DAYS:]
+    if len(bars) >= S.BUYERS_MIN_DAYS and not unreliable:
+        raw["buyers"], ratio = S.pts_buyers(sum(b["buy_volume"] for b in bars), sum(b["sell_volume"] or 0 for b in bars),
+                                            sum(b.get("buys") or 0 for b in bars), sum(b.get("sells") or 0 for b in bars))
+        detail["buyers"] = (f"buy/sell {ratio:.2f} over {len(bars)} days" if ratio is not None
+                            else f"under ${S.BUYERS_MIN_USD:,} traded in {len(bars)} days")
+    else:
+        raw["buyers"] = None
+        detail["buyers"] = "Codex unreliable for this coin" if unreliable else "not enough trade history"
+    pct, base = (None, None) if unreliable else S.change_over(get_liquidity_series(contract, chain) or [])
+    raw["liquidity"] = S.pts_liquidity(pct, base)
+    detail["liquidity"] = (f"{min(pct, S.LIQ_CAP):+.1f}% over 7 days" if raw["liquidity"] is not None
+                           else "Codex unreliable for this coin" if unreliable else
+                           f"starting liquidity under ${S.LIQ_MIN_BASE:,}" if base is not None else "not enough liquidity history")
+    closes = _stored_closes(contract)
+    pos = S.price_position(closes) if closes else (
         ez.get("position_pct") if isinstance(ez, dict) and ez.get("status") == "ok" else None)
-    part("Price Cheapness", 20, score_cheapness(pos) if pos is not None else None,
-         (f"{pos:.0f}% of the 60-day range" + (" (tracked)" if stored is not None else ""))
-         if pos is not None else None, "not enough price history")
-    bars = [b for b in ((daily or {}).get("bars") or []) if b.get("buy_volume") is not None][-BUYERS_DAYS:]
-    buy, sell = sum(b["buy_volume"] for b in bars), sum(b["sell_volume"] for b in bars)
-    ratio = buy / sell if sell and len(bars) >= BUYERS_MIN_DAYS and not unreliable else None
-    part("Buyers", 20, score_buyers(ratio) if ratio is not None else None,
-         f"buy/sell {ratio:.2f} ({len(bars)}d)" if ratio is not None else None,
-         "Codex unreliable for this coin" if unreliable else "not enough trade history")
-    part("Rank Change", 5, None, None, "needs weekly tracking")
-    avail = [p for p in parts if p["available"]]
-    return {"total": sum(p["pts"] for p in avail), "max_computable": sum(p["max"] for p in avail),
-            "full_max": 100, "parts": parts}
+    raw["cheapness"], raw["structure"] = S.pts_cheapness(pos), (S.pts_structure(closes) if closes else None)
+    detail["cheapness"] = f"{pos:.0f}% of the 60-day range" + (" (tracked)" if closes else "") if pos is not None else None
+    if raw["structure"] is not None:
+        detail["structure"] = ("higher low or steady 7-day trend, under 70% of the range" if raw["structure"]
+                               else "no higher low or steady 7-day trend, or above 70% of the range")
+    for k in ("absorption", "holders", "holder_vel", "rank_change"):
+        raw[k] = None
+    raw = S.anti_chase(raw, (md or {}).get("price_change_percentage_24h"))
+    session = SessionLocal()
+    try:
+        med = S.latest_medians(session)
+    finally:
+        session.close()
+    filled, missing = S.fill(raw, {k: med.get(k, 0) for k, *_ in S.PARTS})
+    parts = [{"label": label, "pts": round(filled[col], 1), "max": mx, "available": col not in missing,
+              "detail": detail.get(col) if col not in missing else (detail.get(col) or "needs our daily history")
+              + " - tracked coins' median used"}
+             for col, label, _, mx in S.PARTS]
+    return {"total": round(sum(filled.values()), 1), "full_max": S.MAX_TOTAL, "parts": parts,
+            "median_parts": len(missing)}
 
 
 def _stored_entry_zone(contract):
@@ -593,20 +595,50 @@ def _stored_entry_zone(contract):
         session.close()
 
 
-def _stored_price_pos(contract):
-    """Price position (%) from our stored daily history when the contract is
-    a coin we track (active / dropped) - exactly scoring.score_inputs()'s
-    price_pos, i.e. what its detail page scores. None if untracked or no
-    stored history. Never raises."""
+def _stored_score(contract):
+    """The daily run's score (score_history, latest V3 row) for an ACTIVE coin
+    we track - so Check a Coin shows the same score as the Active table and
+    detail page. None otherwise. Never raises."""
+    import scoring as S
     from sqlalchemy import func
     from database import SessionLocal
-    from models import Coin
-    from scoring import score_inputs
+    from models import Coin, ScoreHistory
+    session = SessionLocal()
+    try:
+        coin = (session.query(Coin).filter(func.lower(Coin.contract) == (contract or "").lower(),
+                                           Coin.status == "active").first())
+        h = (session.query(ScoreHistory).filter(ScoreHistory.coin_id == coin.id, ScoreHistory.missing.isnot(None))
+             .order_by(ScoreHistory.recorded_at.desc()).first()) if coin else None
+        if h is None:
+            return None
+        missing = set(filter(None, h.missing.split(",")))
+        parts = [{"label": label, "pts": round(getattr(h, col), 1), "max": mx, "available": col not in missing,
+                  "detail": f"daily run {h.recorded_at:%b %d}" + (" - no data, active coins' median used" if col in missing else "")}
+                 for col, label, _, mx in S.PARTS]
+        return {"total": round(h.score, 1), "full_max": S.MAX_TOTAL, "parts": parts, "median_parts": len(missing),
+                "tracked": True}
+    except Exception:
+        session.rollback()
+        return None
+    finally:
+        session.close()
+
+
+def _stored_closes(contract):
+    """Our stored daily closes (entry_zone_bars, Codex) when the contract is a
+    coin we track (active / dropped) - what its daily score uses. None if
+    untracked or no stored history. Never raises."""
+    import json
+    from sqlalchemy import func
+    from database import SessionLocal
+    from models import Coin, EntryZoneBars
     session = SessionLocal()
     try:
         coin = (session.query(Coin).filter(func.lower(Coin.contract) == (contract or "").lower(),
                                            Coin.status.in_(["active", "dropped"])).first())
-        return score_inputs(session, [coin])[coin.id]["price_pos"] if coin else None
+        row = (session.query(EntryZoneBars).filter_by(chain=(coin.chain or "").lower(), contract=coin.contract.lower())
+               .first()) if coin else None
+        return [b[1] for b in json.loads(row.data)["bars"] if b[1]] if row else None
     except Exception:
         session.rollback()
         return None
@@ -636,7 +668,7 @@ def rules_signature():
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
             "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike"
-            "|liq3src|liq3k")   # result layout: has these display sections
+            "|liq3src|liq3k|score-v3")   # result layout: has these display sections
 
 
 def get_check(session, contract):

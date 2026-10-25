@@ -222,7 +222,7 @@ def _catch_up_categories(coins):
 def run_daily_tracking():
     """Record today's Codex readings + dashboard numbers for active + dropped."""
     from fetch_dexscreener import fetch_pairs_for_candidates, build_token_records
-    from discovery import LAST_MCAPS, LAST_SUPPLY
+    from discovery import LAST_MCAPS, LAST_SUPPLY, LAST_VOLUMES
 
     now = utcnow()
     today = date.today()
@@ -324,6 +324,8 @@ def run_daily_tracking():
             prev = (session.query(DailySnapshot)
                     .filter(DailySnapshot.coin_id == coin.id, DailySnapshot.date < today)
                     .order_by(DailySnapshot.date.desc()).first())
+            if LAST_VOLUMES.get(key):
+                snap.total_volume = LAST_VOLUMES[key]      # all-exchange 24h volume (score)
             if LAST_MCAPS.get(key):
                 snap.mcap = LAST_MCAPS[key]
                 stats["mcap_discovery"] += 1

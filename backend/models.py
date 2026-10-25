@@ -141,6 +141,9 @@ class DailySnapshot(Base):
     codex_liquidity = Column(Float)
     codex_volume24 = Column(Float)
     birdeye_liquidity = Column(Float)   # Birdeye's reading that day (liquidity_verify.py)
+    # ALL-EXCHANGE 24h volume (CoinGecko, CMC fallback; discovery.LAST_VOLUMES)
+    # - the score's turnover and quiet absorption (scoring.py).
+    total_volume = Column(Float)
     # The 3-source majority liquidity computed that day (liquidity_verify) -
     # the 24-hour crash rule compares today's with yesterday's.
     majority_liquidity = Column(Float)
@@ -538,13 +541,23 @@ class ScoreHistory(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     coin_id = Column(Integer, nullable=False, index=True)
     score = Column(Float, nullable=False)
-    # The score's 6 parts that day (NULL on rows saved before they existed).
-    vol_liq = Column(Float)        # Volume / Liquidity (max 25)
-    vol_mcap = Column(Float)       # Volume / Market cap (max 15)
-    liq_growth = Column(Float)     # Liquidity growth 7d (max 15)
-    cheapness = Column(Float)      # Price cheapness (max 20)
-    buyers = Column(Float)         # Buyers volume (max 20)
-    rank_change = Column(Float)    # Rank change (max 5)
+    # The score's 9 parts that day (scoring.PARTS; median-filled), and the
+    # parts that had no data (comma-separated, "" = none; NULL = a row from
+    # before the V3 score, whose parts are not comparable).
+    turnover = Column(Float)       # all-exchange turnover (max 20)
+    absorption = Column(Float)     # quiet absorption (max 10)
+    buyers = Column(Float)         # 15-day buyers (max 25)
+    holders = Column(Float)        # 7-day holder growth (max 15)
+    holder_vel = Column(Float)     # holder velocity (max 5)
+    liquidity = Column(Float)      # 7-day liquidity growth (max 10)
+    structure = Column(Float)      # price structure (max 5)
+    rank_change = Column(Float)    # rank change (max 5)
+    cheapness = Column(Float)      # price cheapness (max 5)
+    missing = Column(String)
+    # Parts of the old score (rows before V3 only).
+    vol_liq = Column(Float)
+    vol_mcap = Column(Float)
+    liq_growth = Column(Float)
     recorded_at = Column(Date, nullable=False, index=True)
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
@@ -759,29 +772,6 @@ class FavoritePinAttempt(Base):
     ip = Column(String(64), nullable=False, index=True)
     ok = Column(Boolean, nullable=False, default=False)
     at = Column(DateTime, nullable=False, default=utcnow, index=True)
-
-
-class ScoreInputsCache(Base):
-    """
-    Each active coin's stored-data score inputs (scoring.score_inputs():
-    60-day price position, 7-day liquidity growth + its source, buy / sell
-    ratio + days), saved by the daily scoring step. The Active table reads
-    these instead of re-reading every coin's 90-day Entry Zone history (~1.3
-    MB of Supabase egress per page load). day = the snapshot day they were
-    computed for; a row whose day isn't the coin's latest snapshot day is
-    ignored (recomputed), so the numbers never go stale.
-    """
-    __tablename__ = "score_inputs_cache"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    coin_id = Column(Integer, nullable=False, unique=True, index=True)
-    day = Column(Date, nullable=False)
-    price_pos = Column(Float)
-    liq_growth = Column(Float)
-    liq_source = Column(String)
-    buy_sell = Column(Float)
-    buy_sell_days = Column(Integer)
-    updated_at = Column(DateTime, nullable=False, default=utcnow)
 
 
 class UnlocksDisplayCache(Base):
