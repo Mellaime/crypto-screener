@@ -220,6 +220,17 @@ _NEW_COLUMNS += [
 ]
 
 
+# Burned supply (burn_detector.py) - nullable, display only.
+_NEW_COLUMNS += [
+    ("coins", "burned_amount", "FLOAT", None),
+    ("coins", "burned_pct", "FLOAT", None),
+    ("coins", "burn_status", "VARCHAR", None),
+    ("coins", "burn_frequency", "VARCHAR", None),
+    ("coins", "last_burn_at", "TIMESTAMP", None),
+    ("coins", "burn_checked_at", "TIMESTAMP", None),
+]
+
+
 def _add_missing_columns():
     from sqlalchemy import inspect, text
 

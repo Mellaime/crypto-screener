@@ -572,6 +572,7 @@ def get_coin(contract: str):
         from listings import get_listings
         from volume_anomaly import get_recent_spike
         from performance import safe_compute
+        from burn_detector import for_coin as burn_for_coin
         from concurrent.futures import ThreadPoolExecutor
 
         def own_session(fn, *args):
@@ -707,7 +708,7 @@ def get_coin(contract: str):
                 # No max: "no cap" unless CMC says the supply IS capped (then unknown).
                 "uncapped": coin.max_supply is None and coin.supply_uncapped is not False
                             and (coin.total_supply is not None or coin.circulating_supply is not None),
-                "burned": None,             # placeholder - no free source yet
+                "burned": burn_for_coin(coin),   # burn_detector.py, stored by the daily run
                 "upcoming_unlock": None,    # placeholder - needs a paid unlocks API
                 "updated": _iso(coin.supply_updated_at),
             },

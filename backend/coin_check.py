@@ -246,6 +246,8 @@ def run_check(contract):
     from listings import listings_live
     from volume_anomaly import spike_for_contract
     f_lst = pool.submit(listings_live, symbol, price, contract)
+    # Burned supply: stored for a coin we track, else live (Etherscan / public RPC).
+    f_burn = pool.submit(_check_burn, contract, chain, pairs)
     pool.shutdown(wait=False)
 
     steps = []
@@ -422,7 +424,7 @@ def run_check(contract):
         # Entry Zone (Codex daily bars; no holders history for an unlisted coin).
         "entry_zone": ez,
         "score": check_score(md, mcap, ez, contract, chain, liq, daily, _num(dex_rec.get("liquidity_usd"))),
-        "supply": check_supply(md),
+        "supply": {**check_supply(md), "burned": f_burn.result()},
         # Futures Data (Coinalyze OI / funding / long-short; nothing stored).
         "futures": f_fut.result(),
         # Exchange Listings on the 12 monitored exchanges (stored data).
@@ -646,6 +648,25 @@ def _stored_closes(contract):
         session.close()
 
 
+def _check_burn(contract, chain, pairs):
+    """Burned supply: the daily run's stored value for a coin we track, else
+    a live check (EVM only). None when unavailable. Never raises."""
+    import burn_detector
+    from sqlalchemy import func
+    from database import SessionLocal
+    from models import Coin
+    session = SessionLocal()
+    try:
+        coin = (session.query(Coin).filter(func.lower(Coin.contract) == (contract or "").lower(),
+                                           Coin.burn_checked_at.isnot(None)).first())
+        return burn_detector.for_coin(coin) if coin else burn_detector.check(contract, chain, pairs)
+    except Exception:
+        session.rollback()
+        return None
+    finally:
+        session.close()
+
+
 def check_supply(md):
     """Supply section data (same shape as the detail page's) from the
     CoinGecko response already fetched. No API calls."""
@@ -667,7 +688,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike"
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike|burn"
             "|liq3src|liq3k|score-v3")   # result layout: has these display sections
 
 

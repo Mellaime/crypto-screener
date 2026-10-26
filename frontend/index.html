@@ -2217,9 +2217,8 @@
       el.addEventListener("click", e => { e.stopPropagation(); el.classList.contains("on") ? hide() : show(el); });
     });
   }
-  // Supply: total, circulating (+ % of total), max (or "No cap"), and two
-  // placeholder (burned) that shows "—" until we have a source. Unlocks have
-  // their own section (Upcoming Unlocks).
+  // Supply: total, circulating (+ % of total), max (or "No cap") and burned
+  // (burnedRow). Unlocks have their own section (Upcoming Unlocks).
   function fmtSupply(v) {
     if (v == null) return "—";
     const a = Math.abs(v);
@@ -2242,7 +2241,7 @@
     const minting = sp.max != null && sp.total != null && sp.max > sp.total * 1.0001;
     const none = sp.total == null && sp.circulating == null && sp.max == null;
     return `<div class="ratiocard"><h3>Supply</h3>
-      <div class="note">CoinGecko / CoinMarketCap (whole coin, all chains). Updated by the daily run.</div>
+      <div class="note">CoinGecko / CoinMarketCap (whole coin, all chains); Burned: on-chain, this contract. Updated by the daily run.</div>
       ${none ? `<div class="note" style="margin:0 0 10px">No supply data yet - it's filled in by the next daily run.</div>` : ""}
       <ul class="supply">
         <li><span class="lbl">Total supply<small>tokens that exist now</small></span>
@@ -2250,8 +2249,20 @@
         <li><span class="lbl">Circulating supply<small>tokens in circulation</small></span>
             <span class="val"${exact(sp.circulating)}>${fmtSupply(sp.circulating)}${pct}</span></li>
         <li><span class="lbl">Max supply<small>the absolute cap${minting ? " · " + fmtSupply(sp.max - sp.total) + " above total supply" : ""}</small></span>${max}</li>
-        <li class="soon"><span class="lbl">Burned<small>no free source yet</small></span><span class="val">—</span></li>
+        ${burnedRow(sp.burned)}
       </ul></div>`;
+  }
+  // Burned: tokens in the 0x…dEaD / 0x…0000 / 0x…0001 wallets (or _burn()ed),
+  // on-chain via Etherscan or a public RPC (EVM coins only).
+  function burnedRow(b) {
+    const lbl = small => `<span class="lbl">Burned<small>${small}</small></span>`;
+    if (!b) return `<li class="soon">${lbl("EVM coins only · not checked yet")}<span class="val">—</span></li>`;
+    if (b.status === "NO_BURN") return `<li>${lbl("burn wallets · on-chain")}<span class="val">0 <small>No burns</small></span></li>`;
+    const label = {STATIC_PRE_BURN: "One-time burn", ACTIVE_BURN: "Active burn", BUYBACK_AND_BURN: "Buyback &amp; burn"}[b.status] || esc(b.status);
+    const freq = b.frequency && !["NONE", "ONE_TIME"].includes(b.frequency) ? " · " + b.frequency.toLowerCase() : "";
+    const last = b.days_since_last_burn == null ? "" : ` · last ${b.days_since_last_burn === 0 ? "today" : b.days_since_last_burn + "d ago"}`;
+    const pct = b.pct == null ? "" : (b.pct < 0.01 ? "<0.01" : b.pct.toFixed(2)) + "% · ";
+    return `<li>${lbl(label + freq + last)}<span class="val" title="${b.amount == null ? "" : Math.round(b.amount).toLocaleString()}">${pct}${fmtSupply(b.amount)}</span></li>`;
   }
   // Price Range (All-Time): CoinGecko ATH / ATL and where today's price sits
   // between them (0% = at the all-time low, 100% = at the all-time high).

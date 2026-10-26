@@ -63,6 +63,13 @@ class Coin(Base):
     max_supply = Column(Float)
     supply_uncapped = Column(Boolean)       # CMC infinite_supply; None = not said
     supply_updated_at = Column(DateTime)
+    # Burned supply (burn_detector.py, EVM only) - display only.
+    burned_amount = Column(Float)           # tokens in the burn wallets (or _burn()ed)
+    burned_pct = Column(Float)              # % of supply
+    burn_status = Column(String)            # NO_BURN / STATIC_PRE_BURN / ACTIVE_BURN / BUYBACK_AND_BURN
+    burn_frequency = Column(String)         # NONE / ONE_TIME / DAILY / WEEKLY / MONTHLY / IRREGULAR
+    last_burn_at = Column(DateTime)
+    burn_checked_at = Column(DateTime)      # None = never checked
     # X / Twitter handle from CoinGecko (socials.py) - display only.
     twitter_handle = Column(String)         # None = no handle on CoinGecko
     twitter_checked_at = Column(DateTime)   # None = never checked yet
