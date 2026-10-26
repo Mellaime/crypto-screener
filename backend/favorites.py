@@ -24,9 +24,9 @@ Portfolio: each coin keeps its ENTRY PRICE (the price when it was added); a
 coin's P&L = (current price - entry price) / entry price - frozen at the
 last known price once the coin is delisted. The profile's Portfolio
 Performance = the average of those P&Ls (delisted coins included), since
-tracking_since (creation or the last Reset). Coins are LOCKED: the only way
-to remove them is Reset (wipes all coins, restarts tracking_since; always
-needs the PIN).
+tracking_since (creation or the last Reset). A coin can be unstarred any
+time (session or PIN); Reset wipes all coins and restarts tracking_since
+(always needs the PIN).
 """
 
 import re
@@ -262,11 +262,6 @@ def add_coin(session, name, contract, token=None, pin=None, ip="?"):
     return {"added": contract, "coin_id": coin.id}
 
 
-def remove_coin(session, name, coin_ref, token=None, pin=None, ip="?"):
-    """Coins are locked in the portfolio - only Reset removes them."""
-    raise FavError(409, "This coin is locked in your portfolio. Use Reset to start fresh.")
-
-
 def reset_profile(session, name, pin, ip):
     """Wipe all coins and restart the portfolio; always needs the PIN."""
     from models import FavoriteProfileCoin
@@ -278,8 +273,7 @@ def reset_profile(session, name, pin, ip):
     return {"reset": p.name, "removed": n, "tracking_since": p.tracking_since.strftime("%Y-%m-%dT%H:%M:%SZ")}
 
 
-def _remove_coin_unlocked(session, name, coin_ref, token=None, pin=None, ip="?"):
-    """Individual removal from before coins were locked (not exposed)."""
+def remove_coin(session, name, coin_ref, token=None, pin=None, ip="?"):
     from models import FavoriteProfileCoin
     p = _profile(session, name)
     _authorize(session, p, token, pin, ip)
