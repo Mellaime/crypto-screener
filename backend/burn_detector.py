@@ -24,7 +24,7 @@ Classification from the last 10 incoming burn transfers:
                     last burn > 30 days ago (ONE_TIME)
   ACTIVE_BURN       repeated burns, the last within 14 days (or 15-30 days
                     when they recur at least monthly)
-  NO_BURN           nothing burned
+  NO_BURN           nothing burned, or < 0.001% of supply (dust sent by accident)
 Daily job: run_burn_update() stores the result on active EVM coins.
 """
 
@@ -42,6 +42,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 ES_URL = "https://api.etherscan.io/v2/api"
 ES_GAP = 0.24                        # seconds between Etherscan calls (free tier: 5/s)
+DUST_PCT = 0.001                     # burned < 0.001% of supply = NO_BURN (accidental sends)
 BURN_WALLETS = ["0x000000000000000000000000000000000000dEaD",
                 "0x0000000000000000000000000000000000000000",
                 "0x0000000000000000000000000000000000000001"]
@@ -208,11 +209,11 @@ def _summarize(contract, cid, source, bals, supply, decimals, transfers, pair_ad
     real_burn = burned == 0 and bool(transfers)       # _burn(): already subtracted from totalSupply
     if real_burn:
         burned = sum(t["value"] for t in transfers)   # shortcut: only the last 10 transfers are summed
-    if not burned:
+    denom = (supply or 0) + burned if real_burn else supply
+    if not burned or (denom and burned / denom * 100 < DUST_PCT):     # dust sent to a burn wallet isn't a burn
         return {**base, "is_burnable": False, "burn_status": "NO_BURN", "burn_frequency": "NONE",
                 "total_burned_amount": 0.0, "burned_percentage": 0.0, "last_burn_date": None,
                 "days_since_last_burn": None, "burn_addresses_with_balance": []}
-    denom = (supply or 0) + burned if real_burn else supply
     status, freq = classify(transfers, burned, contract, pair_address, pair_created_at, now)
     last = max((t["ts"] for t in transfers), default=None)
     scale = 10 ** decimals

@@ -27,5 +27,8 @@ assert B.classify(tr(3, frm=C.lower()), 1, C)[0] == "BUYBACK_AND_BURN"
 assert B.classify(tr(20, 45, 70), 1, C, now=NOW) == ("ACTIVE_BURN", "MONTHLY")                    # 15-30 d, recurring monthly
 assert B.classify(tr(20, 120, 300), 1, C, now=NOW) == ("STATIC_PRE_BURN", "ONE_TIME")             # 15-30 d, irregular
 assert s({DEAD: 2 * 10**24}, 10**24, [])["burned_percentage"] == 100.0                  # clamped
+r = s({DEAD: 28 * 10**18}, 10**27, tr(59))                                                # dust: 28 of 1B = 0.0000028%
+assert (r["burn_status"], r["total_burned_amount"], r["burned_percentage"]) == ("NO_BURN", 0.0, 0.0)
+assert s({DEAD: 10**22}, 10**24, [])["burn_status"] == "STATIC_PRE_BURN"                 # 1% is kept
 assert B.chain_id("Ethereum") == 1 and B.chain_id("solana") is None and B.chain_id("hyperevm") == 999
 print("burn self-check: ok")
