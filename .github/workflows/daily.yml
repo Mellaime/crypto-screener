@@ -49,4 +49,6 @@ jobs:
           # Burned supply (burn_detector.py); missing -> Etherscan chains are
           # skipped (public-RPC chains still update).
           ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+          # Burned supply for Solana coins (burn_detector.py); missing -> skipped.
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
         run: python scheduler.py --once

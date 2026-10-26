@@ -2252,15 +2252,18 @@
         ${burnedRow(sp.burned)}
       </ul></div>`;
   }
-  // Burned: tokens in the 0x…dEaD / 0x…0000 / 0x…0001 wallets (or _burn()ed),
-  // on-chain via Etherscan or a public RPC (EVM coins only).
+  // Burned: EVM - tokens in the 0x…dEaD / 0x…0000 / 0x…0001 wallets (or
+  // _burn()ed), via Etherscan or a public RPC; Solana - Helius. No % = only
+  // the recent burns Helius sampled are known (total unknown).
   function burnedRow(b) {
     const lbl = small => `<span class="lbl">Burned<small>${small}</small></span>`;
-    if (!b) return `<li class="soon">${lbl("EVM coins only · not checked yet")}<span class="val">—</span></li>`;
-    if (b.status === "NO_BURN") return `<li>${lbl("burn wallets · on-chain")}<span class="val">0 <small>No burns</small></span></li>`;
+    if (!b) return `<li class="soon">${lbl("EVM / Solana coins · not checked yet")}<span class="val">—</span></li>`;
+    if (b.status === "NO_BURN") return `<li>${lbl("on-chain")}<span class="val">0 <small>No burns</small></span></li>`;
     const label = {STATIC_PRE_BURN: "One-time burn", ACTIVE_BURN: "Active burn", BUYBACK_AND_BURN: "Buyback &amp; burn"}[b.status] || esc(b.status);
     const freq = b.frequency && !["NONE", "ONE_TIME"].includes(b.frequency) ? " · " + b.frequency.toLowerCase() : "";
     const last = b.days_since_last_burn == null ? "" : ` · last ${b.days_since_last_burn === 0 ? "today" : b.days_since_last_burn + "d ago"}`;
+    if (b.pct == null && b.amount != null)
+      return `<li>${lbl(label + freq + " · 100+ recent burns, total unknown" + last)}<span class="val" title="${Math.round(b.amount).toLocaleString()} in the last 100 burns">≥ ${fmtSupply(b.amount)}</span></li>`;
     const pct = b.pct == null ? "" : (b.pct < 0.01 ? "<0.01" : b.pct.toFixed(2)) + "% · ";
     return `<li>${lbl(label + freq + last)}<span class="val" title="${b.amount == null ? "" : Math.round(b.amount).toLocaleString()}">${pct}${fmtSupply(b.amount)}</span></li>`;
   }

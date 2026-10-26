@@ -247,7 +247,7 @@ def run_check(contract):
     from volume_anomaly import spike_for_contract
     f_lst = pool.submit(listings_live, symbol, price, contract)
     # Burned supply: stored for a coin we track, else live (Etherscan / public RPC).
-    f_burn = pool.submit(_check_burn, contract, chain, pairs)
+    f_burn = pool.submit(_check_burn, contract, chain, pairs, md.get("max_supply"))
     pool.shutdown(wait=False)
 
     steps = []
@@ -648,9 +648,9 @@ def _stored_closes(contract):
         session.close()
 
 
-def _check_burn(contract, chain, pairs):
+def _check_burn(contract, chain, pairs, max_supply=None):
     """Burned supply: the daily run's stored value for a coin we track, else
-    a live check (EVM only). None when unavailable. Never raises."""
+    a live check (EVM / Solana). None when unavailable. Never raises."""
     import burn_detector
     from sqlalchemy import func
     from database import SessionLocal
@@ -659,7 +659,7 @@ def _check_burn(contract, chain, pairs):
     try:
         coin = (session.query(Coin).filter(func.lower(Coin.contract) == (contract or "").lower(),
                                            Coin.burn_checked_at.isnot(None)).first())
-        return burn_detector.for_coin(coin) if coin else burn_detector.check(contract, chain, pairs)
+        return burn_detector.for_coin(coin) if coin else burn_detector.check(contract, chain, pairs, max_supply)
     except Exception:
         session.rollback()
         return None
