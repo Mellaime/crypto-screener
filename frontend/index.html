@@ -835,7 +835,7 @@
     }
     const on = isFav(contract);
     return `<button type="button" class="favstar${on ? " on" : ""}" data-fav="${esc(c)}"
-      aria-pressed="${on}" title="${on ? "Locked in " + (myProfile ? esc(myProfile.name) + "'s" : "your") + " portfolio — use Reset to start fresh" : "Add to " + (myProfile ? esc(myProfile.name) + "'s " : "") + "portfolio"}" aria-label="${on ? esc(name) + " is locked in your portfolio" : "Add " + esc(name) + " to your portfolio"}">${on ? "★" : "☆"}</button>`;
+      aria-pressed="${on}" title="${on ? "Remove from" : "Add to"} ${myProfile ? esc(myProfile.name) + "'s " : ""}favorites" aria-label="${on ? "Remove " + esc(name) + " from" : "Add " + esc(name) + " to"} favorites">${on ? "★" : "☆"}</button>`;
   }
   function toast(msg) {
     const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; document.body.appendChild(t);
@@ -962,7 +962,6 @@
       return;
     }
     const c = btn.dataset.fav, adding = !myFavs.has(c);
-    if (!adding) { toast("This coin is locked in your portfolio. Use Reset to start fresh."); return; }
     const run = async () => {
       if (adding) await api("POST", `/api/favorites/profiles/${encodeURIComponent(myProfile.name)}/coins`, {contract: c, session_token: myProfile.token});
       else await api("DELETE", `/api/favorites/profiles/${encodeURIComponent(myProfile.name)}/coins/${encodeURIComponent(c)}`, {session_token: myProfile.token});
@@ -976,6 +975,7 @@
     }
     if (adding) myFavs.add(c); else myFavs.delete(c);
     refreshStars();
+    toast(adding ? "Added to favorites" : "Removed from favorites");
     if (ownsView()) { await fpFetchView(); renderFavorites(); }
     const again = document.querySelector(`.favstar[data-fav="${CSS.escape(c)}"]`);
     if (again) { again.classList.remove("pop"); void again.offsetWidth; again.classList.add("pop"); }
@@ -1439,7 +1439,7 @@
     if (!fpView) { head.innerHTML = ""; body.innerHTML = '<tr><td colspan="12" class="empty">Loading profiles…</td></tr>'; return; }
     const mine = ownsView();
     head.innerHTML = mine
-      ? `<span>👤 Your profile — click ☆ next to any coin to add it (max ${fpMaxCoins}). Coins are locked once added; ↺ Reset starts over.</span>
+      ? `<span>👤 Your profile — click ☆ next to any coin to add it (max ${fpMaxCoins}). Click ★ again to remove it; ↺ Reset clears all.</span>
          <button type="button" data-act="favreset">↺ Reset favorites</button><button type="button" data-act="signout">Sign out here</button><button type="button" data-act="delete">Delete profile</button>`
       : `<span>Viewing ${esc(fpView)}'s favorites (view only).</span><button type="button" data-act="claim">🔑 This is my profile</button>`;
     renderChallenge();
