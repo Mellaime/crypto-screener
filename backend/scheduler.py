@@ -198,9 +198,9 @@ def run_pipeline(raise_on_error=False):
             log.exception("Exchange listings update failed - continuing.")
             report.step_errors.append("Exchange listings")
 
-        # Burned supply for active EVM coins (Etherscan V2 / public RPC).
+        # Burned supply for active EVM + Solana coins (Etherscan V2 / public RPC / Helius).
         # Display only - its own try so a failure never stops the run.
-        log.info("Updating burned supply (Etherscan / public RPC)...")
+        log.info("Updating burned supply (Etherscan / public RPC / Helius)...")
         try:
             from burn_detector import run_burn_update
             run_burn_update()
