@@ -46,4 +46,7 @@ jobs:
           # 3-source liquidity verification (birdeye.py); missing -> every
           # Birdeye reading counts as failed (no liquidity decision needing it).
           BIRDEYE_API_KEY: ${{ secrets.BIRDEYE_API_KEY }}
+          # Burned supply (burn_detector.py); missing -> Etherscan chains are
+          # skipped (public-RPC chains still update).
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
         run: python scheduler.py --once
