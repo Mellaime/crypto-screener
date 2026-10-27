@@ -11,12 +11,15 @@ The verdict is one of three values:
     "safe"     -> checked, none of the unsafe rules below hold
     "unsafe"   -> we must NOT save it (and the daily re-check drops it):
                   EVM    - honeypot, cannot sell all, buy or sell tax > 10%,
-                           owner can change balances, self-destruct
-                  Solana - rugged, active freeze authority (the creator can
-                           freeze holders' accounts), non-transferable or a
-                           100% transfer fee
-    "unknown"  -> we couldn't check (API down, unsupported chain, no data)
-                  -> we do NOT reject it (we don't want to lose good coins)
+                           self-destruct
+                  Solana - rugged, non-transferable, transfer fee > 10%
+                  (owner-can-change-balances and an active freeze authority
+                  are only recorded, never a reason to reject)
+    "unknown"  -> we couldn't check (API down, unsupported chain, no data).
+                  rejects() decides: on a chain GoPlus / RugCheck support,
+                  entry and Check a Coin REJECT it (every coin must be
+                  verified); on an unsupported chain (sui, hyperevm, ...) it
+                  passes. The daily re-check never drops on "unknown".
 
 It also returns verified / renounced / mint disabled / freeze disabled,
 buy / sell tax (%), creator and owner address and the % of LP locked or
@@ -137,6 +140,7 @@ def _result(verdict, reason, **extra):
         "creator_address": None,
         "owner_address": None,
         "lp_locked_pct": None,   # % of LP locked or burned
+        "supported": True,       # False: the chain has no GoPlus / RugCheck coverage
     }
     base.update(extra)
     return base
@@ -177,8 +181,6 @@ def classify_evm(info):
         verdict, reason = "unsafe", "honeypot" if honeypot else "cannot sell all"
     elif (buy_tax or 0) > MAX_TAX_PCT or (sell_tax or 0) > MAX_TAX_PCT:
         verdict, reason = "unsafe", f"tax over {MAX_TAX_PCT:.0f}% (buy {buy_tax}%, sell {sell_tax}%)"
-    elif _flag(info.get("owner_change_balance")):
-        verdict, reason = "unsafe", "owner can change balances"
     elif _flag(info.get("selfdestruct")):
         verdict, reason = "unsafe", "contract can self-destruct"
     else:
@@ -238,8 +240,6 @@ def _check_solana(contract):
 
     if non_transferable is True:
         verdict, reason = "unsafe", "non-transferable (cannot sell)"
-    elif freezable is True:                      # same rule as RugCheck's freezeAuthority
-        verdict, reason = "unsafe", "freeze authority active"
     elif non_transferable is False:
         verdict, reason = "safe", "token is transferable"
     else:
@@ -269,12 +269,12 @@ def classify_rugcheck(d):
 
     if d.get("rugged") is True:
         verdict, reason = "unsafe", "rugged (RugCheck)"
-    elif freeze_auth:
-        verdict, reason = "unsafe", "freeze authority active"
-    elif non_transferable or fee >= 100:
+    elif non_transferable:
         verdict, reason = "unsafe", "non-transferable (cannot sell)"
+    elif fee > MAX_TAX_PCT:
+        verdict, reason = "unsafe", f"transfer fee over {MAX_TAX_PCT:.0f}% ({fee}%)"
     else:
-        verdict, reason = "safe", "no freeze authority / token is sellable"
+        verdict, reason = "safe", "token is sellable"
 
     return _result(
         verdict, reason,
@@ -312,6 +312,11 @@ SECURITY_COLUMNS = ("verified", "renounced", "mint_disabled", "freeze_disabled",
                     "creator_address", "owner_address", "lp_locked_pct")
 
 
+def rejects(sec):
+    """Entry / Check a Coin: unsafe, or unverified on a chain we can verify."""
+    return sec["verdict"] == "unsafe" or (sec["verdict"] == "unknown" and sec["supported"])
+
+
 def store(coin, sec):
     """Save a check_token_security result on the coin."""
     coin.security_verdict = sec["verdict"]
@@ -334,7 +339,7 @@ def check_token_security(contract, chain):
 
     chain_id = CHAIN_IDS.get(chain)
     if not chain_id:
-        return _unknown(f"chain '{chain}' not supported by GoPlus")
+        return {**_unknown(f"chain '{chain}' not supported by GoPlus"), "supported": False}
 
     return _check_evm(contract, chain_id)
 

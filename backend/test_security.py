@@ -14,7 +14,7 @@ assert evm(sell_tax="0.1")["verdict"] == "safe"                                 
 assert evm(sell_tax="0.15")["verdict"] == "unsafe" and "tax" in evm(sell_tax="0.15")["reason"]
 assert evm(buy_tax="0.11")["verdict"] == "unsafe"
 assert evm(sell_tax="", buy_tax="")["verdict"] == "safe"                             # unknown tax never rejects
-assert evm(owner_change_balance="1")["reason"] == "owner can change balances"
+assert evm(owner_change_balance="1")["verdict"] == "safe"                             # recorded only, never rejects
 assert evm(selfdestruct="1")["verdict"] == "unsafe"
 assert evm(is_honeypot="1")["reason"] == "honeypot"
 assert evm(transfer_pausable="1")["freeze_disabled"] is False and evm(transfer_pausable="1")["verdict"] == "safe"
@@ -34,16 +34,20 @@ assert r["verdict"] == "safe" and r["lp_locked_pct"] == 60.0 and r["creator_addr
 assert r["renounced"] and r["mint_disabled"] and r["freeze_disabled"] and r["owner_address"] == "UpdAuth"
 assert r["buy_tax"] == r["sell_tax"] == 0.0
 assert sol(rugged=True)["reason"] == "rugged (RugCheck)"
-r = sol(freezeAuthority="Fr33ze")
-assert r["verdict"] == "unsafe" and r["freeze_disabled"] is False and r["renounced"] is False
+r = sol(freezeAuthority="Fr33ze")                                                   # recorded only, never rejects
+assert r["verdict"] == "safe" and r["freeze_disabled"] is False and r["renounced"] is False
 r = sol(mintAuthority="M1nt")
 assert r["verdict"] == "safe" and r["mint_disabled"] is False and r["owner_address"] == "M1nt"
-assert sol(transferFee={"pct": 100})["verdict"] == "unsafe"
+assert sol(transferFee={"pct": 100})["verdict"] == "unsafe" and sol(transferFee={"pct": 11})["verdict"] == "unsafe"
+assert sol(transferFee={"pct": 10})["verdict"] == "safe"
 assert sol(transferFee={"pct": 3})["sell_tax"] == 3.0 and sol(transferFee={"pct": 3})["verdict"] == "safe"
 assert sol(token_extensions={"nonTransferable": True})["verdict"] == "unsafe"
 assert sol(token_extensions={"nonTransferable": False, "transferFeeConfig": None})["verdict"] == "safe"   # seen live
 assert sol(markets=[])["lp_locked_pct"] is None
 r = sol(mintAuthority={"lamports": 1, "owner": "1111"}, tokenMeta={"updateAuthority": {"lamports": 1}})  # seen live
 assert r["mint_disabled"] is False and r["owner_address"] is None and r["verdict"] == "safe"
-assert sol(freezeAuthority={"lamports": 1})["verdict"] == "unsafe"
+assert sol(freezeAuthority={"lamports": 1})["freeze_disabled"] is False
+# unknown: rejected on a chain GoPlus / RugCheck cover, passes on an unsupported one
+assert S.rejects(S._unknown("GoPlus API error")) and S.rejects(evm(is_honeypot="1"))
+assert not S.rejects(S.check_token_security("0xabc", "sui")) and not S.rejects(evm())
 print("security self-check: ok")

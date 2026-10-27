@@ -176,7 +176,7 @@ def run_check(contract):
     from age_check import decide_age, MIN_AGE_DAYS
     from revenue_check import check_revenue
     from volume_check import check_volume_rising, VOLUME_MIN_RISE
-    from security_check import check_token_security, SECURITY_COLUMNS
+    from security_check import check_token_security, rejects, SECURITY_COLUMNS
     from liquidity_check import check_liquidity_trend, MAX_DROP_PCT, MIN_LIQUIDITY_USD
     from narrative_check import _pick_category
     from queue_view import narrative_from_tags
@@ -338,6 +338,9 @@ def run_check(contract):
     sec = f_sec.result()
     if sec["verdict"] == "unsafe":
         step("honeypot", "Not a honeypot", "fail", sec["reason"], "إنها فخ (honeypot) / لا يمكن بيعها")
+    elif rejects(sec):
+        step("honeypot", "Not a honeypot", "fail", f"not verified ({sec['reason']})",
+             "لم يتم التحقق من أمان العملة (honeypot)")
     else:
         step("honeypot", "Not a honeypot", "pass",
              "sellable" if sec["verdict"] == "safe" else f"unknown ({sec['reason']}) - passes")
@@ -689,7 +692,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike|burn|sec2"
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike|burn|sec3"
             "|liq3src|liq3k|score-v3")   # result layout: has these display sections
 
 
