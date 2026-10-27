@@ -50,7 +50,7 @@ from revenue_check import check_revenue             # step 4
 from volume_check import check_volume_rising       # step 5
 from rotation import (pick_batch, mark_checked, analyzed_keys, is_analyzed,
                       ROTATION_BUDGET)              # entry queue for steps 4-7
-from security_check import check_token_security     # step 6 (honeypot)
+from security_check import check_token_security, store as store_security     # step 6 (honeypot)
 from liquidity_check import check_liquidity_trend   # step 7 (LAST)
 import birdeye                                                             # step 7's 3rd source
 from liquidity_verify import evaluate, describe, HEALTHY, UNKNOWN
@@ -410,10 +410,7 @@ def save_tokens(tokens):
 
             # Store the security info (step 6) on the coin so the dashboard
             # can show it. Applies to both new and existing coins.
-            coin.security_verdict = security["verdict"]
-            coin.verified = security["verified"]
-            coin.renounced = security["renounced"]
-            coin.mint_disabled = security["mint_disabled"]
+            store_security(coin, security)
 
             # Current price for the dashboard. tracking.py refreshes it
             # again later in every run, for active + dropped coins.

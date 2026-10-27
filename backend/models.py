@@ -104,6 +104,12 @@ class Coin(Base):
     verified = Column(Boolean)          # contract source code verified / open
     renounced = Column(Boolean)         # ownership renounced
     mint_disabled = Column(Boolean)     # minting disabled (supply can't inflate)
+    freeze_disabled = Column(Boolean)   # no pause / blacklist (EVM) or freeze authority (Solana)
+    buy_tax = Column(Float)             # percent
+    sell_tax = Column(Float)            # percent
+    creator_address = Column(String)
+    owner_address = Column(String)
+    lp_locked_pct = Column(Float)       # % of LP locked or burned
 
     # Real category/narrative from CoinGecko (e.g. "Meme", "DePIN"); None if
     # CoinGecko doesn't list it -> the UI falls back to a generic sentence.

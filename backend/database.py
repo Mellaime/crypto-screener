@@ -231,6 +231,17 @@ _NEW_COLUMNS += [
 ]
 
 
+# Security fields (security_check.py: GoPlus EVM / RugCheck Solana) - nullable.
+_NEW_COLUMNS += [
+    ("coins", "freeze_disabled", "BOOLEAN", None),
+    ("coins", "buy_tax", "FLOAT", None),
+    ("coins", "sell_tax", "FLOAT", None),
+    ("coins", "creator_address", "VARCHAR", None),
+    ("coins", "owner_address", "VARCHAR", None),
+    ("coins", "lp_locked_pct", "FLOAT", None),
+]
+
+
 def _add_missing_columns():
     from sqlalchemy import inspect, text
 

@@ -176,7 +176,7 @@ def run_check(contract):
     from age_check import decide_age, MIN_AGE_DAYS
     from revenue_check import check_revenue
     from volume_check import check_volume_rising, VOLUME_MIN_RISE
-    from security_check import check_token_security
+    from security_check import check_token_security, SECURITY_COLUMNS
     from liquidity_check import check_liquidity_trend, MAX_DROP_PCT, MIN_LIQUIDITY_USD
     from narrative_check import _pick_category
     from queue_view import narrative_from_tags
@@ -414,6 +414,7 @@ def run_check(contract):
                     "annual": revd.get("annual_revenue"), "protocol": revd.get("protocol"),
                     "filter_verdict": rev["verdict"]},
         "honeypot": sec["verdict"],
+        "security_info": {k: sec[k] for k in ("reason",) + SECURITY_COLUMNS},
         # Liquidity Sources section (DexScreener / Codex / live Birdeye + verdict).
         "liquidity_sources": sources,
         # Display only: from the CoinGecko response above (no extra call).
@@ -688,7 +689,7 @@ def rules_signature():
     from volume_check import VOLUME_MIN_RISE
     from liquidity_check import MAX_DROP_PCT, MIN_LIQUIDITY_USD
     return (f"mcap {MIN_MCAP}-{MAX_MCAP}|age {MIN_AGE_DAYS}|vol {VOLUME_MIN_RISE}|liq {MAX_DROP_PCT}/{MIN_LIQUIDITY_USD}"
-            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike|burn"
+            "|pricerange|relstrength-ar|summary-ar|twitter-cmc|entryzone2|futures|score3|supply|ez-tracked|listings|volspike|burn|sec2"
             "|liq3src|liq3k|score-v3")   # result layout: has these display sections
 
 

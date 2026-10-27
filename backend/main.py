@@ -573,6 +573,7 @@ def get_coin(contract: str):
         from volume_anomaly import get_recent_spike
         from performance import safe_compute
         from burn_detector import for_coin as burn_for_coin
+        from security_check import SECURITY_COLUMNS
         from concurrent.futures import ThreadPoolExecutor
 
         def own_session(fn, *args):
@@ -680,6 +681,8 @@ def get_coin(contract: str):
             "narrative": make_narrative(coin.chain, snap.mcap if snap else None,
                                         vol_liq_ratio, arabic=True),
             "security": coin.security_verdict,
+            # GoPlus (EVM) / RugCheck (Solana) fields, refreshed by the daily re-check.
+            "security_info": {col: getattr(coin, col) for col in SECURITY_COLUMNS},
             "tx_window_days": WINDOW_DAYS,
             "tx_bars": tx["bars"],
             "tx_error": tx["error"],
