@@ -19,7 +19,7 @@ It uses ONE set of 5 health criteria, both for dropping and for recovery:
                             $5K on both Codex and DexScreener" rule)
     * holders down > 10%  - vs the count when it entered active
                             (coins.holders_at_entry; no baseline -> skipped)
-    * honeypot unsafe     - GoPlus
+    * honeypot unsafe     - GoPlus (EVM) / RugCheck (Solana); the fields are re-saved daily
 Volume + liquidity come ONLY from the daily readings that tracking.py stores
 (~2-3 bulk Codex requests/day for all coins, plus DexScreener).
 NO CoinGecko here - CoinGecko is only the one-time entry check.
@@ -466,7 +466,7 @@ def unhealthy_reason(coin, session, today):
     checks (stored Codex history) go first; the network ones after.
     """
     from holders_check import get_holder_count
-    from security_check import check_token_security
+    from security_check import check_token_security, store as store_security
 
     if codex_volume_trend(session, coin, today) == "falling":
         pct = volume_avg_change(session, coin, today)
@@ -486,6 +486,8 @@ def unhealthy_reason(coin, session, today):
             return f"Holders down {abs(hpct):.1f}% ({base:,} -> {now_h:,})"
 
     sec = check_token_security(coin.contract, coin.chain)
+    if sec["verdict"] != "unknown":              # an API hiccup keeps yesterday's fields
+        store_security(coin, sec)
     if sec["verdict"] == "unsafe":
         return f"Honeypot flagged ({sec['reason']})"
 

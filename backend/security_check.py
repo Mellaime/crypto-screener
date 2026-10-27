@@ -1,23 +1,29 @@
 """
 security_check.py
 -----------------
-Phase 2 - filter #7: the HONEYPOT / SECURITY check, using the free GoPlus
-Security API (no API key needed).
+Phase 2 - filter #7: the HONEYPOT / SECURITY check. EVM: the free GoPlus
+Security API. Solana: the free RugCheck API (GoPlus Solana only when
+RugCheck is down). No API keys.
 
-A "honeypot" is a token you can BUY but can't SELL - a trap. This module asks
-GoPlus whether a token is safe to trade.
+A "honeypot" is a token you can BUY but can't SELL - a trap.
 
 The verdict is one of three values:
-    "safe"     -> GoPlus checked it and found no honeypot / cannot-sell problem
-    "unsafe"   -> confirmed honeypot or cannot-sell -> we must NOT save it
-    "unknown"  -> we couldn't check (API down, unsupported chain, no data)
-                  -> we do NOT reject it (we don't want to lose good coins)
+    "safe"     -> checked, none of the unsafe rules below hold
+    "unsafe"   -> we must NOT save it (and the daily re-check drops it):
+                  EVM    - honeypot, cannot sell all, buy or sell tax > 10%,
+                           self-destruct
+                  Solana - rugged, non-transferable, transfer fee > 10%
+                  (owner-can-change-balances and an active freeze authority
+                  are only recorded, never a reason to reject)
+    "unknown"  -> we couldn't check (API down, unsupported chain, no data).
+                  rejects() decides: on a chain GoPlus / RugCheck support,
+                  entry and Check a Coin REJECT it (every coin must be
+                  verified); on an unsupported chain (sui, hyperevm, ...) it
+                  passes. The daily re-check never drops on "unknown".
 
-It also captures extra info when available: contract verified, ownership
-renounced, mint disabled, and buy/sell tax.
-
-GoPlus has separate endpoints for EVM chains (Ethereum, BSC, Base, ...) and
-for Solana. Chains it doesn't support return "unknown".
+It also returns verified / renounced / mint disabled / freeze disabled,
+buy / sell tax (%), creator and owner address and the % of LP locked or
+burned - store() saves them on the coin (entry filter + daily re-check).
 
 Run it (tests a few coins):
     python security_check.py
@@ -34,6 +40,11 @@ import requests
 REQUEST_DELAY = 2.0        # seconds between calls (~30/min)
 RATE_LIMIT_CODE = 4029
 RETRY_WAITS = [10, 20, 40, 60]   # back-off before each retry after a 4029
+MAX_TAX_PCT = 10.0               # buy or sell tax above this -> unsafe
+BURN_ADDRESSES = ("0x0000000000000000000000000000000000000000", "0x000000000000000000000000000000000000dead")
+
+RUGCHECK = "https://api.rugcheck.xyz/v1/tokens/{mint}/report"
+RUGCHECK_DELAY = 1.0             # seconds before each RugCheck call (free, keyless)
 
 # EVM chains: /token_security/{chain_id}?contract_addresses=...
 GOPLUS_EVM = "https://api.gopluslabs.io/api/v1/token_security"
@@ -123,8 +134,13 @@ def _result(verdict, reason, **extra):
         "verified": None,        # is the contract source verified / open?
         "renounced": None,       # is ownership renounced?
         "mint_disabled": None,   # is minting disabled (supply can't inflate)?
+        "freeze_disabled": None, # no pause / blacklist (EVM) or freeze authority (Solana)
         "buy_tax": None,         # percent
         "sell_tax": None,        # percent
+        "creator_address": None,
+        "owner_address": None,
+        "lp_locked_pct": None,   # % of LP locked or burned
+        "supported": True,       # False: the chain has no GoPlus / RugCheck coverage
     }
     base.update(extra)
     return base
@@ -148,26 +164,35 @@ def classify_evm(info):
     if owner is None:
         renounced = None
     else:
-        renounced = owner.strip() == "" or owner.lower() in (
-            "0x0000000000000000000000000000000000000000",
-            "0x000000000000000000000000000000000000dead",
-        )
+        renounced = owner.strip() == "" or owner.lower() in BURN_ADDRESSES
 
     buy_tax = _tax_pct(info.get("buy_tax"))
     sell_tax = _tax_pct(info.get("sell_tax"))
+    pausable, blacklist = _flag(info.get("transfer_pausable")), _flag(info.get("is_blacklisted"))
+    freeze_disabled = None if pausable is None or blacklist is None else not (pausable or blacklist)
+
+    lp = info.get("lp_holders") or []
+    lp_locked = (min(100.0, round(sum(float(h.get("percent") or 0) * 100 for h in lp
+                                      if str(h.get("is_locked")) == "1"
+                                      or (h.get("address") or "").lower() in BURN_ADDRESSES), 2))
+                 if lp else None)
 
     if honeypot or cannot_sell:
-        verdict = "unsafe"
-        reason = "honeypot" if honeypot else "cannot sell all"
+        verdict, reason = "unsafe", "honeypot" if honeypot else "cannot sell all"
+    elif (buy_tax or 0) > MAX_TAX_PCT or (sell_tax or 0) > MAX_TAX_PCT:
+        verdict, reason = "unsafe", f"tax over {MAX_TAX_PCT:.0f}% (buy {buy_tax}%, sell {sell_tax}%)"
+    elif _flag(info.get("selfdestruct")):
+        verdict, reason = "unsafe", "contract can self-destruct"
     else:
-        verdict = "safe"
-        reason = "no honeypot / token is sellable"
+        verdict, reason = "safe", "no honeypot / token is sellable"
 
     return _result(
         verdict, reason,
         is_honeypot=honeypot, cannot_sell=cannot_sell,
         verified=verified, renounced=renounced, mint_disabled=mint_disabled,
-        buy_tax=buy_tax, sell_tax=sell_tax,
+        freeze_disabled=freeze_disabled, buy_tax=buy_tax, sell_tax=sell_tax,
+        creator_address=info.get("creator_address") or None, owner_address=owner or None,
+        lp_locked_pct=lp_locked,
     )
 
 
@@ -224,8 +249,79 @@ def _check_solana(contract):
     return _result(
         verdict, reason,
         cannot_sell=non_transferable, mint_disabled=mint_disabled,
-        freezable=freezable,
+        freeze_disabled=None if freezable is None else not freezable,
     )
+
+
+def classify_rugcheck(d):
+    """A RugCheck report -> our verdict + fields."""
+    tok = d.get("token") or {}
+    # an authority is an address string, or sometimes an account-info object (set, address not given)
+    mint_auth = d.get("mintAuthority") or tok.get("mintAuthority") or None
+    freeze_auth = d.get("freezeAuthority") or tok.get("freezeAuthority") or None
+    addr = lambda v: v if isinstance(v, str) else None
+    fee = (d.get("transferFee") or {}).get("pct") or 0          # Token-2022 transfer fee, percent
+    exts = d.get("token_extensions")                            # Token-2022 only; {"nonTransferable": false, ...}
+    non_transferable = bool(exts.get("nonTransferable")) if isinstance(exts, dict) else False
+    lp = [m.get("lp") or {} for m in d.get("markets") or []]
+    lp_usd = sum((x.get("baseUSD") or 0) + (x.get("quoteUSD") or 0) for x in lp)
+    lp_locked = round(min(100.0, sum(x.get("lpLockedUSD") or 0 for x in lp) / lp_usd * 100), 2) if lp_usd else None
+
+    if d.get("rugged") is True:
+        verdict, reason = "unsafe", "rugged (RugCheck)"
+    elif non_transferable:
+        verdict, reason = "unsafe", "non-transferable (cannot sell)"
+    elif fee > MAX_TAX_PCT:
+        verdict, reason = "unsafe", f"transfer fee over {MAX_TAX_PCT:.0f}% ({fee}%)"
+    else:
+        verdict, reason = "safe", "token is sellable"
+
+    return _result(
+        verdict, reason,
+        cannot_sell=non_transferable or fee >= 100,
+        verified=True,                               # standard SPL token program, nothing to verify
+        renounced=mint_auth is None and freeze_auth is None,
+        mint_disabled=mint_auth is None, freeze_disabled=freeze_auth is None,
+        buy_tax=float(fee), sell_tax=float(fee),
+        creator_address=addr(d.get("creator")) or None,
+        owner_address=addr(mint_auth) or addr((d.get("tokenMeta") or {}).get("updateAuthority")) or None,
+        lp_locked_pct=lp_locked,
+    )
+
+
+def _check_rugcheck(contract):
+    """RugCheck first; GoPlus Solana only when RugCheck is down (5xx / timeout)."""
+    time.sleep(RUGCHECK_DELAY)
+    try:
+        r = requests.get(RUGCHECK.format(mint=contract), timeout=30, headers={"User-Agent": "crypto-screener/0.1"})
+    except requests.exceptions.RequestException as e:
+        print(f"[WARN] RugCheck request failed ({type(e).__name__}) - trying GoPlus")
+        return _check_solana(contract)
+    if r.status_code >= 500:
+        print(f"[WARN] RugCheck HTTP {r.status_code} - trying GoPlus")
+        return _check_solana(contract)
+    if r.status_code != 200:
+        return _unknown(f"RugCheck HTTP {r.status_code}")
+    try:
+        return classify_rugcheck(r.json())
+    except (ValueError, TypeError, AttributeError, ZeroDivisionError) as e:
+        return _unknown(f"RugCheck bad response ({type(e).__name__})")
+
+
+SECURITY_COLUMNS = ("verified", "renounced", "mint_disabled", "freeze_disabled", "buy_tax", "sell_tax",
+                    "creator_address", "owner_address", "lp_locked_pct")
+
+
+def rejects(sec):
+    """Entry / Check a Coin: unsafe, or unverified on a chain we can verify."""
+    return sec["verdict"] == "unsafe" or (sec["verdict"] == "unknown" and sec["supported"])
+
+
+def store(coin, sec):
+    """Save a check_token_security result on the coin."""
+    coin.security_verdict = sec["verdict"]
+    for col in SECURITY_COLUMNS:
+        setattr(coin, col, sec[col])
 
 
 # ---------------------------------------------------------------------------
@@ -239,11 +335,11 @@ def check_token_security(contract, chain):
     chain = (chain or "").lower()
 
     if chain == "solana":
-        return _check_solana(contract)
+        return _check_rugcheck(contract)
 
     chain_id = CHAIN_IDS.get(chain)
     if not chain_id:
-        return _unknown(f"chain '{chain}' not supported by GoPlus")
+        return {**_unknown(f"chain '{chain}' not supported by GoPlus"), "supported": False}
 
     return _check_evm(contract, chain_id)
 

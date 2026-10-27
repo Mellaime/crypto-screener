@@ -50,7 +50,7 @@ from revenue_check import check_revenue             # step 4
 from volume_check import check_volume_rising       # step 5
 from rotation import (pick_batch, mark_checked, analyzed_keys, is_analyzed,
                       ROTATION_BUDGET)              # entry queue for steps 4-7
-from security_check import check_token_security     # step 6 (honeypot)
+from security_check import check_token_security, rejects, store as store_security     # step 6 (honeypot)
 from liquidity_check import check_liquidity_trend   # step 7 (LAST)
 import birdeye                                                             # step 7's 3rd source
 from liquidity_verify import evaluate, describe, HEALTHY, UNKNOWN
@@ -238,6 +238,7 @@ def save_tokens(tokens):
         "revenue_unknown": 0,
         "passed_security": 0,
         "skipped_unsafe": 0,
+        "skipped_unverified": 0,
         "security_unknown": 0,
         "new_coins": 0,
         "existing_coins": 0,
@@ -333,14 +334,17 @@ def save_tokens(tokens):
                 continue
             stats["passed_volume"] += 1
 
-            # --- Step 6: honeypot / security check (GoPlus) ----------------
+            # --- Step 6: honeypot / security check (GoPlus / RugCheck) -----
             # Placed AFTER volume: free GoPlus is rate-limited, so it runs on
-            # the small volume-passing set. Only a CONFIRMED honeypot /
-            # cannot-sell rejects the coin; "unknown" (unsupported chain, no
-            # data) does NOT reject.
+            # the small volume-passing set. Rejects an unsafe coin AND an
+            # unverified one ("unknown") on a chain GoPlus / RugCheck cover;
+            # "unknown" passes only on an unsupported chain (sui, hyperevm...).
             security = check_token_security(t["contract"], t["chain"])
             if security["verdict"] == "unsafe":
                 stats["skipped_unsafe"] += 1
+                continue
+            if rejects(security):
+                stats["skipped_unverified"] += 1
                 continue
             if security["verdict"] == "unknown":
                 stats["security_unknown"] += 1
@@ -410,10 +414,7 @@ def save_tokens(tokens):
 
             # Store the security info (step 6) on the coin so the dashboard
             # can show it. Applies to both new and existing coins.
-            coin.security_verdict = security["verdict"]
-            coin.verified = security["verified"]
-            coin.renounced = security["renounced"]
-            coin.mint_disabled = security["mint_disabled"]
+            store_security(coin, security)
 
             # Current price for the dashboard. tracking.py refreshes it
             # again later in every run, for active + dropped coins.
@@ -551,7 +552,8 @@ def print_summary(stats):
     print(f"       - CoinGecko failed, retry next run .... {stats['vol_retry_next_run']:>6}")
     print(f"  6. Honeypot (GoPlus) - passed .............. {stats['passed_security']:>6}")
     print(f"       - dropped (honeypot/unsafe) ........... {stats['skipped_unsafe']:>6}")
-    print(f"       - passed as unknown ................... {stats['security_unknown']:>6}")
+    print(f"       - dropped (unverified, supported chain) {stats['skipped_unverified']:>6}")
+    print(f"       - passed as unknown (unsupported chain) {stats['security_unknown']:>6}")
     print(f"  7. Liquidity trend (Codex) - passed ........ {stats['passed_liquidity']:>6}")
     print(f"       - dropped (down > 5%) ................. {stats['skipped_liq_falling']:>6}")
     print(f"       - passed as unknown ................... {stats['liquidity_unknown']:>6}")
